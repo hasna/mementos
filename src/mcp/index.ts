@@ -19,6 +19,8 @@ import {
   listProjects,
 } from "../db/projects.js";
 import { getDatabase, resolvePartialId } from "../db/database.js";
+import { searchMemories } from "../lib/search.js";
+import { detectProject } from "../lib/project-detect.js";
 import {
   MemoryNotFoundError,
   VersionConflictError,
@@ -38,6 +40,22 @@ const server = new McpServer({
   name: "mementos",
   version: "0.1.0",
 });
+
+// ============================================================================
+// Auto-project detection (lazy init, cached)
+// ============================================================================
+
+let _autoProjectInitialized = false;
+
+function ensureAutoProject(): void {
+  if (_autoProjectInitialized) return;
+  _autoProjectInitialized = true;
+  try {
+    detectProject();
+  } catch {
+    // Silently ignore — auto-detection is best-effort
+  }
+}
 
 // ============================================================================
 // Helpers
@@ -97,18 +115,19 @@ server.tool(
     value: z.string().describe("Memory content/value"),
     scope: z.enum(["global", "shared", "private"]).optional().describe("Memory scope (default: private)"),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional().describe("Memory category (default: knowledge)"),
-    importance: z.number().min(1).max(10).optional().describe("Importance 1-10 (default: 5)"),
+    importance: z.coerce.number().min(1).max(10).optional().describe("Importance 1-10 (default: 5)"),
     tags: z.array(z.string()).optional().describe("Tags for categorization"),
     summary: z.string().optional().describe("Brief summary of the memory"),
     agent_id: z.string().optional().describe("Agent ID (for scoping)"),
     project_id: z.string().optional().describe("Project ID (for scoping)"),
     session_id: z.string().optional().describe("Session ID (for scoping)"),
-    ttl_ms: z.number().optional().describe("Time-to-live in milliseconds"),
+    ttl_ms: z.coerce.number().optional().describe("Time-to-live in milliseconds"),
     source: z.enum(["user", "agent", "system", "auto", "imported"]).optional().describe("Source of the memory"),
     metadata: z.record(z.unknown()).optional().describe("Arbitrary metadata"),
   },
   async (args) => {
     try {
+      ensureAutoProject();
       const memory = createMemory(args as CreateMemoryInput);
       return { content: [{ type: "text" as const, text: `Memory saved:\n${formatMemory(memory)}` }] };
     } catch (e) {
@@ -129,12 +148,33 @@ server.tool(
   },
   async (args) => {
     try {
+      ensureAutoProject();
       const memory = getMemoryByKey(args.key, args.scope, args.agent_id, args.project_id, args.session_id);
-      if (!memory) {
-        return { content: [{ type: "text" as const, text: `No memory found for key: ${args.key}` }] };
+      if (memory) {
+        touchMemory(memory.id);
+        return { content: [{ type: "text" as const, text: formatMemory(memory) }] };
       }
-      touchMemory(memory.id);
-      return { content: [{ type: "text" as const, text: formatMemory(memory) }] };
+
+      // Fuzzy fallback: search for the key and return the top result
+      const results = searchMemories(args.key, {
+        scope: args.scope,
+        agent_id: args.agent_id,
+        project_id: args.project_id,
+        session_id: args.session_id,
+        limit: 1,
+      });
+      if (results.length > 0) {
+        const best = results[0]!;
+        touchMemory(best.memory.id);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `No exact match for key "${args.key}", showing best result (score: ${best.score.toFixed(2)}, match: ${best.match_type}):\n${formatMemory(best.memory)}`,
+          }],
+        };
+      }
+
+      return { content: [{ type: "text" as const, text: `No memory found for key: ${args.key}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -148,14 +188,14 @@ server.tool(
     scope: z.enum(["global", "shared", "private"]).optional(),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
     tags: z.array(z.string()).optional(),
-    min_importance: z.number().optional(),
+    min_importance: z.coerce.number().optional(),
     pinned: z.boolean().optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     session_id: z.string().optional(),
     status: z.enum(["active", "archived", "expired"]).optional(),
-    limit: z.number().optional().describe("Max results (default: 50)"),
-    offset: z.number().optional(),
+    limit: z.coerce.number().optional().describe("Max results (default: 50)"),
+    offset: z.coerce.number().optional(),
   },
   async (args) => {
     try {
@@ -185,14 +225,14 @@ server.tool(
     value: z.string().optional(),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
     scope: z.enum(["global", "shared", "private"]).optional(),
-    importance: z.number().min(1).max(10).optional(),
+    importance: z.coerce.number().min(1).max(10).optional(),
     tags: z.array(z.string()).optional(),
     summary: z.string().nullable().optional(),
     pinned: z.boolean().optional(),
     status: z.enum(["active", "archived", "expired"]).optional(),
     metadata: z.record(z.unknown()).optional(),
     expires_at: z.string().nullable().optional(),
-    version: z.number().describe("Current version (for optimistic locking)"),
+    version: z.coerce.number().describe("Current version (for optimistic locking)"),
   },
   async (args) => {
     try {
@@ -248,7 +288,7 @@ server.tool(
     tags: z.array(z.string()).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
-    limit: z.number().optional().describe("Max results (default: 20)"),
+    limit: z.coerce.number().optional().describe("Max results (default: 20)"),
   },
   async (args) => {
     try {
@@ -354,7 +394,7 @@ server.tool(
       value: z.string(),
       scope: z.enum(["global", "shared", "private"]).optional(),
       category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
-      importance: z.number().optional(),
+      importance: z.coerce.number().optional(),
       tags: z.array(z.string()).optional(),
       summary: z.string().optional(),
       source: z.enum(["user", "agent", "system", "auto", "imported"]).optional(),
@@ -386,9 +426,9 @@ server.tool(
     agent_id: z.string().optional().describe("Agent ID for scope filtering"),
     project_id: z.string().optional().describe("Project ID for scope filtering"),
     session_id: z.string().optional().describe("Session ID for scope filtering"),
-    max_tokens: z.number().optional().describe("Max approximate token budget (default: 500)"),
+    max_tokens: z.coerce.number().optional().describe("Max approximate token budget (default: 500)"),
     categories: z.array(z.enum(["preference", "fact", "knowledge", "history"])).optional(),
-    min_importance: z.number().optional().describe("Minimum importance threshold (default: 3)"),
+    min_importance: z.coerce.number().optional().describe("Minimum importance threshold (default: 3)"),
   },
   async (args) => {
     try {
@@ -645,7 +685,7 @@ server.tool(
   "Update multiple memories with the same changes",
   {
     ids: z.array(z.string()).describe("Memory IDs to update"),
-    importance: z.number().min(1).max(10).optional(),
+    importance: z.coerce.number().min(1).max(10).optional(),
     tags: z.array(z.string()).optional(),
     pinned: z.boolean().optional(),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
@@ -695,7 +735,7 @@ server.tool(
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     scope: z.enum(["global", "shared", "private"]).optional().describe("Limit to specific scope"),
-    limit: z.number().optional().describe("Max memories (default: 30)"),
+    limit: z.coerce.number().optional().describe("Max memories (default: 30)"),
   },
   async (args) => {
     try {
