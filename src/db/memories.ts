@@ -16,7 +16,7 @@ import { getDatabase, now, uuid } from "./database.js";
 // Helpers
 // ============================================================================
 
-function parseMemoryRow(row: Record<string, unknown>): Memory {
+export function parseMemoryRow(row: Record<string, unknown>): Memory {
   return {
     id: row["id"] as string,
     key: row["key"] as string,
