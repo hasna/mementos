@@ -4,6 +4,9 @@
  * Usage: mementos-serve [--port 19428]
  */
 
+import { existsSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   createMemory,
   getMemory,
@@ -61,6 +64,49 @@ function parsePort(): number {
 // ============================================================================
 // Helpers
 // ============================================================================
+
+// ============================================================================
+// Dashboard static files
+// ============================================================================
+
+function resolveDashboardDir(): string {
+  const candidates: string[] = [];
+  try {
+    const scriptDir = dirname(fileURLToPath(import.meta.url));
+    candidates.push(join(scriptDir, "..", "dashboard", "dist"));
+    candidates.push(join(scriptDir, "..", "..", "dashboard", "dist"));
+  } catch { /* ignore */ }
+  if (process.argv[1]) {
+    const mainDir = dirname(process.argv[1]);
+    candidates.push(join(mainDir, "..", "dashboard", "dist"));
+    candidates.push(join(mainDir, "..", "..", "dashboard", "dist"));
+  }
+  candidates.push(join(process.cwd(), "dashboard", "dist"));
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
+  }
+  return join(process.cwd(), "dashboard", "dist");
+}
+
+const MIME_TYPES: Record<string, string> = {
+  ".html": "text/html; charset=utf-8",
+  ".js": "application/javascript",
+  ".css": "text/css",
+  ".json": "application/json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".ico": "image/x-icon",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+function serveStaticFile(filePath: string): Response | null {
+  if (!existsSync(filePath)) return null;
+  const ct = MIME_TYPES[extname(filePath)] || "application/octet-stream";
+  return new Response(Bun.file(filePath), {
+    headers: { "Content-Type": ct },
+  });
+}
 
 const CORS_HEADERS: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -574,6 +620,21 @@ export function startServer(port: number): void {
       // Route matching
       const matched = matchRoute(req.method, pathname);
       if (!matched) {
+        // API routes always return JSON 404
+        if (pathname.startsWith("/api/")) {
+          return errorResponse("Not found", 404);
+        }
+        // Serve dashboard static files for non-API routes
+        const dashDir = resolveDashboardDir();
+        if (existsSync(dashDir) && (req.method === "GET" || req.method === "HEAD")) {
+          if (pathname !== "/") {
+            const staticRes = serveStaticFile(join(dashDir, pathname));
+            if (staticRes) return staticRes;
+          }
+          // SPA fallback — serve index.html
+          const indexRes = serveStaticFile(join(dashDir, "index.html"));
+          if (indexRes) return indexRes;
+        }
         return errorResponse("Not found", 404);
       }
 

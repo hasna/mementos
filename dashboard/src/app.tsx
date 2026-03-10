@@ -6,7 +6,7 @@ import { StatsView } from "@/components/stats-view";
 import { SearchBar } from "@/components/search-bar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import type { Memory, Agent, Project, MemoryStats } from "@/types";
+import type { MemoryStats } from "@/types";
 import { BrainCircuit, Users, FolderKanban, BarChart3 } from "lucide-react";
 
 const API_BASE = "/api";
@@ -16,7 +16,6 @@ export function App() {
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [projects, setProjects] = React.useState<Project[]>([]);
   const [stats, setStats] = React.useState<MemoryStats | null>(null);
-  const [selectedMemory, setSelectedMemory] = React.useState<Memory | null>(null);
   const [activeTab, setActiveTab] = React.useState("memories");
 
   const fetchMemories = React.useCallback(async () => {
@@ -118,16 +117,16 @@ export function App() {
           </div>
 
           <TabsContent value="memories">
-            <MemoryTable memories={memories} selectedMemory={selectedMemory} onSelectMemory={setSelectedMemory} />
+            <MemoryTable data={memories} />
           </TabsContent>
           <TabsContent value="agents">
-            <AgentsTable agents={agents} />
+            <AgentsTable data={agents} />
           </TabsContent>
           <TabsContent value="projects">
-            <ProjectsTable projects={projects} />
+            <ProjectsTable data={projects} />
           </TabsContent>
           <TabsContent value="stats">
-            <StatsView stats={stats} />
+            {stats && <StatsView stats={stats} agentCount={agents.length} projectCount={projects.length} />}
           </TabsContent>
         </Tabs>
       </main>
