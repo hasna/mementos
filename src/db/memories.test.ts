@@ -1,0 +1,918 @@
+// Set in-memory DB before any imports
+process.env["MEMENTOS_DB_PATH"] = ":memory:";
+
+import { describe, it, expect, beforeEach } from "bun:test";
+import { Database } from "bun:sqlite";
+import {
+  createMemory,
+  getMemory,
+  getMemoryByKey,
+  listMemories,
+  updateMemory,
+  deleteMemory,
+  bulkDeleteMemories,
+  touchMemory,
+  cleanExpiredMemories,
+} from "./memories.js";
+import {
+  MemoryNotFoundError,
+  VersionConflictError,
+} from "../types/index.js";
+import type {
+  CreateMemoryInput,
+  MemoryScope,
+  MemoryCategory,
+  MemorySource,
+} from "../types/index.js";
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function freshDb(): Database {
+  const db = new Database(":memory:", { create: true });
+  db.run("PRAGMA journal_mode = WAL");
+  db.run("PRAGMA busy_timeout = 5000");
+  db.run("PRAGMA foreign_keys = ON");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      path TEXT UNIQUE NOT NULL,
+      description TEXT,
+      memory_prefix TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS agents (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      description TEXT,
+      role TEXT DEFAULT 'agent',
+      metadata TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS memories (
+      id TEXT PRIMARY KEY,
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      category TEXT NOT NULL DEFAULT 'knowledge' CHECK(category IN ('preference', 'fact', 'knowledge', 'history')),
+      scope TEXT NOT NULL DEFAULT 'private' CHECK(scope IN ('global', 'shared', 'private')),
+      summary TEXT,
+      tags TEXT DEFAULT '[]',
+      importance INTEGER NOT NULL DEFAULT 5 CHECK(importance >= 1 AND importance <= 10),
+      source TEXT NOT NULL DEFAULT 'agent' CHECK(source IN ('user', 'agent', 'system', 'auto', 'imported')),
+      status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'expired')),
+      pinned INTEGER NOT NULL DEFAULT 0,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+      session_id TEXT,
+      metadata TEXT DEFAULT '{}',
+      access_count INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,
+      expires_at TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      accessed_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS memory_tags (
+      memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+      tag TEXT NOT NULL,
+      PRIMARY KEY (memory_id, tag)
+    );
+    CREATE TABLE IF NOT EXISTS sessions (
+      id TEXT PRIMARY KEY,
+      agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+      project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+      started_at TEXT NOT NULL DEFAULT (datetime('now')),
+      last_activity TEXT NOT NULL DEFAULT (datetime('now')),
+      metadata TEXT DEFAULT '{}'
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_key
+      ON memories(key, scope, COALESCE(agent_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''));
+    CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
+    CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag);
+    CREATE INDEX IF NOT EXISTS idx_memory_tags_memory ON memory_tags(memory_id);
+  `);
+
+  return db;
+}
+
+function seedAgent(db: Database, id: string, name: string): void {
+  db.run(
+    "INSERT INTO agents (id, name) VALUES (?, ?)",
+    [id, name]
+  );
+}
+
+function seedProject(db: Database, id: string, name: string, path: string): void {
+  db.run(
+    "INSERT INTO projects (id, name, path) VALUES (?, ?, ?)",
+    [id, name, path]
+  );
+}
+
+function getTagsForMemory(db: Database, memoryId: string): string[] {
+  const rows = db
+    .query("SELECT tag FROM memory_tags WHERE memory_id = ? ORDER BY tag")
+    .all(memoryId) as { tag: string }[];
+  return rows.map((r) => r.tag);
+}
+
+// ============================================================================
+// createMemory
+// ============================================================================
+
+describe("createMemory", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("creates with minimal input (key+value only, check defaults)", () => {
+    const mem = createMemory({ key: "lang", value: "TypeScript" }, "merge", db);
+    expect(mem.key).toBe("lang");
+    expect(mem.value).toBe("TypeScript");
+    expect(mem.category).toBe("knowledge");
+    expect(mem.scope).toBe("private");
+    expect(mem.importance).toBe(5);
+    expect(mem.source).toBe("agent");
+    expect(mem.status).toBe("active");
+    expect(mem.pinned).toBe(false);
+    expect(mem.version).toBe(1);
+    expect(mem.access_count).toBe(0);
+    expect(mem.tags).toEqual([]);
+    expect(mem.metadata).toEqual({});
+    expect(mem.summary).toBeNull();
+    expect(mem.agent_id).toBeNull();
+    expect(mem.project_id).toBeNull();
+    expect(mem.session_id).toBeNull();
+    expect(mem.expires_at).toBeNull();
+    expect(mem.accessed_at).toBeNull();
+    expect(mem.id).toBeTruthy();
+    expect(mem.created_at).toBeTruthy();
+    expect(mem.updated_at).toBeTruthy();
+  });
+
+  it("creates with all fields", () => {
+    seedAgent(db, "agent-1", "agent1");
+    seedProject(db, "proj-1", "my-proj", "/tmp/proj");
+
+    const mem = createMemory(
+      {
+        key: "editor",
+        value: "vim",
+        category: "preference",
+        scope: "shared",
+        summary: "User prefers vim",
+        tags: ["tools", "editor"],
+        importance: 8,
+        source: "user",
+        agent_id: "agent-1",
+        project_id: "proj-1",
+        session_id: "sess-1",
+        metadata: { reason: "user stated" },
+        expires_at: "2099-01-01T00:00:00.000Z",
+      },
+      "merge",
+      db
+    );
+
+    expect(mem.key).toBe("editor");
+    expect(mem.value).toBe("vim");
+    expect(mem.category).toBe("preference");
+    expect(mem.scope).toBe("shared");
+    expect(mem.summary).toBe("User prefers vim");
+    expect(mem.tags).toEqual(["tools", "editor"]);
+    expect(mem.importance).toBe(8);
+    expect(mem.source).toBe("user");
+    expect(mem.agent_id).toBe("agent-1");
+    expect(mem.project_id).toBe("proj-1");
+    expect(mem.session_id).toBe("sess-1");
+    expect(mem.metadata).toEqual({ reason: "user stated" });
+    expect(mem.expires_at).toBe("2099-01-01T00:00:00.000Z");
+  });
+
+  it("creates with tags (verify memory_tags join table)", () => {
+    const mem = createMemory(
+      { key: "t", value: "v", tags: ["alpha", "beta", "gamma"] },
+      "merge",
+      db
+    );
+    const dbTags = getTagsForMemory(db, mem.id);
+    expect(dbTags).toEqual(["alpha", "beta", "gamma"]);
+    expect(mem.tags).toEqual(["alpha", "beta", "gamma"]);
+  });
+
+  it("creates with metadata", () => {
+    const meta = { nested: { deep: true }, count: 42 };
+    const mem = createMemory(
+      { key: "m", value: "v", metadata: meta },
+      "merge",
+      db
+    );
+    expect(mem.metadata).toEqual(meta);
+  });
+
+  it("creates with TTL (verify expires_at computed)", () => {
+    const before = Date.now();
+    const mem = createMemory(
+      { key: "ttl-test", value: "v", ttl_ms: 60_000 },
+      "merge",
+      db
+    );
+    const after = Date.now();
+    expect(mem.expires_at).not.toBeNull();
+    const expiresMs = new Date(mem.expires_at!).getTime();
+    expect(expiresMs).toBeGreaterThanOrEqual(before + 60_000 - 100);
+    expect(expiresMs).toBeLessThanOrEqual(after + 60_000 + 100);
+  });
+
+  it("prefers explicit expires_at over ttl_ms", () => {
+    const explicit = "2099-06-15T12:00:00.000Z";
+    const mem = createMemory(
+      { key: "exp", value: "v", expires_at: explicit, ttl_ms: 1000 },
+      "merge",
+      db
+    );
+    expect(mem.expires_at).toBe(explicit);
+  });
+
+  it("creates with scope global", () => {
+    const mem = createMemory({ key: "g", value: "v", scope: "global" }, "merge", db);
+    expect(mem.scope).toBe("global");
+  });
+
+  it("creates with scope shared", () => {
+    const mem = createMemory({ key: "s", value: "v", scope: "shared" }, "merge", db);
+    expect(mem.scope).toBe("shared");
+  });
+
+  it("creates with scope private", () => {
+    const mem = createMemory({ key: "p", value: "v", scope: "private" }, "merge", db);
+    expect(mem.scope).toBe("private");
+  });
+
+  it("creates with category preference", () => {
+    const mem = createMemory({ key: "c1", value: "v", category: "preference" }, "merge", db);
+    expect(mem.category).toBe("preference");
+  });
+
+  it("creates with category fact", () => {
+    const mem = createMemory({ key: "c2", value: "v", category: "fact" }, "merge", db);
+    expect(mem.category).toBe("fact");
+  });
+
+  it("creates with category knowledge", () => {
+    const mem = createMemory({ key: "c3", value: "v", category: "knowledge" }, "merge", db);
+    expect(mem.category).toBe("knowledge");
+  });
+
+  it("creates with category history", () => {
+    const mem = createMemory({ key: "c4", value: "v", category: "history" }, "merge", db);
+    expect(mem.category).toBe("history");
+  });
+
+  it("creates with source user", () => {
+    const mem = createMemory({ key: "s1", value: "v", source: "user" }, "merge", db);
+    expect(mem.source).toBe("user");
+  });
+
+  it("creates with source agent", () => {
+    const mem = createMemory({ key: "s2", value: "v", source: "agent" }, "merge", db);
+    expect(mem.source).toBe("agent");
+  });
+
+  it("creates with source system", () => {
+    const mem = createMemory({ key: "s3", value: "v", source: "system" }, "merge", db);
+    expect(mem.source).toBe("system");
+  });
+
+  it("creates with source auto", () => {
+    const mem = createMemory({ key: "s4", value: "v", source: "auto" }, "merge", db);
+    expect(mem.source).toBe("auto");
+  });
+
+  it("creates with source imported", () => {
+    const mem = createMemory({ key: "s5", value: "v", source: "imported" }, "merge", db);
+    expect(mem.source).toBe("imported");
+  });
+
+  it("dedup mode merge: updates existing on same key+scope+agent+project+session", () => {
+    const first = createMemory(
+      { key: "dup", value: "old", scope: "global", importance: 3, tags: ["a"] },
+      "merge",
+      db
+    );
+    const second = createMemory(
+      { key: "dup", value: "new", scope: "global", importance: 7, tags: ["b"] },
+      "merge",
+      db
+    );
+
+    // Same ID — it was updated in place
+    expect(second.id).toBe(first.id);
+    expect(second.value).toBe("new");
+    expect(second.importance).toBe(7);
+    expect(second.version).toBe(2);
+    // Tags updated
+    const dbTags = getTagsForMemory(db, first.id);
+    expect(dbTags).toEqual(["b"]);
+  });
+
+  it("dedup mode create: inserts new record even with same key", () => {
+    const first = createMemory(
+      { key: "dup2", value: "old", scope: "global" },
+      "create",
+      db
+    );
+    // "create" mode skips the dedup check and tries to INSERT.
+    // Because of the UNIQUE index, this will throw — that's valid behavior.
+    // Or it succeeds if the combination differs. Let's use a different scope to prove "create" doesn't merge.
+    const second = createMemory(
+      { key: "dup2", value: "new", scope: "shared" },
+      "create",
+      db
+    );
+    expect(second.id).not.toBe(first.id);
+    expect(first.value).toBe("old");
+    expect(second.value).toBe("new");
+  });
+
+  it("dedup mode create: always inserts new when key combo differs", () => {
+    seedAgent(db, "a1", "agent-a1");
+    const first = createMemory(
+      { key: "k", value: "v1", agent_id: "a1" },
+      "create",
+      db
+    );
+    // Same key, no agent_id — different combo
+    const second = createMemory(
+      { key: "k", value: "v2" },
+      "create",
+      db
+    );
+    expect(first.id).not.toBe(second.id);
+  });
+});
+
+// ============================================================================
+// getMemory
+// ============================================================================
+
+describe("getMemory", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("gets by full ID", () => {
+    const created = createMemory({ key: "x", value: "y" }, "merge", db);
+    const found = getMemory(created.id, db);
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(created.id);
+    expect(found!.key).toBe("x");
+    expect(found!.value).toBe("y");
+  });
+
+  it("returns null for non-existent ID", () => {
+    const found = getMemory("does-not-exist-id", db);
+    expect(found).toBeNull();
+  });
+});
+
+// ============================================================================
+// getMemoryByKey
+// ============================================================================
+
+describe("getMemoryByKey", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("gets by exact key", () => {
+    createMemory({ key: "mykey", value: "myval" }, "merge", db);
+    const found = getMemoryByKey("mykey", undefined, undefined, undefined, undefined, db);
+    expect(found).not.toBeNull();
+    expect(found!.key).toBe("mykey");
+    expect(found!.value).toBe("myval");
+  });
+
+  it("filters by scope", () => {
+    createMemory({ key: "scoped", value: "global-val", scope: "global" }, "merge", db);
+    createMemory({ key: "scoped", value: "shared-val", scope: "shared" }, "merge", db);
+
+    const global = getMemoryByKey("scoped", "global", undefined, undefined, undefined, db);
+    expect(global).not.toBeNull();
+    expect(global!.value).toBe("global-val");
+
+    const shared = getMemoryByKey("scoped", "shared", undefined, undefined, undefined, db);
+    expect(shared).not.toBeNull();
+    expect(shared!.value).toBe("shared-val");
+  });
+
+  it("filters by agent_id", () => {
+    seedAgent(db, "ag1", "agent-ag1");
+    seedAgent(db, "ag2", "agent-ag2");
+    createMemory({ key: "ak", value: "v1", agent_id: "ag1" }, "merge", db);
+    createMemory({ key: "ak", value: "v2", agent_id: "ag2" }, "merge", db);
+
+    const found = getMemoryByKey("ak", undefined, "ag1", undefined, undefined, db);
+    expect(found).not.toBeNull();
+    expect(found!.value).toBe("v1");
+  });
+
+  it("filters by project_id", () => {
+    seedProject(db, "p1", "proj1", "/p1");
+    seedProject(db, "p2", "proj2", "/p2");
+    createMemory({ key: "pk", value: "v1", project_id: "p1" }, "merge", db);
+    createMemory({ key: "pk", value: "v2", project_id: "p2" }, "merge", db);
+
+    const found = getMemoryByKey("pk", undefined, undefined, "p1", undefined, db);
+    expect(found).not.toBeNull();
+    expect(found!.value).toBe("v1");
+  });
+
+  it("returns null for non-existent key", () => {
+    const found = getMemoryByKey("nope", undefined, undefined, undefined, undefined, db);
+    expect(found).toBeNull();
+  });
+
+  it("returns highest importance when multiple matches", () => {
+    // Same key, same scope, but different agent => two rows in DB
+    seedAgent(db, "a1", "agentA1");
+    seedAgent(db, "a2", "agentA2");
+    createMemory({ key: "hi", value: "low", importance: 2, agent_id: "a1" }, "merge", db);
+    createMemory({ key: "hi", value: "high", importance: 9, agent_id: "a2" }, "merge", db);
+
+    // No agent filter — should return highest importance
+    const found = getMemoryByKey("hi", undefined, undefined, undefined, undefined, db);
+    expect(found).not.toBeNull();
+    expect(found!.value).toBe("high");
+    expect(found!.importance).toBe(9);
+  });
+});
+
+// ============================================================================
+// listMemories
+// ============================================================================
+
+describe("listMemories", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("lists all active memories", () => {
+    createMemory({ key: "a", value: "1" }, "merge", db);
+    createMemory({ key: "b", value: "2" }, "merge", db);
+    createMemory({ key: "c", value: "3" }, "merge", db);
+
+    const all = listMemories(undefined, db);
+    expect(all.length).toBe(3);
+  });
+
+  it("filters by scope", () => {
+    createMemory({ key: "a", value: "1", scope: "global" }, "merge", db);
+    createMemory({ key: "b", value: "2", scope: "shared" }, "merge", db);
+    createMemory({ key: "c", value: "3", scope: "private" }, "merge", db);
+
+    const globals = listMemories({ scope: "global" }, db);
+    expect(globals.length).toBe(1);
+    expect(globals[0]!.scope).toBe("global");
+  });
+
+  it("filters by category", () => {
+    createMemory({ key: "a", value: "1", category: "fact" }, "merge", db);
+    createMemory({ key: "b", value: "2", category: "preference" }, "merge", db);
+
+    const facts = listMemories({ category: "fact" }, db);
+    expect(facts.length).toBe(1);
+    expect(facts[0]!.category).toBe("fact");
+  });
+
+  it("filters by multiple scopes (array)", () => {
+    createMemory({ key: "a", value: "1", scope: "global" }, "merge", db);
+    createMemory({ key: "b", value: "2", scope: "shared" }, "merge", db);
+    createMemory({ key: "c", value: "3", scope: "private" }, "merge", db);
+
+    const result = listMemories({ scope: ["global", "shared"] }, db);
+    expect(result.length).toBe(2);
+    const scopes = result.map((m) => m.scope).sort();
+    expect(scopes).toEqual(["global", "shared"]);
+  });
+
+  it("filters by tags (AND match)", () => {
+    createMemory({ key: "a", value: "1", tags: ["x", "y"] }, "merge", db);
+    createMemory({ key: "b", value: "2", tags: ["x"] }, "merge", db);
+    createMemory({ key: "c", value: "3", tags: ["y"] }, "merge", db);
+
+    // Must have BOTH x and y
+    const result = listMemories({ tags: ["x", "y"] }, db);
+    expect(result.length).toBe(1);
+    expect(result[0]!.key).toBe("a");
+  });
+
+  it("filters by min_importance", () => {
+    createMemory({ key: "low", value: "v", importance: 2 }, "merge", db);
+    createMemory({ key: "med", value: "v", importance: 5 }, "merge", db);
+    createMemory({ key: "high", value: "v", importance: 9 }, "merge", db);
+
+    const result = listMemories({ min_importance: 5 }, db);
+    expect(result.length).toBe(2);
+    expect(result.every((m) => m.importance >= 5)).toBe(true);
+  });
+
+  it("filters by pinned", () => {
+    const m1 = createMemory({ key: "a", value: "v" }, "merge", db);
+    const m2 = createMemory({ key: "b", value: "v" }, "merge", db);
+    // Pin one
+    updateMemory(m1.id, { pinned: true, version: 1 }, db);
+
+    const pinned = listMemories({ pinned: true }, db);
+    expect(pinned.length).toBe(1);
+    expect(pinned[0]!.key).toBe("a");
+
+    const notPinned = listMemories({ pinned: false }, db);
+    expect(notPinned.length).toBe(1);
+    expect(notPinned[0]!.key).toBe("b");
+  });
+
+  it("filters by agent_id", () => {
+    seedAgent(db, "ag1", "agentListA");
+    createMemory({ key: "a", value: "1", agent_id: "ag1" }, "merge", db);
+    createMemory({ key: "b", value: "2" }, "merge", db);
+
+    const result = listMemories({ agent_id: "ag1" }, db);
+    expect(result.length).toBe(1);
+    expect(result[0]!.agent_id).toBe("ag1");
+  });
+
+  it("filters by project_id", () => {
+    seedProject(db, "p1", "proj-list", "/pl");
+    createMemory({ key: "a", value: "1", project_id: "p1" }, "merge", db);
+    createMemory({ key: "b", value: "2" }, "merge", db);
+
+    const result = listMemories({ project_id: "p1" }, db);
+    expect(result.length).toBe(1);
+    expect(result[0]!.project_id).toBe("p1");
+  });
+
+  it("filters by session_id", () => {
+    createMemory({ key: "a", value: "1", session_id: "sess-x" }, "merge", db);
+    createMemory({ key: "b", value: "2" }, "merge", db);
+
+    const result = listMemories({ session_id: "sess-x" }, db);
+    expect(result.length).toBe(1);
+    expect(result[0]!.session_id).toBe("sess-x");
+  });
+
+  it("filters by status", () => {
+    const m = createMemory({ key: "a", value: "1" }, "merge", db);
+    createMemory({ key: "b", value: "2" }, "merge", db);
+    updateMemory(m.id, { status: "archived", version: 1 }, db);
+
+    const archived = listMemories({ status: "archived" }, db);
+    expect(archived.length).toBe(1);
+    expect(archived[0]!.status).toBe("archived");
+  });
+
+  it("filters by search term", () => {
+    createMemory({ key: "color-pref", value: "blue" }, "merge", db);
+    createMemory({ key: "food-pref", value: "sushi" }, "merge", db);
+    createMemory({ key: "other", value: "irrelevant", summary: "color info" }, "merge", db);
+
+    const result = listMemories({ search: "color" }, db);
+    expect(result.length).toBe(2);
+    const keys = result.map((m) => m.key).sort();
+    expect(keys).toEqual(["color-pref", "other"]);
+  });
+
+  it("respects limit", () => {
+    for (let i = 0; i < 10; i++) {
+      createMemory({ key: `k${i}`, value: `v${i}`, scope: "global" }, "create", db);
+    }
+    const result = listMemories({ limit: 3 }, db);
+    expect(result.length).toBe(3);
+  });
+
+  it("respects offset", () => {
+    for (let i = 0; i < 5; i++) {
+      createMemory({ key: `k${i}`, value: `v${i}`, scope: "global", importance: 5 }, "create", db);
+    }
+    // SQLite requires LIMIT when using OFFSET, so provide both
+    const withOffset = listMemories({ limit: 100, offset: 2 }, db);
+    expect(withOffset.length).toBe(3);
+  });
+
+  it("default: only active memories", () => {
+    const m = createMemory({ key: "a", value: "1" }, "merge", db);
+    createMemory({ key: "b", value: "2" }, "merge", db);
+    updateMemory(m.id, { status: "archived", version: 1 }, db);
+
+    const result = listMemories(undefined, db);
+    expect(result.length).toBe(1);
+    expect(result[0]!.key).toBe("b");
+  });
+
+  it("sorts by importance DESC then created_at DESC", () => {
+    createMemory({ key: "low", value: "v", importance: 1 }, "merge", db);
+    createMemory({ key: "high", value: "v", importance: 10 }, "merge", db);
+    createMemory({ key: "mid", value: "v", importance: 5 }, "merge", db);
+
+    const result = listMemories(undefined, db);
+    expect(result[0]!.key).toBe("high");
+    expect(result[1]!.key).toBe("mid");
+    expect(result[2]!.key).toBe("low");
+  });
+});
+
+// ============================================================================
+// updateMemory
+// ============================================================================
+
+describe("updateMemory", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("updates value", () => {
+    const m = createMemory({ key: "k", value: "old" }, "merge", db);
+    const updated = updateMemory(m.id, { value: "new", version: 1 }, db);
+    expect(updated.value).toBe("new");
+  });
+
+  it("updates importance", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    const updated = updateMemory(m.id, { importance: 10, version: 1 }, db);
+    expect(updated.importance).toBe(10);
+  });
+
+  it("updates tags (and memory_tags table)", () => {
+    const m = createMemory({ key: "k", value: "v", tags: ["old"] }, "merge", db);
+    expect(getTagsForMemory(db, m.id)).toEqual(["old"]);
+
+    const updated = updateMemory(m.id, { tags: ["new1", "new2"], version: 1 }, db);
+    expect(updated.tags).toEqual(["new1", "new2"]);
+    expect(getTagsForMemory(db, m.id)).toEqual(["new1", "new2"]);
+  });
+
+  it("updates summary", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    const updated = updateMemory(m.id, { summary: "a summary", version: 1 }, db);
+    expect(updated.summary).toBe("a summary");
+  });
+
+  it("updates summary to null", () => {
+    const m = createMemory({ key: "k", value: "v", summary: "old" }, "merge", db);
+    const updated = updateMemory(m.id, { summary: null, version: 1 }, db);
+    expect(updated.summary).toBeNull();
+  });
+
+  it("updates pinned", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    expect(m.pinned).toBe(false);
+    const updated = updateMemory(m.id, { pinned: true, version: 1 }, db);
+    expect(updated.pinned).toBe(true);
+  });
+
+  it("updates category", () => {
+    const m = createMemory({ key: "k", value: "v", category: "fact" }, "merge", db);
+    const updated = updateMemory(m.id, { category: "preference", version: 1 }, db);
+    expect(updated.category).toBe("preference");
+  });
+
+  it("updates status", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    const updated = updateMemory(m.id, { status: "archived", version: 1 }, db);
+    expect(updated.status).toBe("archived");
+  });
+
+  it("updates metadata", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    const updated = updateMemory(m.id, { metadata: { foo: "bar" }, version: 1 }, db);
+    expect(updated.metadata).toEqual({ foo: "bar" });
+  });
+
+  it("updates expires_at", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    const updated = updateMemory(
+      m.id,
+      { expires_at: "2099-12-31T23:59:59.000Z", version: 1 },
+      db
+    );
+    expect(updated.expires_at).toBe("2099-12-31T23:59:59.000Z");
+  });
+
+  it("clears expires_at with null", () => {
+    const m = createMemory(
+      { key: "k", value: "v", expires_at: "2099-01-01T00:00:00.000Z" },
+      "merge",
+      db
+    );
+    const updated = updateMemory(m.id, { expires_at: null, version: 1 }, db);
+    expect(updated.expires_at).toBeNull();
+  });
+
+  it("increments version", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    expect(m.version).toBe(1);
+
+    const u1 = updateMemory(m.id, { value: "v2", version: 1 }, db);
+    expect(u1.version).toBe(2);
+
+    const u2 = updateMemory(m.id, { value: "v3", version: 2 }, db);
+    expect(u2.version).toBe(3);
+  });
+
+  it("throws VersionConflictError on wrong version", () => {
+    const m = createMemory({ key: "k", value: "v" }, "merge", db);
+    expect(() => {
+      updateMemory(m.id, { value: "new", version: 99 }, db);
+    }).toThrow(VersionConflictError);
+  });
+
+  it("throws MemoryNotFoundError for bad ID", () => {
+    expect(() => {
+      updateMemory("nonexistent", { value: "x", version: 1 }, db);
+    }).toThrow(MemoryNotFoundError);
+  });
+
+  it("partial update (only one field)", () => {
+    const m = createMemory(
+      { key: "k", value: "orig", importance: 3, category: "fact" },
+      "merge",
+      db
+    );
+    const updated = updateMemory(m.id, { importance: 8, version: 1 }, db);
+    // Only importance changed
+    expect(updated.importance).toBe(8);
+    // Other fields preserved
+    expect(updated.value).toBe("orig");
+    expect(updated.category).toBe("fact");
+  });
+
+  it("updates scope", () => {
+    const m = createMemory({ key: "k", value: "v", scope: "private" }, "merge", db);
+    const updated = updateMemory(m.id, { scope: "global", version: 1 }, db);
+    expect(updated.scope).toBe("global");
+  });
+});
+
+// ============================================================================
+// deleteMemory
+// ============================================================================
+
+describe("deleteMemory", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("deletes existing memory", () => {
+    const m = createMemory({ key: "del", value: "v" }, "merge", db);
+    const result = deleteMemory(m.id, db);
+    expect(result).toBe(true);
+    expect(getMemory(m.id, db)).toBeNull();
+  });
+
+  it("returns false for non-existent", () => {
+    const result = deleteMemory("ghost-id", db);
+    expect(result).toBe(false);
+  });
+
+  it("cascades to memory_tags", () => {
+    const m = createMemory({ key: "del", value: "v", tags: ["a", "b"] }, "merge", db);
+    expect(getTagsForMemory(db, m.id).length).toBe(2);
+
+    deleteMemory(m.id, db);
+    expect(getTagsForMemory(db, m.id).length).toBe(0);
+  });
+});
+
+// ============================================================================
+// bulkDeleteMemories
+// ============================================================================
+
+describe("bulkDeleteMemories", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("deletes multiple", () => {
+    const m1 = createMemory({ key: "a", value: "1" }, "merge", db);
+    const m2 = createMemory({ key: "b", value: "2" }, "merge", db);
+    const m3 = createMemory({ key: "c", value: "3" }, "merge", db);
+
+    const count = bulkDeleteMemories([m1.id, m2.id], db);
+    expect(count).toBe(2);
+    expect(getMemory(m1.id, db)).toBeNull();
+    expect(getMemory(m2.id, db)).toBeNull();
+    // m3 still exists
+    expect(getMemory(m3.id, db)).not.toBeNull();
+  });
+
+  it("returns count", () => {
+    const m1 = createMemory({ key: "x", value: "v" }, "merge", db);
+    const count = bulkDeleteMemories([m1.id, "nonexistent"], db);
+    expect(count).toBe(1);
+  });
+
+  it("handles empty array", () => {
+    const count = bulkDeleteMemories([], db);
+    expect(count).toBe(0);
+  });
+});
+
+// ============================================================================
+// touchMemory
+// ============================================================================
+
+describe("touchMemory", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("increments access_count", () => {
+    const m = createMemory({ key: "t", value: "v" }, "merge", db);
+    expect(m.access_count).toBe(0);
+
+    touchMemory(m.id, db);
+    const after1 = getMemory(m.id, db)!;
+    expect(after1.access_count).toBe(1);
+
+    touchMemory(m.id, db);
+    const after2 = getMemory(m.id, db)!;
+    expect(after2.access_count).toBe(2);
+  });
+
+  it("sets accessed_at", () => {
+    const m = createMemory({ key: "t", value: "v" }, "merge", db);
+    expect(m.accessed_at).toBeNull();
+
+    touchMemory(m.id, db);
+    const after = getMemory(m.id, db)!;
+    expect(after.accessed_at).not.toBeNull();
+    expect(after.accessed_at!.length).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// cleanExpiredMemories
+// ============================================================================
+
+describe("cleanExpiredMemories", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("removes past expires_at", () => {
+    createMemory(
+      { key: "expired", value: "v", expires_at: "2000-01-01T00:00:00.000Z" },
+      "merge",
+      db
+    );
+    createMemory({ key: "alive", value: "v" }, "merge", db);
+
+    const removed = cleanExpiredMemories(db);
+    expect(removed).toBe(1);
+
+    const remaining = listMemories(undefined, db);
+    expect(remaining.length).toBe(1);
+    expect(remaining[0]!.key).toBe("alive");
+  });
+
+  it("keeps active (no expires_at)", () => {
+    createMemory({ key: "no-exp", value: "v" }, "merge", db);
+    const removed = cleanExpiredMemories(db);
+    expect(removed).toBe(0);
+    expect(listMemories(undefined, db).length).toBe(1);
+  });
+
+  it("keeps future expires_at", () => {
+    createMemory(
+      { key: "future", value: "v", expires_at: "2099-12-31T23:59:59.000Z" },
+      "merge",
+      db
+    );
+    const removed = cleanExpiredMemories(db);
+    expect(removed).toBe(0);
+    expect(listMemories(undefined, db).length).toBe(1);
+  });
+});

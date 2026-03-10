@@ -1,0 +1,392 @@
+// Set in-memory DB before any imports
+process.env["MEMENTOS_DB_PATH"] = ":memory:";
+
+import { describe, test, expect, beforeAll, afterAll } from "bun:test";
+
+const PORT = 19400 + Math.floor(Math.random() * 100);
+const BASE = `http://localhost:${PORT}`;
+
+let serverProc: ReturnType<typeof Bun.spawn>;
+
+beforeAll(async () => {
+  serverProc = Bun.spawn(
+    ["bun", "run", "src/server/index.ts", "--port", String(PORT)],
+    {
+      env: { ...process.env, MEMENTOS_DB_PATH: ":memory:" },
+      stdout: "pipe",
+      stderr: "pipe",
+      cwd: "/Users/hasna/Workspace/hasna/opensource/opensourcedev/open-mementos",
+    }
+  );
+  // Wait for server to start
+  let ready = false;
+  for (let i = 0; i < 30; i++) {
+    try {
+      const res = await fetch(`${BASE}/api/health`);
+      if (res.ok) { ready = true; break; }
+    } catch { /* not ready yet */ }
+    await Bun.sleep(200);
+  }
+  if (!ready) throw new Error("Server failed to start");
+});
+
+afterAll(() => {
+  serverProc.kill();
+});
+
+// ============================================================================
+// Helper
+// ============================================================================
+
+async function api(
+  path: string,
+  options?: RequestInit
+): Promise<{ status: number; data: any }> {
+  const res = await fetch(`${BASE}${path}`, {
+    headers: { "Content-Type": "application/json" },
+    ...options,
+  });
+  const data = await res.json();
+  return { status: res.status, data };
+}
+
+// ============================================================================
+// Health check
+// ============================================================================
+
+describe("Server health", () => {
+  test("GET /api/health returns ok", async () => {
+    const { status, data } = await api("/api/health");
+    expect(status).toBe(200);
+    expect(data.status).toBe("ok");
+  });
+});
+
+// ============================================================================
+// POST /api/memories — create memory
+// ============================================================================
+
+describe("POST /api/memories", () => {
+  test("creates a memory", async () => {
+    const { status, data } = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "rest-key", value: "rest-value", scope: "global" }),
+    });
+    expect(status).toBe(201);
+    expect(data.key).toBe("rest-key");
+    expect(data.value).toBe("rest-value");
+    expect(data.id).toBeDefined();
+  });
+
+  test("creates a memory with category and importance", async () => {
+    const { status, data } = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "fact-key",
+        value: "fact-value",
+        category: "fact",
+        scope: "global",
+        importance: 8,
+      }),
+    });
+    expect(status).toBe(201);
+    expect(data.category).toBe("fact");
+    expect(data.importance).toBe(8);
+  });
+
+  test("returns 400 for missing fields", async () => {
+    const { status } = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "no-value" }),
+    });
+    expect(status).toBe(400);
+  });
+
+  test("returns 400 for invalid JSON", async () => {
+    const res = await fetch(`${BASE}/api/memories`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not-json",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ============================================================================
+// GET /api/memories — list memories
+// ============================================================================
+
+describe("GET /api/memories", () => {
+  test("lists memories", async () => {
+    const { status, data } = await api("/api/memories");
+    expect(status).toBe(200);
+    expect(Array.isArray(data.memories)).toBe(true);
+    expect(typeof data.count).toBe("number");
+  });
+});
+
+// ============================================================================
+// GET /api/memories/:id — get single memory
+// ============================================================================
+
+describe("GET /api/memories/:id", () => {
+  test("gets a single memory by ID", async () => {
+    const createRes = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "get-key", value: "get-value" }),
+    });
+    const id = createRes.data.id;
+
+    const { status, data } = await api(`/api/memories/${id}`);
+    expect(status).toBe(200);
+    expect(data.key).toBe("get-key");
+  });
+
+  test("returns 404 for non-existent memory", async () => {
+    const { status, data } = await api(
+      "/api/memories/00000000-0000-0000-0000-000000000000"
+    );
+    expect(status).toBe(404);
+    expect(data.error).toBeDefined();
+  });
+});
+
+// ============================================================================
+// PATCH /api/memories/:id — update memory
+// ============================================================================
+
+describe("PATCH /api/memories/:id", () => {
+  test("updates a memory", async () => {
+    const createRes = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "patch-key", value: "old-value" }),
+    });
+    const id = createRes.data.id;
+
+    const { status, data } = await api(`/api/memories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value: "new-value", version: 1 }),
+    });
+    expect(status).toBe(200);
+    expect(data.value).toBe("new-value");
+    expect(data.version).toBe(2);
+  });
+
+  test("returns 400 when version is missing", async () => {
+    const createRes = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "patch-no-ver", value: "val" }),
+    });
+    const id = createRes.data.id;
+
+    const { status } = await api(`/api/memories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value: "new-val" }),
+    });
+    expect(status).toBe(400);
+  });
+
+  test("returns 409 on version conflict", async () => {
+    const createRes = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "patch-conflict", value: "val" }),
+    });
+    const id = createRes.data.id;
+
+    // First update succeeds
+    await api(`/api/memories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value: "updated", version: 1 }),
+    });
+
+    // Second update with stale version fails
+    const { status } = await api(`/api/memories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ value: "conflict", version: 1 }),
+    });
+    expect(status).toBe(409);
+  });
+});
+
+// ============================================================================
+// DELETE /api/memories/:id — delete memory
+// ============================================================================
+
+describe("DELETE /api/memories/:id", () => {
+  test("deletes a memory", async () => {
+    const createRes = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "delete-key", value: "delete-value" }),
+    });
+    const id = createRes.data.id;
+
+    const { status, data } = await api(`/api/memories/${id}`, {
+      method: "DELETE",
+    });
+    expect(status).toBe(200);
+    expect(data.deleted).toBe(true);
+
+    const getRes = await api(`/api/memories/${id}`);
+    expect(getRes.status).toBe(404);
+  });
+
+  test("returns 404 when deleting non-existent memory", async () => {
+    const { status } = await api(
+      "/api/memories/00000000-0000-0000-0000-000000000001",
+      { method: "DELETE" }
+    );
+    expect(status).toBe(404);
+  });
+});
+
+// ============================================================================
+// POST /api/memories/search — search
+// ============================================================================
+
+describe("POST /api/memories/search", () => {
+  test("returns search results", async () => {
+    await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "searchable-srv",
+        value: "searchable content",
+      }),
+    });
+
+    const { status, data } = await api("/api/memories/search", {
+      method: "POST",
+      body: JSON.stringify({ query: "searchable" }),
+    });
+    expect(status).toBe(200);
+    expect(Array.isArray(data.results)).toBe(true);
+    expect(data.count).toBeGreaterThanOrEqual(1);
+  });
+
+  test("returns 400 when query is missing", async () => {
+    const { status } = await api("/api/memories/search", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(status).toBe(400);
+  });
+});
+
+// ============================================================================
+// GET /api/memories/stats — statistics
+// ============================================================================
+
+describe("GET /api/memories/stats", () => {
+  test("returns stats object", async () => {
+    const { status, data } = await api("/api/memories/stats");
+    expect(status).toBe(200);
+    expect(typeof data.total).toBe("number");
+    expect(data.by_scope).toBeDefined();
+    expect(data.by_category).toBeDefined();
+    expect(data.by_status).toBeDefined();
+    expect(typeof data.pinned_count).toBe("number");
+    expect(typeof data.expired_count).toBe("number");
+  });
+});
+
+// ============================================================================
+// POST /api/agents — register agent
+// ============================================================================
+
+describe("POST /api/agents", () => {
+  test("registers an agent", async () => {
+    const { status, data } = await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "rest-agent", description: "test" }),
+    });
+    expect(status).toBe(201);
+    expect(data.name).toBe("rest-agent");
+    expect(data.id).toBeDefined();
+  });
+
+  test("returns 400 when name is missing", async () => {
+    const { status } = await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    expect(status).toBe(400);
+  });
+});
+
+// ============================================================================
+// GET /api/agents — list agents
+// ============================================================================
+
+describe("GET /api/agents", () => {
+  test("lists agents", async () => {
+    const { status, data } = await api("/api/agents");
+    expect(status).toBe(200);
+    expect(Array.isArray(data.agents)).toBe(true);
+    expect(typeof data.count).toBe("number");
+  });
+});
+
+// ============================================================================
+// POST /api/projects — register project
+// ============================================================================
+
+describe("POST /api/projects", () => {
+  test("registers a project", async () => {
+    const { status, data } = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "test-project",
+        path: "/tmp/test-project-srv",
+        description: "A test project",
+      }),
+    });
+    expect(status).toBe(201);
+    expect(data.name).toBe("test-project");
+  });
+
+  test("returns 400 when name or path is missing", async () => {
+    const { status } = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: "missing-path" }),
+    });
+    expect(status).toBe(400);
+  });
+});
+
+// ============================================================================
+// POST /api/memories/clean — cleanup
+// ============================================================================
+
+describe("POST /api/memories/clean", () => {
+  test("runs cleanup", async () => {
+    const { status, data } = await api("/api/memories/clean", {
+      method: "POST",
+    });
+    expect(status).toBe(200);
+    expect(typeof data.cleaned).toBe("number");
+  });
+});
+
+// ============================================================================
+// 404 for unknown routes
+// ============================================================================
+
+describe("404 handling", () => {
+  test("returns 404 for unknown routes", async () => {
+    const { status, data } = await api("/api/nonexistent");
+    expect(status).toBe(404);
+    expect(data.error).toBe("Not found");
+  });
+});
+
+// ============================================================================
+// CORS preflight
+// ============================================================================
+
+describe("CORS", () => {
+  test("handles OPTIONS preflight", async () => {
+    const res = await fetch(`${BASE}/api/memories`, {
+      method: "OPTIONS",
+    });
+    expect(res.status).toBe(204);
+  });
+});
