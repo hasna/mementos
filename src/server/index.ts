@@ -617,6 +617,56 @@ export function startServer(port: number): void {
         return json({ status: "ok", version: "0.1.0" });
       }
 
+      // SSE stream for live memory updates
+      if (pathname === "/api/memories/stream" && req.method === "GET") {
+        const stream = new ReadableStream({
+          start(controller) {
+            const encoder = new TextEncoder();
+            let lastSeen = new Date().toISOString();
+
+            const send = (data: unknown) => {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify(data)}\n\n`));
+            };
+
+            // Send initial ping
+            send({ type: "connected", timestamp: lastSeen });
+
+            const interval = setInterval(() => {
+              try {
+                const db = getDatabase();
+                const rows = db
+                  .query(
+                    "SELECT * FROM memories WHERE updated_at > ? OR created_at > ? ORDER BY updated_at DESC LIMIT 50"
+                  )
+                  .all(lastSeen, lastSeen) as Record<string, unknown>[];
+
+                if (rows.length > 0) {
+                  lastSeen = new Date().toISOString();
+                  send({ type: "memories", data: rows, count: rows.length });
+                }
+              } catch {
+                // ignore polling errors
+              }
+            }, 1000);
+
+            // Cleanup on close
+            req.signal.addEventListener("abort", () => {
+              clearInterval(interval);
+              controller.close();
+            });
+          },
+        });
+
+        return new Response(stream, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            Connection: "keep-alive",
+            ...CORS_HEADERS,
+          },
+        });
+      }
+
       // Route matching
       const matched = matchRoute(req.method, pathname);
       if (!matched) {

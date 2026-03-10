@@ -39,6 +39,17 @@ function importanceColor(importance: number): string {
   return "text-gray-400";
 }
 
+function renderMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*(.+?)\*/g, "<em>$1</em>")
+    .replace(/`([^`]+)`/g, '<code class="rounded bg-muted px-1 py-0.5 text-xs">$1</code>')
+    .replace(/^- (.+)$/gm, '<li class="ml-4 list-disc">$1</li>')
+    .replace(/^(\d+)\. (.+)$/gm, '<li class="ml-4 list-decimal">$2</li>')
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" class="text-blue-400 underline" target="_blank">$1</a>')
+    .replace(/\n/g, "<br />");
+}
+
 interface MemoryDetailProps {
   memory: Memory;
   onBack: () => void;
@@ -77,9 +88,10 @@ export function MemoryDetail({ memory, onBack }: MemoryDetailProps) {
           {/* Value */}
           <div>
             <h3 className="text-sm font-medium mb-2">Value</h3>
-            <div className="rounded-lg border bg-muted/30 p-4 text-sm whitespace-pre-wrap break-words">
-              {memory.value}
-            </div>
+            <div
+              className="rounded-lg border bg-muted/30 p-4 text-sm break-words prose prose-invert prose-sm max-w-none"
+              dangerouslySetInnerHTML={{ __html: renderMarkdown(memory.value) }}
+            />
           </div>
 
           {/* Summary */}

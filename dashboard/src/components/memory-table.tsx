@@ -189,6 +189,7 @@ export function MemoryTable({ data }: MemoryTableProps) {
   const [scopeFilter, setScopeFilter] = React.useState<string>("all");
   const [categoryFilter, setCategoryFilter] = React.useState<string>("all");
   const [importanceFilter, setImportanceFilter] = React.useState<string>("all");
+  const [pinnedFilter, setPinnedFilter] = React.useState(false);
   const [selectedMemory, setSelectedMemory] = React.useState<Memory | null>(null);
 
   const columns = React.useMemo(() => makeColumns(), []);
@@ -209,8 +210,11 @@ export function MemoryTable({ data }: MemoryTableProps) {
         return true;
       });
     }
+    if (pinnedFilter) {
+      d = d.filter((m) => m.pinned);
+    }
     return d;
-  }, [data, scopeFilter, categoryFilter, importanceFilter]);
+  }, [data, scopeFilter, categoryFilter, importanceFilter, pinnedFilter]);
 
   const table = useReactTable({
     data: filteredData,
@@ -265,6 +269,16 @@ export function MemoryTable({ data }: MemoryTableProps) {
           </SelectContent>
         </Select>
 
+        <Button
+          variant={pinnedFilter ? "default" : "outline"}
+          size="sm"
+          className={`h-9 gap-1.5 ${pinnedFilter ? "bg-amber-600 hover:bg-amber-700 text-white" : ""}`}
+          onClick={() => setPinnedFilter(!pinnedFilter)}
+        >
+          <PinIcon className="size-3.5" />
+          Pinned
+        </Button>
+
         <Select value={importanceFilter} onValueChange={setImportanceFilter}>
           <SelectTrigger className="w-[150px] h-9">
             <SelectValue placeholder="Importance" />
@@ -301,7 +315,7 @@ export function MemoryTable({ data }: MemoryTableProps) {
               table.getRowModel().rows.map((row) => (
                 <TableRow
                   key={row.id}
-                  className="cursor-pointer"
+                  className={`cursor-pointer ${row.original.pinned ? "border-l-2 border-l-amber-500 bg-amber-500/5" : ""}`}
                   onClick={() => setSelectedMemory(row.original)}
                 >
                   {row.getVisibleCells().map((cell) => (
