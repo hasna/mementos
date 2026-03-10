@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import chalk from "chalk";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, accessSync, constants as fsConstants } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getDatabase, resolvePartialId } from "../db/database.js";
+import { getDatabase, getDbPath, resolvePartialId } from "../db/database.js";
 import {
   createMemory,
   getMemory,
@@ -14,6 +14,7 @@ import {
   deleteMemory,
   bulkDeleteMemories,
   touchMemory,
+  parseMemoryRow,
 } from "../db/memories.js";
 import { registerAgent, listAgents, updateAgent } from "../db/agents.js";
 import {
@@ -24,6 +25,7 @@ import {
 import { searchMemories } from "../lib/search.js";
 import { loadConfig } from "../lib/config.js";
 import { runCleanup } from "../lib/retention.js";
+import { MemoryInjector } from "../lib/injector.js";
 import type {
   Memory,
   MemoryCategory,
@@ -211,18 +213,94 @@ program
   .option("--summary <text>", "Brief summary")
   .option("--ttl <ms>", "Time-to-live in milliseconds", parseInt)
   .option("--source <src>", "Source: user, agent, system, auto, imported")
+  .option(
+    "--template <name>",
+    "Apply a template: correction, preference, decision, learning"
+  )
   .action((key: string, value: string, opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
+
+      // Template defaults — explicit flags override template values
+      const templates: Record<
+        string,
+        {
+          scope: MemoryScope;
+          category: MemoryCategory;
+          importance: number;
+          tags: string[];
+        }
+      > = {
+        correction: {
+          scope: "shared",
+          category: "knowledge",
+          importance: 9,
+          tags: ["correction"],
+        },
+        preference: {
+          scope: "global",
+          category: "preference",
+          importance: 8,
+          tags: [],
+        },
+        decision: {
+          scope: "shared",
+          category: "fact",
+          importance: 8,
+          tags: ["decision"],
+        },
+        learning: {
+          scope: "shared",
+          category: "knowledge",
+          importance: 7,
+          tags: ["learning"],
+        },
+      };
+
+      let templateDefaults:
+        | {
+            scope: MemoryScope;
+            category: MemoryCategory;
+            importance: number;
+            tags: string[];
+          }
+        | undefined;
+      if (opts.template) {
+        const tpl = templates[opts.template as string];
+        if (!tpl) {
+          console.error(
+            chalk.red(
+              `Unknown template: ${opts.template}. Valid templates: ${Object.keys(templates).join(", ")}`
+            )
+          );
+          process.exit(1);
+        }
+        templateDefaults = tpl;
+      }
+
+      const explicitTags = opts.tags
+        ? (opts.tags as string).split(",").map((t: string) => t.trim())
+        : undefined;
+
+      // Merge: explicit flags > template defaults > undefined
+      const mergedTags = explicitTags
+        ? explicitTags
+        : templateDefaults?.tags && templateDefaults.tags.length > 0
+          ? templateDefaults.tags
+          : undefined;
+
       const input: CreateMemoryInput = {
         key,
         value,
-        category: opts.category as MemoryCategory | undefined,
-        scope: opts.scope as MemoryScope | undefined,
-        importance: opts.importance,
-        tags: opts.tags
-          ? (opts.tags as string).split(",").map((t: string) => t.trim())
-          : undefined,
+        category:
+          (opts.category as MemoryCategory | undefined) ??
+          templateDefaults?.category,
+        scope:
+          (opts.scope as MemoryScope | undefined) ?? templateDefaults?.scope,
+        importance:
+          (opts.importance as number | undefined) ??
+          templateDefaults?.importance,
+        tags: mergedTags,
         summary: opts.summary as string | undefined,
         ttl_ms: opts.ttl,
         source: opts.source as MemorySource | undefined,
@@ -278,22 +356,42 @@ program
         projectId
       );
 
-      if (!memory) {
+      if (memory) {
+        touchMemory(memory.id);
         if (globalOpts.json) {
-          outputJson({ error: `No memory found for key: ${key}` });
+          outputJson(memory);
         } else {
-          console.error(chalk.yellow(`No memory found for key: ${key}`));
+          console.log(formatMemoryDetail(memory));
         }
-        process.exit(1);
+        return;
       }
 
-      touchMemory(memory.id);
+      // Fuzzy fallback: search for the key and show best match
+      const results = searchMemories(key, {
+        scope: opts.scope as MemoryScope | undefined,
+        agent_id: agentId,
+        project_id: projectId,
+        limit: 1,
+      });
+
+      if (results.length > 0) {
+        const best = results[0]!;
+        touchMemory(best.memory.id);
+        if (globalOpts.json) {
+          outputJson({ fuzzy_match: true, score: best.score, match_type: best.match_type, memory: best.memory });
+        } else {
+          console.log(chalk.yellow(`No exact match, showing best result (score: ${best.score.toFixed(2)}, match: ${best.match_type}):`));
+          console.log(formatMemoryDetail(best.memory));
+        }
+        return;
+      }
 
       if (globalOpts.json) {
-        outputJson(memory);
+        outputJson({ error: `No memory found for key: ${key}` });
       } else {
-        console.log(formatMemoryDetail(memory));
+        console.error(chalk.yellow(`No memory found for key: ${key}`));
       }
+      process.exit(1);
     } catch (e) {
       handleError(e);
     }
@@ -713,13 +811,21 @@ program
 // ============================================================================
 
 program
-  .command("import <file>")
-  .description("Import memories from a JSON file")
+  .command("import [file]")
+  .description("Import memories from a JSON file or stdin (use '-' or pipe data)")
   .option("--overwrite", "Overwrite existing memories (default: merge)")
-  .action((file: string, opts) => {
+  .action(async (file: string | undefined, opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
-      const raw = readFileSync(resolve(file), "utf-8");
+      let raw: string;
+      if (file === "-" || (!file && !process.stdin.isTTY)) {
+        raw = await Bun.stdin.text();
+      } else if (file) {
+        raw = readFileSync(resolve(file), "utf-8");
+      } else {
+        console.error(chalk.red("No input: provide a file path, use '-' for stdin, or pipe data."));
+        process.exit(1);
+      }
       const memories = JSON.parse(raw) as CreateMemoryInput[];
 
       if (!Array.isArray(memories)) {
@@ -1214,6 +1320,242 @@ program
             `${action}: ${affected} memor${affected === 1 ? "y" : "ies"} affected.`
           )
         );
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// doctor
+// ============================================================================
+
+program
+  .command("doctor")
+  .description("Run health checks on the mementos database")
+  .action(() => {
+    const globalOpts = program.opts<GlobalOpts>();
+    const checks: { name: string; status: "ok" | "warn" | "fail"; detail: string }[] = [];
+
+    // 1. Check DB file exists and is readable
+    const dbPath = getDbPath();
+    if (existsSync(dbPath)) {
+      try {
+        accessSync(dbPath, fsConstants.R_OK | fsConstants.W_OK);
+        checks.push({ name: "Database file", status: "ok", detail: dbPath });
+      } catch {
+        checks.push({ name: "Database file", status: "fail", detail: `Not readable/writable: ${dbPath}` });
+      }
+    } else {
+      checks.push({ name: "Database file", status: "fail", detail: `Not found: ${dbPath}` });
+    }
+
+    // 2. Check schema version
+    try {
+      const db = getDatabase();
+      const migRow = db.query("SELECT MAX(id) as max_id FROM _migrations").get() as { max_id: number | null } | null;
+      const schemaVersion = migRow?.max_id ?? 0;
+      checks.push({ name: "Schema version", status: schemaVersion > 0 ? "ok" : "warn", detail: `v${schemaVersion}` });
+
+      // 3. Count totals
+      const memCount = (db.query("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c;
+      const agentCount = (db.query("SELECT COUNT(*) as c FROM agents").get() as { c: number }).c;
+      const projectCount = (db.query("SELECT COUNT(*) as c FROM projects").get() as { c: number }).c;
+      checks.push({ name: "Memories", status: "ok", detail: String(memCount) });
+      checks.push({ name: "Agents", status: "ok", detail: String(agentCount) });
+      checks.push({ name: "Projects", status: "ok", detail: String(projectCount) });
+
+      // 4. Check for orphaned memory_tags
+      const orphanedTags = (db.query(
+        "SELECT COUNT(*) as c FROM memory_tags WHERE memory_id NOT IN (SELECT id FROM memories)"
+      ).get() as { c: number }).c;
+      checks.push({
+        name: "Orphaned tags",
+        status: orphanedTags > 0 ? "warn" : "ok",
+        detail: orphanedTags > 0 ? `${orphanedTags} orphaned tag(s)` : "None",
+      });
+
+      // 5. Check for expired memories still in DB
+      const expiredCount = (db.query(
+        "SELECT COUNT(*) as c FROM memories WHERE status != 'expired' AND expires_at IS NOT NULL AND expires_at < datetime('now')"
+      ).get() as { c: number }).c;
+      checks.push({
+        name: "Expired memories",
+        status: expiredCount > 0 ? "warn" : "ok",
+        detail: expiredCount > 0 ? `${expiredCount} expired but not cleaned up (run 'mementos clean')` : "None pending",
+      });
+    } catch (e) {
+      checks.push({ name: "Database connection", status: "fail", detail: e instanceof Error ? e.message : String(e) });
+    }
+
+    // Output
+    if (globalOpts.json) {
+      outputJson({ checks, healthy: checks.every((c) => c.status === "ok") });
+    } else {
+      console.log(chalk.bold("\nMementos Health Report\n"));
+      for (const check of checks) {
+        const icon =
+          check.status === "ok" ? chalk.green("\u2713") :
+          check.status === "warn" ? chalk.yellow("!") :
+          chalk.red("\u2717");
+        console.log(`  ${icon} ${chalk.bold(check.name)}: ${check.detail}`);
+      }
+      const healthy = checks.every((c) => c.status === "ok");
+      const warnings = checks.filter((c) => c.status === "warn").length;
+      const failures = checks.filter((c) => c.status === "fail").length;
+      console.log("");
+      if (healthy) {
+        console.log(chalk.green("  All checks passed."));
+      } else {
+        if (failures > 0) console.log(chalk.red(`  ${failures} check(s) failed.`));
+        if (warnings > 0) console.log(chalk.yellow(`  ${warnings} warning(s).`));
+      }
+      console.log("");
+    }
+  });
+
+// ============================================================================
+// show <id>
+// ============================================================================
+
+program
+  .command("show <id>")
+  .description("Show full detail of a memory by ID (supports partial IDs)")
+  .action((id: string) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const resolvedId = resolveMemoryId(id);
+      const memory = getMemory(resolvedId);
+
+      if (!memory) {
+        if (globalOpts.json) {
+          outputJson({ error: `Memory not found: ${id}` });
+        } else {
+          console.error(chalk.red(`Memory not found: ${id}`));
+        }
+        process.exit(1);
+      }
+
+      touchMemory(memory.id);
+
+      if (globalOpts.json) {
+        outputJson(memory);
+      } else {
+        console.log(formatMemoryDetail(memory));
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// history
+// ============================================================================
+
+program
+  .command("history")
+  .description("List memories sorted by most recently accessed")
+  .option("--limit <n>", "Max results (default: 20)", parseInt)
+  .action((opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const limit = (opts.limit as number | undefined) || 20;
+      const db = getDatabase();
+
+      const rows = db
+        .query(
+          "SELECT * FROM memories WHERE status = 'active' AND accessed_at IS NOT NULL ORDER BY accessed_at DESC LIMIT ?"
+        )
+        .all(limit) as Record<string, unknown>[];
+
+      const memories = rows.map(parseMemoryRow);
+
+      if (globalOpts.json) {
+        outputJson(memories);
+        return;
+      }
+
+      if (memories.length === 0) {
+        console.log(chalk.yellow("No recently accessed memories."));
+        return;
+      }
+
+      console.log(
+        chalk.bold(
+          `${memories.length} recently accessed memor${memories.length === 1 ? "y" : "ies"}:`
+        )
+      );
+      for (const m of memories) {
+        const id = chalk.dim(m.id.slice(0, 8));
+        const scope = colorScope(m.scope);
+        const cat = colorCategory(m.category);
+        const value =
+          m.value.length > 60 ? m.value.slice(0, 60) + "..." : m.value;
+        const accessed = m.accessed_at
+          ? chalk.dim(m.accessed_at)
+          : chalk.dim("never");
+        console.log(
+          `${id} [${scope}/${cat}] ${chalk.bold(m.key)} = ${value}  ${accessed}`
+        );
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// context
+// ============================================================================
+
+program
+  .command("context")
+  .description(
+    "Output formatted injection context (for piping into agent prompts)"
+  )
+  .option("--agent <name>", "Agent ID for private memory scope")
+  .option("--project <path>", "Project path for shared memory scope")
+  .option("--max-tokens <n>", "Token budget for context", parseInt)
+  .option(
+    "--categories <cats>",
+    "Comma-separated categories: preference, fact, knowledge, history"
+  )
+  .action((opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+      const projectPath =
+        (opts.project as string | undefined) || globalOpts.project;
+
+      let projectId: string | undefined;
+      if (projectPath) {
+        const project = getProject(resolve(projectPath));
+        if (project) projectId = project.id;
+      }
+
+      const categories = opts.categories
+        ? ((opts.categories as string).split(",").map((c: string) =>
+            c.trim()
+          ) as MemoryCategory[])
+        : undefined;
+
+      const injector = new MemoryInjector();
+      const context = injector.getInjectionContext({
+        agent_id: agentId,
+        project_id: projectId,
+        max_tokens: opts.maxTokens as number | undefined,
+        categories,
+      });
+
+      if (globalOpts.json) {
+        outputJson({
+          context,
+          injected_count: injector.getInjectedCount(),
+        });
+      } else if (context) {
+        console.log(context);
+      } else {
+        console.error(chalk.yellow("No memories matched the injection criteria."));
+        process.exit(1);
       }
     } catch (e) {
       handleError(e);
