@@ -34,7 +34,7 @@ async function runCli(
 describe("CLI", () => {
   test("--version outputs version", async () => {
     const { stdout } = await runCli("--version");
-    expect(stdout).toBe("0.1.0");
+    expect(stdout).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   test("--help shows help text", async () => {

@@ -92,3 +92,43 @@ export function listAgents(db?: Database): Agent[] {
     .all() as Record<string, unknown>[];
   return rows.map(parseAgentRow);
 }
+
+export function updateAgent(
+  id: string,
+  updates: { name?: string; description?: string; role?: string; metadata?: Record<string, unknown> },
+  db?: Database
+): Agent | null {
+  const d = db || getDatabase();
+  const agent = getAgent(id, d);
+  if (!agent) return null;
+
+  const timestamp = now();
+
+  // If name is being changed, check uniqueness
+  if (updates.name && updates.name !== agent.name) {
+    const existing = d
+      .query("SELECT id FROM agents WHERE name = ? AND id != ?")
+      .get(updates.name, agent.id) as Record<string, unknown> | null;
+    if (existing) {
+      throw new Error(`Agent name already taken: ${updates.name}`);
+    }
+    d.run("UPDATE agents SET name = ? WHERE id = ?", [updates.name, agent.id]);
+  }
+
+  if (updates.description !== undefined) {
+    d.run("UPDATE agents SET description = ? WHERE id = ?", [updates.description, agent.id]);
+  }
+
+  if (updates.role !== undefined) {
+    d.run("UPDATE agents SET role = ? WHERE id = ?", [updates.role, agent.id]);
+  }
+
+  if (updates.metadata !== undefined) {
+    d.run("UPDATE agents SET metadata = ? WHERE id = ?", [JSON.stringify(updates.metadata), agent.id]);
+  }
+
+  // Always update last_seen_at
+  d.run("UPDATE agents SET last_seen_at = ? WHERE id = ?", [timestamp, agent.id]);
+
+  return getAgent(agent.id, d)!;
+}

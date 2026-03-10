@@ -13,7 +13,7 @@ import {
   touchMemory,
   cleanExpiredMemories,
 } from "../db/memories.js";
-import { registerAgent, getAgent, listAgents } from "../db/agents.js";
+import { registerAgent, getAgent, listAgents, updateAgent } from "../db/agents.js";
 import {
   registerProject,
   listProjects,
@@ -536,6 +536,35 @@ server.tool(
         content: [{
           type: "text" as const,
           text: `Agent:\nID: ${agent.id}\nName: ${agent.name}\nDescription: ${agent.description || "-"}\nRole: ${agent.role || "agent"}\nCreated: ${agent.created_at}\nLast seen: ${agent.last_seen_at}`,
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "update_agent",
+  "Update an agent's name, description, role, or metadata. Agents can update themselves.",
+  {
+    id: z.string().describe("Agent ID or name"),
+    name: z.string().optional().describe("New agent name"),
+    description: z.string().optional().describe("New description"),
+    role: z.string().optional().describe("New role"),
+    metadata: z.record(z.unknown()).optional().describe("Updated metadata"),
+  },
+  async (args) => {
+    try {
+      const { id, ...updates } = args;
+      const agent = updateAgent(id, updates);
+      if (!agent) {
+        return { content: [{ type: "text" as const, text: `Agent not found: ${id}` }] };
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Agent updated:\nID: ${agent.id}\nName: ${agent.name}\nDescription: ${agent.description || "-"}\nRole: ${agent.role || "agent"}\nMetadata: ${JSON.stringify(agent.metadata)}\nLast seen: ${agent.last_seen_at}`,
         }],
       };
     } catch (e) {

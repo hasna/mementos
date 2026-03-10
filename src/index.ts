@@ -62,6 +62,7 @@ export {
   registerAgent,
   getAgent,
   listAgents,
+  updateAgent,
 } from "./db/agents.js";
 
 // Projects

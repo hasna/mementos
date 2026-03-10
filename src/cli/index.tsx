@@ -15,7 +15,7 @@ import {
   bulkDeleteMemories,
   touchMemory,
 } from "../db/memories.js";
-import { registerAgent, listAgents } from "../db/agents.js";
+import { registerAgent, listAgents, updateAgent } from "../db/agents.js";
 import {
   registerProject,
   getProject,
@@ -857,6 +857,58 @@ program
   });
 
 // ============================================================================
+// agent-update <id>
+// ============================================================================
+
+program
+  .command("agent-update <id>")
+  .description("Update an agent's name, description, or role")
+  .option("--name <name>", "New agent name")
+  .option("-d, --description <text>", "New description")
+  .option("-r, --role <role>", "New role")
+  .action((id: string, opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const updates: { name?: string; description?: string; role?: string } = {};
+      if (opts.name !== undefined) updates.name = opts.name as string;
+      if (opts.description !== undefined) updates.description = opts.description as string;
+      if (opts.role !== undefined) updates.role = opts.role as string;
+
+      if (Object.keys(updates).length === 0) {
+        if (globalOpts.json) {
+          outputJson({ error: "No updates provided. Use --name, --description, or --role." });
+        } else {
+          console.error(chalk.red("No updates provided. Use --name, --description, or --role."));
+        }
+        process.exit(1);
+      }
+
+      const agent = updateAgent(id, updates);
+      if (!agent) {
+        if (globalOpts.json) {
+          outputJson({ error: `Agent not found: ${id}` });
+        } else {
+          console.error(chalk.red(`Agent not found: ${id}`));
+        }
+        process.exit(1);
+      }
+
+      if (globalOpts.json) {
+        outputJson(agent);
+      } else {
+        console.log(chalk.green("Agent updated:"));
+        console.log(`  ${chalk.bold("ID:")}          ${agent.id}`);
+        console.log(`  ${chalk.bold("Name:")}        ${agent.name}`);
+        console.log(`  ${chalk.bold("Description:")} ${agent.description || "-"}`);
+        console.log(`  ${chalk.bold("Role:")}        ${agent.role || "agent"}`);
+        console.log(`  ${chalk.bold("Last seen:")}   ${agent.last_seen_at}`);
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
 // projects
 // ============================================================================
 
@@ -1260,6 +1312,145 @@ program
       }
     }
   });
+
+// ============================================================================
+// watch
+// ============================================================================
+
+program
+  .command("watch")
+  .description("Watch for new and changed memories in real-time")
+  .option("-s, --scope <scope>", "Scope filter: global, shared, private")
+  .option("-c, --category <cat>", "Category filter: preference, fact, knowledge, history")
+  .option("--agent <name>", "Agent filter")
+  .option("--project <path>", "Project filter")
+  .option("--interval <ms>", "Poll interval in milliseconds", parseInt)
+  .action((opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+      const projectPath =
+        (opts.project as string | undefined) || globalOpts.project;
+      let projectId: string | undefined;
+      if (projectPath) {
+        const project = getProject(resolve(projectPath));
+        if (project) projectId = project.id;
+      }
+
+      const intervalMs = (opts.interval as number | undefined) || 500;
+
+      // Header
+      console.log(
+        chalk.bold.cyan("Watching memories...") +
+          chalk.dim(" (Ctrl+C to stop)")
+      );
+
+      // Show active filters
+      const filters: string[] = [];
+      if (opts.scope) filters.push(`scope=${colorScope(opts.scope as MemoryScope)}`);
+      if (opts.category) filters.push(`category=${colorCategory(opts.category as MemoryCategory)}`);
+      if (agentId) filters.push(`agent=${chalk.dim(agentId)}`);
+      if (projectId) filters.push(`project=${chalk.dim(projectId)}`);
+      if (filters.length > 0) {
+        console.log(chalk.dim("Filters: ") + filters.join(chalk.dim(" | ")));
+      }
+      console.log(chalk.dim(`Poll interval: ${intervalMs}ms`));
+      console.log();
+
+      // Show last 20 memories as "Recent"
+      const filter: MemoryFilter = {
+        scope: opts.scope as MemoryScope | undefined,
+        category: opts.category as MemoryCategory | undefined,
+        agent_id: agentId,
+        project_id: projectId,
+        limit: 20,
+      };
+
+      const recent = listMemories(filter);
+      if (recent.length > 0) {
+        console.log(chalk.bold.dim(`Recent (${recent.length}):`));
+        // Show oldest first
+        for (const m of recent.reverse()) {
+          console.log(formatWatchLine(m));
+        }
+      } else {
+        console.log(chalk.dim("No recent memories."));
+      }
+
+      console.log(chalk.dim("──────────── Live ────────────"));
+      console.log();
+
+      // Start polling for new/changed memories
+      const { startPolling } = require("../lib/poll.js") as typeof import("../lib/poll.js");
+
+      const handle = startPolling({
+        interval_ms: intervalMs,
+        scope: opts.scope as MemoryScope | undefined,
+        category: opts.category as MemoryCategory | undefined,
+        agent_id: agentId,
+        project_id: projectId,
+        on_memories: (memories) => {
+          for (const m of memories) {
+            console.log(formatWatchLine(m));
+            sendNotification(m);
+          }
+        },
+        on_error: (err) => {
+          console.error(chalk.red(`Poll error: ${err.message}`));
+        },
+      });
+
+      // Graceful Ctrl+C
+      const cleanup = () => {
+        handle.stop();
+        console.log();
+        console.log(chalk.dim("Stopped watching."));
+        process.exit(0);
+      };
+      process.on("SIGINT", cleanup);
+      process.on("SIGTERM", cleanup);
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// Watch helpers
+// ============================================================================
+
+function formatWatchLine(m: Memory): string {
+  const scope = colorScope(m.scope);
+  const cat = colorCategory(m.category);
+  const imp = colorImportance(m.importance);
+  const value =
+    m.value.length > 100 ? m.value.slice(0, 100) + "..." : m.value;
+
+  const main = `  [${scope}/${cat}] ${chalk.bold(m.key)} = ${value} ${chalk.dim(`(importance: ${imp})`)}`;
+
+  const parts: string[] = [];
+  if (m.tags.length > 0) parts.push(`Tags: ${m.tags.join(", ")}`);
+  if (m.agent_id) parts.push(`Agent: ${m.agent_id}`);
+  parts.push(`Updated: ${m.updated_at}`);
+
+  const detail = chalk.dim(`    ${parts.join("  |  ")}`);
+  return `${main}\n${detail}`;
+}
+
+function sendNotification(m: Memory): void {
+  if (process.platform !== "darwin") return;
+  try {
+    const title = "Mementos";
+    const msg = `[${m.scope}/${m.category}] ${m.key} = ${m.value.slice(0, 60)}`;
+    const escaped = msg.replace(/"/g, '\\"');
+    const { execSync } = require("node:child_process") as typeof import("node:child_process");
+    execSync(
+      `osascript -e 'display notification "${escaped}" with title "${title}"'`,
+      { stdio: "ignore", timeout: 2000 }
+    );
+  } catch {
+    // Notification failure is non-critical
+  }
+}
 
 // ============================================================================
 // Parse and run
