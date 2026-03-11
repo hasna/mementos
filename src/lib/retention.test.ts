@@ -5,7 +5,13 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { Database } from "bun:sqlite";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { createMemory, getMemory, listMemories } from "../db/memories.js";
-import { enforceQuotas, archiveStale, runCleanup } from "./retention.js";
+import {
+  enforceQuotas,
+  archiveStale,
+  archiveUnused,
+  deprioritizeStale,
+  runCleanup,
+} from "./retention.js";
 import type { MementosConfig } from "../types/index.js";
 
 // ============================================================================
@@ -423,5 +429,215 @@ describe("runCleanup", () => {
     expect(result.expired).toBe(0);
     expect(result.evicted).toBe(0);
     expect(result.archived).toBe(0);
+  });
+
+  it("returns all 5 fields including unused_archived and deprioritized", () => {
+    const config = makeConfig();
+    const result = runCleanup(config, db);
+    expect(typeof result.expired).toBe("number");
+    expect(typeof result.evicted).toBe("number");
+    expect(typeof result.archived).toBe("number");
+    expect(typeof result.unused_archived).toBe("number");
+    expect(typeof result.deprioritized).toBe("number");
+  });
+
+  it("runs archiveUnused and deprioritizeStale as part of cleanup", () => {
+    const config = makeConfig({
+      auto_cleanup: {
+        enabled: true,
+        expired_check_interval: 3600,
+        unused_archive_days: 3,
+        stale_deprioritize_days: 5,
+      },
+    });
+
+    // Create a memory with 0 access_count, backdated beyond unused_archive_days
+    const mem1 = createMemory({ key: "unused-old", value: "v" }, "create", db);
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET created_at = ?, access_count = 0 WHERE id = ?", [
+      oldDate,
+      mem1.id,
+    ]);
+
+    // Create a memory with access, backdated beyond stale_deprioritize_days
+    const mem2 = createMemory(
+      { key: "stale-accessed", value: "v", importance: 5 },
+      "create",
+      db
+    );
+    const staleDate = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+    db.run(
+      "UPDATE memories SET created_at = ?, updated_at = ?, accessed_at = ?, access_count = 1 WHERE id = ?",
+      [staleDate, staleDate, staleDate, mem2.id]
+    );
+
+    const result = runCleanup(config, db);
+    expect(result.unused_archived + result.deprioritized).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
+// archiveUnused
+// ============================================================================
+
+describe("archiveUnused", () => {
+  it("archives memories with 0 access_count older than N days", () => {
+    const mem = createMemory({ key: "never-accessed", value: "v" }, "create", db);
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET created_at = ?, access_count = 0 WHERE id = ?", [
+      oldDate,
+      mem.id,
+    ]);
+
+    const archived = archiveUnused(7, db);
+    expect(archived).toBe(1);
+
+    const updated = getMemory(mem.id, db);
+    expect(updated!.status).toBe("archived");
+  });
+
+  it("skips memories that have been accessed", () => {
+    const mem = createMemory({ key: "accessed", value: "v" }, "create", db);
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET created_at = ?, access_count = 3 WHERE id = ?", [
+      oldDate,
+      mem.id,
+    ]);
+
+    const archived = archiveUnused(7, db);
+    expect(archived).toBe(0);
+  });
+
+  it("skips pinned memories", () => {
+    const mem = createMemory({ key: "pinned-unused", value: "v" }, "create", db);
+    const oldDate = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+    db.run(
+      "UPDATE memories SET created_at = ?, access_count = 0, pinned = 1 WHERE id = ?",
+      [oldDate, mem.id]
+    );
+
+    const archived = archiveUnused(7, db);
+    expect(archived).toBe(0);
+
+    const updated = getMemory(mem.id, db);
+    expect(updated!.status).toBe("active");
+  });
+
+  it("skips recently created memories", () => {
+    createMemory({ key: "new-unused", value: "v" }, "create", db);
+    // created_at is now, access_count defaults to 0
+    const archived = archiveUnused(7, db);
+    expect(archived).toBe(0);
+  });
+
+  it("does nothing when no unused memories exist", () => {
+    const archived = archiveUnused(7, db);
+    expect(archived).toBe(0);
+  });
+});
+
+// ============================================================================
+// deprioritizeStale
+// ============================================================================
+
+describe("deprioritizeStale", () => {
+  it("lowers importance for unaccessed memories older than N days", () => {
+    const mem = createMemory(
+      { key: "stale", value: "v", importance: 5 },
+      "create",
+      db
+    );
+    const oldDate = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET updated_at = ?, accessed_at = NULL WHERE id = ?", [
+      oldDate,
+      mem.id,
+    ]);
+
+    const count = deprioritizeStale(14, db);
+    expect(count).toBe(1);
+
+    const updated = getMemory(mem.id, db);
+    expect(updated!.importance).toBe(4);
+  });
+
+  it("floors importance at 1", () => {
+    const mem = createMemory(
+      { key: "floor-test", value: "v", importance: 2 },
+      "create",
+      db
+    );
+    const oldDate = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET updated_at = ?, accessed_at = NULL WHERE id = ?", [
+      oldDate,
+      mem.id,
+    ]);
+
+    // First deprioritize: 2 -> 1
+    deprioritizeStale(14, db);
+    const after1 = getMemory(mem.id, db);
+    expect(after1!.importance).toBe(1);
+
+    // Second deprioritize: should stay at 1 (importance > 1 check prevents update)
+    // Need to re-backdate updated_at since deprioritize updates it
+    db.run("UPDATE memories SET updated_at = ? WHERE id = ?", [oldDate, mem.id]);
+    const count2 = deprioritizeStale(14, db);
+    expect(count2).toBe(0); // importance is already 1, skipped
+
+    const after2 = getMemory(mem.id, db);
+    expect(after2!.importance).toBe(1);
+  });
+
+  it("skips pinned memories", () => {
+    const mem = createMemory(
+      { key: "pinned-stale", value: "v", importance: 5 },
+      "create",
+      db
+    );
+    const oldDate = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+    db.run(
+      "UPDATE memories SET updated_at = ?, accessed_at = NULL, pinned = 1 WHERE id = ?",
+      [oldDate, mem.id]
+    );
+
+    const count = deprioritizeStale(14, db);
+    expect(count).toBe(0);
+
+    const updated = getMemory(mem.id, db);
+    expect(updated!.importance).toBe(5);
+  });
+
+  it("skips recently accessed memories", () => {
+    const mem = createMemory(
+      { key: "recent-access", value: "v", importance: 5 },
+      "create",
+      db
+    );
+    const recentDate = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET accessed_at = ? WHERE id = ?", [recentDate, mem.id]);
+
+    const count = deprioritizeStale(14, db);
+    expect(count).toBe(0);
+  });
+
+  it("increments version on deprioritize", () => {
+    const mem = createMemory(
+      { key: "version-test", value: "v", importance: 5 },
+      "create",
+      db
+    );
+    const oldDate = new Date(Date.now() - 20 * 24 * 60 * 60 * 1000).toISOString();
+    db.run("UPDATE memories SET updated_at = ?, accessed_at = NULL WHERE id = ?", [
+      oldDate,
+      mem.id,
+    ]);
+
+    deprioritizeStale(14, db);
+    const updated = getMemory(mem.id, db);
+    expect(updated!.version).toBe(2);
+  });
+
+  it("does nothing when no stale memories exist", () => {
+    const count = deprioritizeStale(14, db);
+    expect(count).toBe(0);
   });
 });

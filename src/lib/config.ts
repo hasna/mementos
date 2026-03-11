@@ -28,6 +28,8 @@ export const DEFAULT_CONFIG: MementosConfig = {
   auto_cleanup: {
     enabled: true,
     expired_check_interval: 3600,
+    unused_archive_days: 7,
+    stale_deprioritize_days: 14,
   },
 };
 

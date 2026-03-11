@@ -182,6 +182,8 @@ export interface MementosConfig {
   auto_cleanup: {
     enabled: boolean;
     expired_check_interval: number;
+    unused_archive_days: number;
+    stale_deprioritize_days: number;
   };
 }
 

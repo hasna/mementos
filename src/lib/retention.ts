@@ -77,18 +77,81 @@ export function archiveStale(staleDays: number, db?: Database): number {
 }
 
 // ============================================================================
+// archiveUnused — archive memories with access_count=0 older than `days` days
+// ============================================================================
+
+export function archiveUnused(days: number, db?: Database): number {
+  const d = db || getDatabase();
+  const timestamp = now();
+
+  const cutoff = new Date(
+    Date.now() - days * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  const result = d.run(
+    `UPDATE memories
+     SET status = 'archived', updated_at = ?
+     WHERE status = 'active'
+       AND pinned = 0
+       AND access_count = 0
+       AND created_at < ?`,
+    [timestamp, cutoff]
+  );
+
+  return result.changes;
+}
+
+// ============================================================================
+// deprioritizeStale — lower importance of memories not accessed in `days` days
+// ============================================================================
+
+export function deprioritizeStale(days: number, db?: Database): number {
+  const d = db || getDatabase();
+  const timestamp = now();
+
+  const cutoff = new Date(
+    Date.now() - days * 24 * 60 * 60 * 1000
+  ).toISOString();
+
+  // Find active memories not accessed in `days` days.
+  // Use accessed_at if available, otherwise fall back to updated_at.
+  // Skip pinned memories. Lower importance by 1 (floor at 1) and bump version.
+  const result = d.run(
+    `UPDATE memories
+     SET importance = MAX(importance - 1, 1),
+         version = version + 1,
+         updated_at = ?
+     WHERE status = 'active'
+       AND pinned = 0
+       AND importance > 1
+       AND COALESCE(accessed_at, updated_at) < ?`,
+    [timestamp, cutoff]
+  );
+
+  return result.changes;
+}
+
+// ============================================================================
 // runCleanup — orchestrate all cleanup steps
 // ============================================================================
 
 export function runCleanup(
   config: MementosConfig,
   db?: Database
-): { expired: number; evicted: number; archived: number } {
+): { expired: number; evicted: number; archived: number; unused_archived: number; deprioritized: number } {
   const d = db || getDatabase();
 
   const expired = cleanExpiredMemories(d);
   const evicted = enforceQuotas(config, d);
   const archived = archiveStale(90, d);
+  const unused_archived = archiveUnused(
+    config.auto_cleanup.unused_archive_days ?? 7,
+    d
+  );
+  const deprioritized = deprioritizeStale(
+    config.auto_cleanup.stale_deprioritize_days ?? 14,
+    d
+  );
 
-  return { expired, evicted, archived };
+  return { expired, evicted, archived, unused_archived, deprioritized };
 }
