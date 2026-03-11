@@ -875,13 +875,19 @@ program
       } else {
         console.log(chalk.bold("Cleanup complete:"));
         console.log(
-          `  Expired removed: ${chalk.red(String(result.expired))}`
+          `  Expired removed:    ${chalk.red(String(result.expired))}`
         );
         console.log(
-          `  Evicted (quota):  ${chalk.yellow(String(result.evicted))}`
+          `  Evicted (quota):    ${chalk.yellow(String(result.evicted))}`
         );
         console.log(
-          `  Archived (stale): ${chalk.gray(String(result.archived))}`
+          `  Archived (stale):   ${chalk.gray(String(result.archived))}`
+        );
+        console.log(
+          `  Archived (unused):  ${chalk.gray(String(result.unused_archived))}`
+        );
+        console.log(
+          `  Deprioritized:      ${chalk.blue(String(result.deprioritized))}`
         );
       }
     } catch (e) {
