@@ -109,7 +109,7 @@ function formatMemory(m: Memory): string {
 
 server.tool(
   "memory_save",
-  "Save a memory (create or upsert). Use scope 'global' for all agents, 'shared' for project-level, 'private' for single agent.",
+  "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent.",
   {
     key: z.string().describe("Unique key for the memory"),
     value: z.string().describe("Memory content/value"),
@@ -183,7 +183,7 @@ server.tool(
 
 server.tool(
   "memory_list",
-  "List memories with optional filters",
+  "List memories. Default: compact lines. full=true for complete JSON objects.",
   {
     scope: z.enum(["global", "shared", "private"]).optional(),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
@@ -196,21 +196,31 @@ server.tool(
     status: z.enum(["active", "archived", "expired"]).optional(),
     limit: z.coerce.number().optional().describe("Max results (default: 50)"),
     offset: z.coerce.number().optional(),
+    full: z.boolean().optional().describe("Return full Memory objects as JSON instead of compact lines"),
   },
   async (args) => {
     try {
+      const { full, ...filterArgs } = args;
       const filter: MemoryFilter = {
-        ...args,
-        limit: args.limit || 50,
+        ...filterArgs,
+        limit: filterArgs.limit || 50,
       };
       const memories = listMemories(filter);
       if (memories.length === 0) {
-        return { content: [{ type: "text" as const, text: "No memories found matching filters." }] };
+        return { content: [{ type: "text" as const, text: "No memories found." }] };
       }
+      if (full) {
+        // Full mode: complete JSON objects (strip nulls)
+        const compact = memories.map(m => Object.fromEntries(
+          Object.entries(m).filter(([, v]) => v !== null && v !== undefined && v !== 0 && v !== "")
+        ));
+        return { content: [{ type: "text" as const, text: JSON.stringify(compact, null, 2) }] };
+      }
+      // Compact mode (default): key+value+scope+importance+id only
       const lines = memories.map((m, i) =>
-        `${i + 1}. [${m.scope}/${m.category}] ${m.key} = ${m.value.slice(0, 100)}${m.value.length > 100 ? "..." : ""} (importance: ${m.importance}, id: ${m.id.slice(0, 8)})`
+        `${i + 1}. [${m.scope}/${m.category}] ${m.key} = ${m.value.slice(0, 100)}${m.value.length > 100 ? "..." : ""} (imp:${m.importance} id:${m.id.slice(0, 8)})`
       );
-      return { content: [{ type: "text" as const, text: `${memories.length} memor${memories.length === 1 ? "y" : "ies"} found:\n${lines.join("\n")}` }] };
+      return { content: [{ type: "text" as const, text: `${memories.length} memories:\n${lines.join("\n")}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -421,7 +431,7 @@ server.tool(
 
 server.tool(
   "memory_inject",
-  "Get formatted memory context for injection into agent system prompts. Selects most relevant memories by scope, importance, and recency.",
+  "Get memory context for system prompt injection. Selects by scope, importance, recency.",
   {
     agent_id: z.string().optional().describe("Agent ID for scope filtering"),
     project_id: z.string().optional().describe("Project ID for scope filtering"),
@@ -521,7 +531,7 @@ server.tool(
 
 server.tool(
   "register_agent",
-  "Register an agent and get a short UUID. Idempotent: same name returns existing agent.",
+  "Register an agent. Idempotent — same name returns existing agent.",
   {
     name: z.string().describe("Agent name"),
     description: z.string().optional().describe("Agent description"),
@@ -586,7 +596,7 @@ server.tool(
 
 server.tool(
   "update_agent",
-  "Update an agent's name, description, role, or metadata. Agents can update themselves.",
+  "Update agent name, description, role, or metadata.",
   {
     id: z.string().describe("Agent ID or name"),
     name: z.string().optional().describe("New agent name"),
@@ -730,7 +740,7 @@ server.tool(
 
 server.tool(
   "memory_context",
-  "Get all memories relevant to the current context. Smart selection by scope visibility, importance, and recency.",
+  "Get memories relevant to current context, filtered by scope/importance/recency.",
   {
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
