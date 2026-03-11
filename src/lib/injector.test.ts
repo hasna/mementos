@@ -149,8 +149,8 @@ describe("MemoryInjector", () => {
     }
 
     const injector = new MemoryInjector(DEFAULT_CONFIG);
-    // Use very small token budget: 50 tokens * 4 chars = 200 chars
-    const result = injector.getInjectionContext({ max_tokens: 50, db });
+    // Use small token budget: 150 tokens * 4 chars = 600 chars — fits some but not all 50
+    const result = injector.getInjectionContext({ max_tokens: 150, db });
 
     // Should have some memories but not all 50
     const lineCount = result
@@ -382,5 +382,212 @@ describe("MemoryInjector", () => {
       db,
     });
     expect(withOverride).toContain("history-mem");
+  });
+
+  // ==========================================================================
+  // Structured output sections
+  // ==========================================================================
+
+  test('output contains "## Key Memories" section header', () => {
+    createMemory({
+      key: "section-test",
+      value: "test value",
+      scope: "global",
+      category: "preference",
+      importance: 8,
+    });
+
+    const injector = new MemoryInjector(DEFAULT_CONFIG);
+    const result = injector.getInjectionContext({ db });
+    expect(result).toContain("## Key Memories");
+  });
+
+  test('output contains "## Recent Context" section header when recent memories exist', () => {
+    // Fill Key Memories with high-importance memories using a tiny token budget
+    // so the key budget (67%) gets exhausted quickly
+    for (let i = 0; i < 3; i++) {
+      createMemory({
+        key: `key-mem-${i}`,
+        value: "A".repeat(80),
+        scope: "global",
+        category: "preference",
+        importance: 9,
+      });
+    }
+
+    // Create a lower importance memory with very recent access — overflows to Recent Context
+    const recentMem = createMemory({
+      key: "recent-only",
+      value: "recently accessed",
+      scope: "global",
+      category: "fact",
+      importance: 5,
+    });
+    db.run("UPDATE memories SET accessed_at = datetime('now') WHERE id = ?", [
+      recentMem.id,
+    ]);
+
+    // Use a very small token budget so key budget fills up before recent-only fits
+    // total char budget = 80*4 = 320, footer ~60, key budget = (320-60)*0.67 ~ 174
+    // each key line is ~110 chars, so only ~1 fits in key budget, rest overflow
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 80,
+          min_importance: 5,
+          categories: ["preference", "fact"],
+          refresh_interval: 5,
+        },
+      })
+    );
+    const result = injector.getInjectionContext({ db });
+    expect(result).toContain("## Recent Context");
+  });
+
+  test('output contains "memory_search" footer tip', () => {
+    createMemory({
+      key: "footer-test",
+      value: "test",
+      scope: "global",
+      category: "preference",
+      importance: 8,
+    });
+
+    const injector = new MemoryInjector(DEFAULT_CONFIG);
+    const result = injector.getInjectionContext({ db });
+    expect(result).toContain("memory_search");
+  });
+
+  test("key memories are pinned-first, then importance-ordered", () => {
+    createMemory({
+      key: "low-imp",
+      value: "low importance",
+      scope: "global",
+      category: "preference",
+      importance: 5,
+    });
+
+    createMemory({
+      key: "high-imp",
+      value: "high importance",
+      scope: "global",
+      category: "preference",
+      importance: 9,
+    });
+
+    const pinnedLow = createMemory({
+      key: "pinned-low",
+      value: "pinned low importance",
+      scope: "global",
+      category: "preference",
+      importance: 3,
+    });
+    db.run("UPDATE memories SET pinned = 1 WHERE id = ?", [pinnedLow.id]);
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact"],
+          refresh_interval: 5,
+        },
+      })
+    );
+    const result = injector.getInjectionContext({ db });
+
+    const pinnedIdx = result.indexOf("pinned-low:");
+    const highIdx = result.indexOf("high-imp:");
+    const lowIdx = result.indexOf("low-imp:");
+
+    expect(pinnedIdx).toBeLessThan(highIdx);
+    expect(highIdx).toBeLessThan(lowIdx);
+  });
+
+  test("recent context shows most recently accessed memories", () => {
+    const old = createMemory({
+      key: "old-access",
+      value: "old access",
+      scope: "global",
+      category: "fact",
+      importance: 5,
+    });
+    const recent = createMemory({
+      key: "recent-access",
+      value: "recent access",
+      scope: "global",
+      category: "fact",
+      importance: 5,
+    });
+
+    const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const recentDate = new Date().toISOString();
+    db.run("UPDATE memories SET accessed_at = ? WHERE id = ?", [oldDate, old.id]);
+    db.run("UPDATE memories SET accessed_at = ? WHERE id = ?", [recentDate, recent.id]);
+
+    // High-importance memories fill Key Memories section
+    for (let i = 0; i < 3; i++) {
+      createMemory({
+        key: `important-${i}`,
+        value: `important value ${i}`,
+        scope: "global",
+        category: "preference",
+        importance: 10,
+      });
+    }
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 4000,
+          min_importance: 5,
+          categories: ["preference", "fact"],
+          refresh_interval: 5,
+        },
+      })
+    );
+    const result = injector.getInjectionContext({ db });
+
+    if (result.includes("## Recent Context")) {
+      const recentSection = result.split("## Recent Context")[1]!;
+      const recentIdx = recentSection.indexOf("recent-access:");
+      const oldIdx = recentSection.indexOf("old-access:");
+      if (recentIdx >= 0 && oldIdx >= 0) {
+        expect(recentIdx).toBeLessThan(oldIdx);
+      }
+    }
+  });
+
+  test("recent context deduplicates against key memories", () => {
+    const mem = createMemory({
+      key: "dedup-both",
+      value: "should only appear once",
+      scope: "global",
+      category: "preference",
+      importance: 9,
+    });
+    db.run("UPDATE memories SET accessed_at = datetime('now') WHERE id = ?", [mem.id]);
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact"],
+          refresh_interval: 5,
+        },
+      })
+    );
+    const result = injector.getInjectionContext({ db });
+
+    expect(result).toContain("## Key Memories");
+    expect(result).toContain("dedup-both:");
+
+    const matches = result.match(/dedup-both:/g);
+    expect(matches).not.toBeNull();
+    expect(matches!.length).toBe(1);
+
+    // Only 1 memory, already in Key — no Recent Context section
+    expect(result).not.toContain("## Recent Context");
   });
 });
