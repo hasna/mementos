@@ -444,9 +444,10 @@ server.tool(
     agent_id: z.string().optional().describe("Agent ID for scope filtering"),
     project_id: z.string().optional().describe("Project ID for scope filtering"),
     session_id: z.string().optional().describe("Session ID for scope filtering"),
-    max_tokens: z.coerce.number().optional().describe("Max approximate token budget (default: 500)"),
+    max_tokens: z.coerce.number().optional().describe("Token budget (default: 500)"),
     categories: z.array(z.enum(["preference", "fact", "knowledge", "history"])).optional(),
-    min_importance: z.coerce.number().optional().describe("Minimum importance threshold (default: 3)"),
+    min_importance: z.coerce.number().optional().describe("Min importance 1-10 (default: 3)"),
+    raw: z.boolean().optional().describe("Return plain lines only, no headers or tags"),
   },
   async (args) => {
     try {
@@ -525,7 +526,10 @@ server.tool(
         return { content: [{ type: "text" as const, text: "No relevant memories found for injection." }] };
       }
 
-      const context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+      // raw=true: plain lines only (pipe-friendly, no wrapper tags or headers)
+      const context = args.raw
+        ? lines.join("\n")
+        : `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
       return { content: [{ type: "text" as const, text: context }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };

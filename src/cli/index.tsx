@@ -414,6 +414,7 @@ program
   .option("--limit <n>", "Max results", parseInt)
   .option("--offset <n>", "Offset for pagination", parseInt)
   .option("--status <status>", "Status filter: active, archived, expired")
+  .option("--format <fmt>", "Output format: compact (default), json, csv")
   .action((opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
@@ -443,9 +444,19 @@ program
       };
 
       const memories = listMemories(filter);
+      const fmt = (opts.format as string | undefined) || (globalOpts.json ? "json" : "compact");
 
-      if (globalOpts.json) {
+      if (fmt === "json") {
         outputJson(memories);
+        return;
+      }
+
+      if (fmt === "csv") {
+        console.log("key,value,scope,category,importance,id");
+        for (const m of memories) {
+          const v = m.value.replace(/"/g, '""');
+          console.log(`"${m.key}","${v}",${m.scope},${m.category},${m.importance},${m.id.slice(0, 8)}`);
+        }
         return;
       }
 
@@ -603,6 +614,7 @@ program
   .option("-c, --category <cat>", "Category filter")
   .option("--tags <tags>", "Comma-separated tags filter")
   .option("--limit <n>", "Max results", parseInt)
+  .option("--format <fmt>", "Output format: compact (default), json, csv")
   .action((query: string, opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
@@ -616,9 +628,19 @@ program
       };
 
       const results = searchMemories(query, filter);
+      const fmt = (opts.format as string | undefined) || (globalOpts.json ? "json" : "compact");
 
-      if (globalOpts.json) {
+      if (fmt === "json") {
         outputJson(results);
+        return;
+      }
+
+      if (fmt === "csv") {
+        console.log("key,value,scope,category,importance,score,id");
+        for (const r of results) {
+          const v = r.memory.value.replace(/"/g, '""');
+          console.log(`"${r.memory.key}","${v}",${r.memory.scope},${r.memory.category},${r.memory.importance},${r.score.toFixed(1)},${r.memory.id.slice(0, 8)}`);
+        }
         return;
       }
 
