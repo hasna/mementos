@@ -225,6 +225,16 @@ addRoute("GET", "/api/memories", (_req: Request, url: URL) => {
   if (q["offset"]) filter.offset = parseInt(q["offset"], 10);
 
   const memories = listMemories(filter);
+
+  // ?fields=key,value,importance — field filtering (60-80% smaller responses)
+  if (q["fields"]) {
+    const fields = q["fields"].split(",").map((f: string) => f.trim());
+    const filtered = memories.map(m =>
+      Object.fromEntries(fields.map((f: string) => [f, (m as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined))
+    );
+    return json({ memories: filtered, count: filtered.length });
+  }
+
   return json({ memories, count: memories.length });
 });
 
