@@ -129,7 +129,7 @@ server.tool(
     try {
       ensureAutoProject();
       const memory = createMemory(args as CreateMemoryInput);
-      return { content: [{ type: "text" as const, text: `Memory saved:\n${formatMemory(memory)}` }] };
+      return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -194,26 +194,34 @@ server.tool(
     project_id: z.string().optional(),
     session_id: z.string().optional(),
     status: z.enum(["active", "archived", "expired"]).optional(),
-    limit: z.coerce.number().optional().describe("Max results (default: 50)"),
+    limit: z.coerce.number().optional().describe("Max results (default: 10)"),
     offset: z.coerce.number().optional(),
     full: z.boolean().optional().describe("Return full Memory objects as JSON instead of compact lines"),
+    fields: z.array(z.string()).optional().describe("Filter fields in full mode: e.g. ['key','value','importance']"),
   },
   async (args) => {
     try {
-      const { full, ...filterArgs } = args;
+      const { full, fields, ...filterArgs } = args;
       const filter: MemoryFilter = {
         ...filterArgs,
-        limit: filterArgs.limit || 50,
+        limit: filterArgs.limit || 10,
       };
       const memories = listMemories(filter);
       if (memories.length === 0) {
         return { content: [{ type: "text" as const, text: "No memories found." }] };
       }
       if (full) {
-        // Full mode: complete JSON objects (strip nulls)
-        const compact = memories.map(m => Object.fromEntries(
-          Object.entries(m).filter(([, v]) => v !== null && v !== undefined && v !== 0 && v !== "")
-        ));
+        // Full mode: complete JSON objects (strip nulls, optionally filter fields)
+        const compact = memories.map(m => {
+          const obj = Object.fromEntries(
+            Object.entries(m).filter(([k, v]) => {
+              if (v === null || v === undefined) return false;
+              if (fields && fields.length > 0) return fields.includes(k);
+              return true;
+            })
+          );
+          return obj;
+        });
         return { content: [{ type: "text" as const, text: JSON.stringify(compact, null, 2) }] };
       }
       // Compact mode (default): key+value+scope+importance+id only
@@ -767,6 +775,67 @@ server.tool(
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
+  }
+);
+
+// ============================================================================
+// Meta-tools: search_tools + describe_tools (96% input token reduction)
+// ============================================================================
+
+const TOOL_REGISTRY = [
+  { name: "memory_save", description: "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent.", category: "memory" },
+  { name: "memory_recall", description: "Recall a memory by key. Returns the best matching active memory.", category: "memory" },
+  { name: "memory_list", description: "List memories. Default: compact lines. full=true for complete JSON objects.", category: "memory" },
+  { name: "memory_update", description: "Update a memory's metadata (value, importance, tags, etc.)", category: "memory" },
+  { name: "memory_forget", description: "Delete a memory by ID or key", category: "memory" },
+  { name: "memory_search", description: "Search memories by keyword across key, value, summary, and tags", category: "memory" },
+  { name: "memory_stats", description: "Get aggregate statistics about stored memories", category: "memory" },
+  { name: "memory_export", description: "Export memories as JSON", category: "memory" },
+  { name: "memory_import", description: "Import memories from JSON array", category: "memory" },
+  { name: "memory_inject", description: "Get memory context for system prompt injection. Selects by scope, importance, recency.", category: "memory" },
+  { name: "memory_context", description: "Get memories relevant to current context, filtered by scope/importance/recency.", category: "memory" },
+  { name: "register_agent", description: "Register an agent. Idempotent — same name returns existing agent.", category: "agent" },
+  { name: "list_agents", description: "List all registered agents", category: "agent" },
+  { name: "get_agent", description: "Get agent details by ID or name", category: "agent" },
+  { name: "update_agent", description: "Update agent name, description, role, or metadata.", category: "agent" },
+  { name: "register_project", description: "Register a project for memory scoping", category: "project" },
+  { name: "list_projects", description: "List all registered projects", category: "project" },
+  { name: "bulk_forget", description: "Delete multiple memories by IDs", category: "bulk" },
+  { name: "bulk_update", description: "Update multiple memories with the same changes", category: "bulk" },
+  { name: "clean_expired", description: "Remove expired memories from the database", category: "utility" },
+  { name: "search_tools", description: "Search available tools by name or keyword. Returns names only.", category: "meta" },
+  { name: "describe_tools", description: "Get full schemas for specific tools by name.", category: "meta" },
+];
+
+server.tool(
+  "search_tools",
+  "Search available tools by name or keyword. Returns names only.",
+  {
+    query: z.string().describe("Search term to match against tool names and descriptions"),
+    category: z.enum(["memory", "agent", "project", "bulk", "utility", "meta"]).optional(),
+  },
+  async (args) => {
+    const q = args.query.toLowerCase();
+    const results = TOOL_REGISTRY.filter(t =>
+      (!args.category || t.category === args.category) &&
+      (t.name.includes(q) || t.description.toLowerCase().includes(q))
+    );
+    if (results.length === 0) return { content: [{ type: "text" as const, text: "No tools found." }] };
+    return { content: [{ type: "text" as const, text: results.map(t => `${t.name} [${t.category}]`).join("\n") }] };
+  }
+);
+
+server.tool(
+  "describe_tools",
+  "Get full schemas for specific tools by name.",
+  {
+    names: z.array(z.string()).describe("Tool names to describe"),
+  },
+  async (args) => {
+    const found = TOOL_REGISTRY.filter(t => args.names.includes(t.name));
+    if (found.length === 0) return { content: [{ type: "text" as const, text: "No matching tools." }] };
+    const lines = found.map(t => `**${t.name}** [${t.category}]: ${t.description}`);
+    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   }
 );
 
