@@ -83,7 +83,10 @@ export { MemoryInjector } from "./lib/injector.js";
 export type { InjectionOptions } from "./lib/injector.js";
 
 // Retention
-export { enforceQuotas, archiveStale, runCleanup } from "./lib/retention.js";
+export { enforceQuotas, archiveStale, archiveUnused, deprioritizeStale, runCleanup } from "./lib/retention.js";
 
 // Sync
 export { syncMemories, defaultSyncAgents } from "./lib/sync.js";
+
+// Redaction
+export { redactSecrets, containsSecrets } from "./lib/redact.js";

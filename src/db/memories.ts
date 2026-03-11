@@ -11,6 +11,7 @@ import {
   VersionConflictError,
 } from "../types/index.js";
 import { getDatabase, now, uuid } from "./database.js";
+import { redactSecrets } from "../lib/redact.js";
 
 // ============================================================================
 // Helpers
@@ -65,6 +66,10 @@ export function createMemory(
   const tagsJson = JSON.stringify(tags);
   const metadataJson = JSON.stringify(input.metadata || {});
 
+  // Auto-redact secrets from value and summary
+  const safeValue = redactSecrets(input.value);
+  const safeSummary = input.summary ? redactSecrets(input.summary) : null;
+
   if (dedupeMode === "merge") {
     // Try upsert: if key+scope+agent+project+session already exists, update value
     const existing = d
@@ -92,9 +97,9 @@ export function createMemory(
            version = version + 1, updated_at = ?
          WHERE id = ?`,
         [
-          input.value,
+          safeValue,
           input.category || "knowledge",
-          input.summary || null,
+          safeSummary,
           tagsJson,
           input.importance ?? 5,
           metadataJson,
@@ -338,7 +343,7 @@ export function updateMemory(
 
   if (input.value !== undefined) {
     sets.push("value = ?");
-    params.push(input.value);
+    params.push(redactSecrets(input.value));
   }
   if (input.category !== undefined) {
     sets.push("category = ?");
