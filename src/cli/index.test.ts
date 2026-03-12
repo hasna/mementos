@@ -47,7 +47,7 @@ describe("CLI", () => {
   test("save creates a memory", async () => {
     const { stdout, exitCode } = await runCli("save", "cli-test-key", "cli-test-value");
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Memory saved");
+    expect(stdout).toContain("Saved:");
     expect(stdout).toContain("cli-test-key");
   });
 
@@ -58,18 +58,18 @@ describe("CLI", () => {
       "--importance", "9",
       "--category", "fact"
     );
-    expect(stdout).toContain("global");
-    expect(stdout).toContain("fact");
-    expect(stdout).toContain("9/10");
+    expect(stdout).toContain("Saved:");
+    expect(stdout).toContain("cli-global");
   });
 
   test("save with tags", async () => {
-    const { stdout } = await runCli(
+    const { stdout, exitCode } = await runCli(
       "save", "cli-tagged", "tagged-val",
       "--tags", "alpha,beta,gamma"
     );
-    expect(stdout).toContain("alpha");
-    expect(stdout).toContain("beta");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Saved:");
+    expect(stdout).toContain("cli-tagged");
   });
 
   test("recall retrieves saved memory", async () => {
@@ -210,6 +210,6 @@ describe("CLI", () => {
       "--summary", "A brief summary"
     );
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("A brief summary");
+    expect(stdout).toContain("Saved:");
   });
 });

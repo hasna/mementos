@@ -319,8 +319,7 @@ program
       if (globalOpts.json) {
         outputJson(memory);
       } else {
-        console.log(chalk.green("Memory saved:"));
-        console.log(formatMemoryDetail(memory));
+        console.log(chalk.green(`Saved: ${memory.key} (${memory.id.slice(0, 8)})`));
       }
     } catch (e) {
       handleError(e);
@@ -546,8 +545,7 @@ program
       if (globalOpts.json) {
         outputJson(updated);
       } else {
-        console.log(chalk.green("Memory updated:"));
-        console.log(formatMemoryDetail(updated));
+        console.log(chalk.green(`Updated: ${updated.key} (${updated.id.slice(0, 8)})`) );
       }
     } catch (e) {
       handleError(e);
