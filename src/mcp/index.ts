@@ -111,19 +111,19 @@ server.tool(
   "memory_save",
   "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent.",
   {
-    key: z.string().describe("Unique key for the memory"),
-    value: z.string().describe("Memory content/value"),
-    scope: z.enum(["global", "shared", "private"]).optional().describe("Memory scope (default: private)"),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional().describe("Memory category (default: knowledge)"),
-    importance: z.coerce.number().min(1).max(10).optional().describe("Importance 1-10 (default: 5)"),
-    tags: z.array(z.string()).optional().describe("Tags for categorization"),
-    summary: z.string().optional().describe("Brief summary of the memory"),
-    agent_id: z.string().optional().describe("Agent ID (for scoping)"),
-    project_id: z.string().optional().describe("Project ID (for scoping)"),
-    session_id: z.string().optional().describe("Session ID (for scoping)"),
-    ttl_ms: z.coerce.number().optional().describe("Time-to-live in milliseconds"),
-    source: z.enum(["user", "agent", "system", "auto", "imported"]).optional().describe("Source of the memory"),
-    metadata: z.record(z.unknown()).optional().describe("Arbitrary metadata"),
+    key: z.string(),
+    value: z.string(),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+    importance: z.coerce.number().min(1).max(10).optional(),
+    tags: z.array(z.string()).optional(),
+    summary: z.string().optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    session_id: z.string().optional(),
+    ttl_ms: z.coerce.number().optional(),
+    source: z.enum(["user", "agent", "system", "auto", "imported"]).optional(),
+    metadata: z.record(z.unknown()).optional(),
   },
   async (args) => {
     try {
@@ -140,7 +140,7 @@ server.tool(
   "memory_recall",
   "Recall a memory by key. Returns the best matching active memory.",
   {
-    key: z.string().describe("Memory key to recall"),
+    key: z.string(),
     scope: z.enum(["global", "shared", "private"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
@@ -194,10 +194,10 @@ server.tool(
     project_id: z.string().optional(),
     session_id: z.string().optional(),
     status: z.enum(["active", "archived", "expired"]).optional(),
-    limit: z.coerce.number().optional().describe("Max results (default: 10)"),
+    limit: z.coerce.number().optional(),
     offset: z.coerce.number().optional(),
-    full: z.boolean().optional().describe("Return full Memory objects as JSON instead of compact lines"),
-    fields: z.array(z.string()).optional().describe("Filter fields in full mode: e.g. ['key','value','importance']"),
+    full: z.boolean().optional(),
+    fields: z.array(z.string()).optional(),
   },
   async (args) => {
     try {
@@ -239,7 +239,7 @@ server.tool(
   "memory_update",
   "Update a memory's metadata (value, importance, tags, etc.)",
   {
-    id: z.string().describe("Memory ID (full or partial)"),
+    id: z.string(),
     value: z.string().optional(),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
     scope: z.enum(["global", "shared", "private"]).optional(),
@@ -250,7 +250,7 @@ server.tool(
     status: z.enum(["active", "archived", "expired"]).optional(),
     metadata: z.record(z.unknown()).optional(),
     expires_at: z.string().nullable().optional(),
-    version: z.coerce.number().describe("Current version (for optimistic locking)"),
+    version: z.coerce.number(),
   },
   async (args) => {
     try {
@@ -268,8 +268,8 @@ server.tool(
   "memory_forget",
   "Delete a memory by ID or key",
   {
-    id: z.string().optional().describe("Memory ID (full or partial)"),
-    key: z.string().optional().describe("Memory key"),
+    id: z.string().optional(),
+    key: z.string().optional(),
     scope: z.enum(["global", "shared", "private"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
@@ -300,13 +300,13 @@ server.tool(
   "memory_search",
   "Search memories by keyword across key, value, summary, and tags",
   {
-    query: z.string().describe("Search query"),
+    query: z.string(),
     scope: z.enum(["global", "shared", "private"]).optional(),
     category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
     tags: z.array(z.string()).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
-    limit: z.coerce.number().optional().describe("Max results (default: 20)"),
+    limit: z.coerce.number().optional(),
   },
   async (args) => {
     try {
@@ -419,8 +419,8 @@ server.tool(
       agent_id: z.string().optional(),
       project_id: z.string().optional(),
       metadata: z.record(z.unknown()).optional(),
-    })).describe("Array of memories to import"),
-    overwrite: z.boolean().optional().describe("Overwrite existing (default: true, uses merge dedup)"),
+    })),
+    overwrite: z.boolean().optional(),
   },
   async (args) => {
     try {
@@ -441,13 +441,13 @@ server.tool(
   "memory_inject",
   "Get memory context for system prompt injection. Selects by scope, importance, recency.",
   {
-    agent_id: z.string().optional().describe("Agent ID for scope filtering"),
-    project_id: z.string().optional().describe("Project ID for scope filtering"),
-    session_id: z.string().optional().describe("Session ID for scope filtering"),
-    max_tokens: z.coerce.number().optional().describe("Token budget (default: 500)"),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    session_id: z.string().optional(),
+    max_tokens: z.coerce.number().optional(),
     categories: z.array(z.enum(["preference", "fact", "knowledge", "history"])).optional(),
-    min_importance: z.coerce.number().optional().describe("Min importance 1-10 (default: 3)"),
-    raw: z.boolean().optional().describe("Return plain lines only, no headers or tags"),
+    min_importance: z.coerce.number().optional(),
+    raw: z.boolean().optional(),
   },
   async (args) => {
     try {
@@ -545,9 +545,9 @@ server.tool(
   "register_agent",
   "Register an agent. Idempotent — same name returns existing agent.",
   {
-    name: z.string().describe("Agent name"),
-    description: z.string().optional().describe("Agent description"),
-    role: z.string().optional().describe("Agent role"),
+    name: z.string(),
+    description: z.string().optional(),
+    role: z.string().optional(),
   },
   async (args) => {
     try {
@@ -586,7 +586,7 @@ server.tool(
   "get_agent",
   "Get agent details by ID or name",
   {
-    id: z.string().describe("Agent ID or name"),
+    id: z.string(),
   },
   async (args) => {
     try {
@@ -610,11 +610,11 @@ server.tool(
   "update_agent",
   "Update agent name, description, role, or metadata.",
   {
-    id: z.string().describe("Agent ID or name"),
-    name: z.string().optional().describe("New agent name"),
-    description: z.string().optional().describe("New description"),
-    role: z.string().optional().describe("New role"),
-    metadata: z.record(z.unknown()).optional().describe("Updated metadata"),
+    id: z.string(),
+    name: z.string().optional(),
+    description: z.string().optional(),
+    role: z.string().optional(),
+    metadata: z.record(z.unknown()).optional(),
   },
   async (args) => {
     try {
@@ -643,8 +643,8 @@ server.tool(
   "register_project",
   "Register a project for memory scoping",
   {
-    name: z.string().describe("Project name"),
-    path: z.string().describe("Absolute path to project"),
+    name: z.string(),
+    path: z.string(),
     description: z.string().optional(),
     memory_prefix: z.string().optional(),
   },
@@ -689,7 +689,7 @@ server.tool(
   "bulk_forget",
   "Delete multiple memories by IDs",
   {
-    ids: z.array(z.string()).describe("Memory IDs to delete"),
+    ids: z.array(z.string()),
   },
   async (args) => {
     try {
@@ -706,7 +706,7 @@ server.tool(
   "bulk_update",
   "Update multiple memories with the same changes",
   {
-    ids: z.array(z.string()).describe("Memory IDs to update"),
+    ids: z.array(z.string()),
     importance: z.coerce.number().min(1).max(10).optional(),
     tags: z.array(z.string()).optional(),
     pinned: z.boolean().optional(),
@@ -756,8 +756,8 @@ server.tool(
   {
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional().describe("Limit to specific scope"),
-    limit: z.coerce.number().optional().describe("Max memories (default: 30)"),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    limit: z.coerce.number().optional(),
   },
   async (args) => {
     try {
@@ -815,7 +815,7 @@ server.tool(
   "search_tools",
   "Search available tools by name or keyword. Returns names only.",
   {
-    query: z.string().describe("Search term to match against tool names and descriptions"),
+    query: z.string(),
     category: z.enum(["memory", "agent", "project", "bulk", "utility", "meta"]).optional(),
   },
   async (args) => {
@@ -833,7 +833,7 @@ server.tool(
   "describe_tools",
   "Get full schemas for specific tools by name.",
   {
-    names: z.array(z.string()).describe("Tool names to describe"),
+    names: z.array(z.string()),
   },
   async (args) => {
     const found = TOOL_REGISTRY.filter(t => args.names.includes(t.name));
