@@ -22,11 +22,12 @@ export function registerAgent(
 ): Agent {
   const d = db || getDatabase();
   const timestamp = now();
+  const normalizedName = name.trim().toLowerCase();
 
-  // Idempotent: same name returns existing agent, updates last_seen_at
+  // Idempotent: same name returns existing agent, updates last_seen_at (case-insensitive)
   const existing = d
-    .query("SELECT * FROM agents WHERE name = ?")
-    .get(name) as Record<string, unknown> | null;
+    .query("SELECT * FROM agents WHERE LOWER(name) = ?")
+    .get(normalizedName) as Record<string, unknown> | null;
 
   if (existing) {
     const existingId = existing["id"] as string;
@@ -52,7 +53,7 @@ export function registerAgent(
   const id = shortUuid();
   d.run(
     "INSERT INTO agents (id, name, description, role, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
-    [id, name, description || null, role || "agent", timestamp, timestamp]
+    [id, normalizedName, description || null, role || "agent", timestamp, timestamp]
   );
 
   return getAgent(id, d)!;
@@ -70,8 +71,8 @@ export function getAgent(
     | null;
   if (row) return parseAgentRow(row);
 
-  // Try by name
-  row = d.query("SELECT * FROM agents WHERE name = ?").get(idOrName) as
+  // Try by name (case-insensitive)
+  row = d.query("SELECT * FROM agents WHERE LOWER(name) = ?").get(idOrName.trim().toLowerCase()) as
     | Record<string, unknown>
     | null;
   if (row) return parseAgentRow(row);
@@ -104,15 +105,18 @@ export function updateAgent(
 
   const timestamp = now();
 
-  // If name is being changed, check uniqueness
-  if (updates.name && updates.name !== agent.name) {
-    const existing = d
-      .query("SELECT id FROM agents WHERE name = ? AND id != ?")
-      .get(updates.name, agent.id) as Record<string, unknown> | null;
-    if (existing) {
-      throw new Error(`Agent name already taken: ${updates.name}`);
+  // If name is being changed, normalize and check uniqueness (case-insensitive)
+  if (updates.name) {
+    const normalizedNewName = updates.name.trim().toLowerCase();
+    if (normalizedNewName !== agent.name) {
+      const existing = d
+        .query("SELECT id FROM agents WHERE LOWER(name) = ? AND id != ?")
+        .get(normalizedNewName, agent.id) as Record<string, unknown> | null;
+      if (existing) {
+        throw new Error(`Agent name already taken: ${normalizedNewName}`);
+      }
+      d.run("UPDATE agents SET name = ? WHERE id = ?", [normalizedNewName, agent.id]);
     }
-    d.run("UPDATE agents SET name = ? WHERE id = ?", [updates.name, agent.id]);
   }
 
   if (updates.description !== undefined) {
