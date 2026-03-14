@@ -140,6 +140,10 @@ bun add @hasna/mementos-sdk
 ```typescript
 import { MementosClient } from "@hasna/mementos-sdk";
 
+// Auto-configure from MEMENTOS_URL env var
+const client = MementosClient.fromEnv();
+
+// Or explicit:
 const client = new MementosClient({ baseUrl: "http://localhost:19428" });
 
 // Save memory
@@ -205,6 +209,7 @@ POST /api/memories/extract
 | `MEMENTOS_DB_SCOPE` | `project` = git root `.mementos/mementos.db` | global |
 | `MEMENTOS_HOST` | Server bind address | `127.0.0.1` |
 | `PORT` | Server port | `19428` |
+| `MEMENTOS_URL` | SDK client base URL (`MementosClient.fromEnv()`) | `http://localhost:19428` |
 
 ## Library
 
