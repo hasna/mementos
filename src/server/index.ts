@@ -316,6 +316,40 @@ addRoute("GET", "/api/memories/stats", (_req) => {
   return json(stats);
 });
 
+// GET /api/activity — daily memory activity over N days
+addRoute("GET", "/api/activity", (_req: Request, url: URL) => {
+  const q = getSearchParams(url);
+  const days = Math.min(parseInt(q["days"] || "30", 10), 365);
+  const scope = q["scope"] as MemoryScope | undefined;
+  const agentId = q["agent_id"];
+  const projectId = q["project_id"];
+  const db = getDatabase();
+
+  // Build optional filter clauses
+  const conditions: string[] = ["status = 'active'"];
+  const params: string[] = [];
+  if (scope) { conditions.push("scope = ?"); params.push(scope); }
+  if (agentId) { conditions.push("agent_id = ?"); params.push(agentId); }
+  if (projectId) { conditions.push("project_id = ?"); params.push(projectId); }
+  const where = conditions.map(c => `AND ${c}`).join(" ");
+
+  const rows = db.query(`
+    SELECT
+      date(created_at) AS date,
+      COUNT(*) AS memories_created,
+      SUM(CASE WHEN scope = 'global' THEN 1 ELSE 0 END) AS global_count,
+      SUM(CASE WHEN scope = 'shared' THEN 1 ELSE 0 END) AS shared_count,
+      SUM(CASE WHEN scope = 'private' THEN 1 ELSE 0 END) AS private_count,
+      AVG(importance) AS avg_importance
+    FROM memories
+    WHERE date(created_at) >= date('now', '-${days} days') ${where}
+    GROUP BY date(created_at)
+    ORDER BY date ASC
+  `).all(...params) as { date: string; memories_created: number; global_count: number; shared_count: number; private_count: number; avg_importance: number }[];
+
+  return json({ activity: rows, days, total: rows.reduce((s, r) => s + r.memories_created, 0) });
+});
+
 // POST /api/memories/search — search
 addRoute("POST", "/api/memories/search", async (req) => {
   const body = (await readJson(req)) as Record<string, unknown> | null;

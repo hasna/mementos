@@ -1,6 +1,6 @@
 {
   "name": "@hasna/mementos-sdk",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Zero-dependency TypeScript client for @hasna/mementos REST API",
   "type": "module",
   "main": "dist/index.js",

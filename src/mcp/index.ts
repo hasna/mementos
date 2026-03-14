@@ -470,6 +470,46 @@ server.tool(
 );
 
 server.tool(
+  "memory_activity",
+  "Get daily memory creation activity over N days.",
+  {
+    days: z.coerce.number().optional(),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const days = Math.min(args.days || 30, 365);
+      const db = getDatabase();
+      const conditions: string[] = ["status = 'active'"];
+      const params: string[] = [];
+      if (args.scope) { conditions.push("scope = ?"); params.push(args.scope); }
+      if (args.agent_id) { conditions.push("agent_id = ?"); params.push(args.agent_id); }
+      if (args.project_id) { conditions.push("project_id = ?"); params.push(args.project_id); }
+      const where = conditions.slice(1).map(c => `AND ${c}`).join(" ");
+
+      const rows = db.query(`
+        SELECT date(created_at) AS date, COUNT(*) AS memories_created
+        FROM memories
+        WHERE status = 'active' AND date(created_at) >= date('now', '-${days} days') ${where}
+        GROUP BY date(created_at)
+        ORDER BY date ASC
+      `).all(...params) as { date: string; memories_created: number }[];
+
+      if (rows.length === 0) {
+        return { content: [{ type: "text" as const, text: `No memory activity in last ${days} days.` }] };
+      }
+      const total = rows.reduce((s, r) => s + r.memories_created, 0);
+      const lines = rows.map(r => `${r.date}: ${r.memories_created} memor${r.memories_created === 1 ? "y" : "ies"}`);
+      return { content: [{ type: "text" as const, text: `Memory activity (last ${days} days — ${total} total):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_export",
   "Export memories as JSON",
   {
@@ -1430,6 +1470,17 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       limit: { type: "number", description: "Max results (default 20)" },
     },
     example: '{"query":"typescript","scope":"global","limit":10}',
+  },
+  memory_activity: {
+    description: "Get daily memory creation counts over N days (max 365). Like 'git log --stat' for memories.",
+    category: "memory",
+    params: {
+      days: { type: "number", description: "Number of days to look back (default 30)" },
+      scope: { type: "string", description: "Filter by scope", enum: ["global", "shared", "private"] },
+      agent_id: { type: "string", description: "Filter by agent" },
+      project_id: { type: "string", description: "Filter by project" },
+    },
+    example: '{"days":14,"project_id":"proj-uuid"}',
   },
   memory_stats: {
     description: "Aggregate statistics: total, by scope, by category, pinned, expired counts.",

@@ -576,6 +576,23 @@ describe("404 handling", () => {
 // Security: path traversal prevention
 // ============================================================================
 
+describe("GET /api/activity", () => {
+  test("returns activity array and total", async () => {
+    await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "activity-test-mem", value: "val", scope: "global" }) });
+    const { status, data } = await api("/api/activity?days=30");
+    expect(status).toBe(200);
+    expect(Array.isArray(data.activity)).toBe(true);
+    expect(typeof data.total).toBe("number");
+    expect(data.days).toBe(30);
+  });
+
+  test("accepts days param", async () => {
+    const { status, data } = await api("/api/activity?days=7");
+    expect(status).toBe(200);
+    expect(data.days).toBe(7);
+  });
+});
+
 describe("path traversal prevention", () => {
   test("traversal attempt does not return /etc/passwd contents", async () => {
     // URL parser normalizes ../../ before reaching the handler.

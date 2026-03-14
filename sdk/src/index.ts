@@ -313,6 +313,16 @@ export class MementosClient {
     return this.get("/api/memories/stats");
   }
 
+  /** Get daily memory creation activity over N days. */
+  getActivity(options?: {
+    days?: number;
+    scope?: MemoryScope;
+    agent_id?: string;
+    project_id?: string;
+  }): Promise<{ activity: { date: string; memories_created: number; global_count: number; shared_count: number; private_count: number; avg_importance: number }[]; days: number; total: number }> {
+    return this.get("/api/activity", options as Record<string, string | number | boolean | undefined>);
+  }
+
   /** Search memories by query string. */
   searchMemories(input: SearchMemoriesInput | string): Promise<{ results: Memory[]; count: number }> {
     const body = typeof input === "string" ? { query: input } : input;
