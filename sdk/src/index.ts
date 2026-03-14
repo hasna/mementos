@@ -54,6 +54,7 @@ export interface Agent {
   name: string;
   role: string | null;
   description: string | null;
+  active_project_id: string | null;
   created_at: string;
   last_seen_at: string | null;
 }
@@ -369,6 +370,16 @@ export class MementosClient {
     return this.get(`/api/agents/${idOrName}`);
   }
 
+  /** Update an agent (name, role, description, active_project_id). */
+  updateAgent(idOrName: string, updates: { name?: string; role?: string; description?: string; metadata?: Record<string, unknown>; active_project_id?: string | null }): Promise<Agent> {
+    return this.patch(`/api/agents/${idOrName}`, updates);
+  }
+
+  /** List agents currently active on a project. */
+  listAgentsByProject(projectId: string): Promise<{ agents: Agent[]; count: number }> {
+    return this.get(`/api/agents`, { project_id: projectId });
+  }
+
   // --------------------------------------------------------------------------
   // Projects
   // --------------------------------------------------------------------------
@@ -381,6 +392,16 @@ export class MementosClient {
   /** Register a project (idempotent by name). */
   registerProject(input: { name: string; path?: string; description?: string; memory_prefix?: string }): Promise<Project> {
     return this.post("/api/projects", input);
+  }
+
+  /** Get a project by ID, path, or name. */
+  getProject(idOrName: string): Promise<Project> {
+    return this.get(`/api/projects/${encodeURIComponent(idOrName)}`);
+  }
+
+  /** List agents currently active on a project (by project ID or name). */
+  getProjectAgents(idOrName: string): Promise<{ agents: Agent[]; count: number }> {
+    return this.get(`/api/projects/${encodeURIComponent(idOrName)}/agents`);
   }
 
   // --------------------------------------------------------------------------
@@ -482,14 +503,15 @@ export class MementosClient {
   // Context injection
   // --------------------------------------------------------------------------
 
-  /** Get formatted memory context for injection into agent prompts. */
+  /** Get formatted memory context for injection into agent prompts.
+   * format: "xml" (default, <agent-memories> tags) | "markdown" | "compact" (key: value, smallest) | "json"
+   */
   getContext(options?: {
     agent_id?: string;
     project_id?: string;
-    scope?: MemoryScope;
-    limit?: number;
-    format?: "markdown" | "json" | "compact";
-  }): Promise<{ context: string; count: number }> {
+    max_tokens?: number;
+    format?: "xml" | "markdown" | "compact" | "json";
+  }): Promise<{ context: string; memories_count: number }> {
     return this.get("/api/inject", options as Record<string, string | number | boolean | undefined>);
   }
 }

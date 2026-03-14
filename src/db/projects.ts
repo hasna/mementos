@@ -63,6 +63,12 @@ export function getProject(
     | null;
   if (row) return parseProjectRow(row);
 
+  // Try by name (case-insensitive)
+  row = d.query("SELECT * FROM projects WHERE LOWER(name) = ?").get(idOrPath.toLowerCase()) as
+    | Record<string, unknown>
+    | null;
+  if (row) return parseProjectRow(row);
+
   return null;
 }
 

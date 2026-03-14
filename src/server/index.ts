@@ -17,7 +17,7 @@ import {
   touchMemory,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../db/agents.js";
-import { registerProject, listProjects } from "../db/projects.js";
+import { registerProject, listProjects, getProject } from "../db/projects.js";
 import { getDatabase } from "../db/database.js";
 import { searchMemories } from "../lib/search.js";
 import {
@@ -541,6 +541,21 @@ addRoute("POST", "/api/projects", async (req) => {
   return json(project, 201);
 });
 
+// GET /api/projects/:id — get project by ID or name
+addRoute("GET", "/api/projects/:id", (_req, _url, params) => {
+  const project = getProject(params["id"]!);
+  if (!project) return errorResponse("Project not found", 404);
+  return json(project);
+});
+
+// GET /api/projects/:id/agents — list agents active on a project
+addRoute("GET", "/api/projects/:id/agents", (_req, _url, params) => {
+  const project = getProject(params["id"]!);
+  if (!project) return errorResponse("Project not found", 404);
+  const agents = listAgentsByProject(project.id);
+  return json({ agents, count: agents.length });
+});
+
 // ============================================================================
 // Injection endpoint
 // ============================================================================
@@ -617,8 +632,18 @@ addRoute("GET", "/api/inject", (_req, url) => {
   const lines: string[] = [];
   let totalChars = 0;
 
+  const format = q["format"] || "xml"; // xml | markdown | compact | json
+
   for (const m of unique) {
-    const line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+    let line: string;
+    if (format === "compact") {
+      line = `${m.key}: ${m.value}`;
+    } else if (format === "json") {
+      line = JSON.stringify({ key: m.key, value: m.value, scope: m.scope, category: m.category, importance: m.importance });
+    } else {
+      // xml (default) and markdown use same line format
+      line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+    }
     if (totalChars + line.length > charBudget) break;
     lines.push(line);
     totalChars += line.length;
@@ -629,7 +654,16 @@ addRoute("GET", "/api/inject", (_req, url) => {
     return json({ context: "", memories_count: 0 });
   }
 
-  const context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+  let context: string;
+  if (format === "compact") {
+    context = lines.join("\n");
+  } else if (format === "json") {
+    context = `[${lines.join(",")}]`;
+  } else if (format === "markdown") {
+    context = `## Agent Memories\n\n${lines.join("\n")}`;
+  } else {
+    context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+  }
   return json({ context, memories_count: lines.length });
 });
 
