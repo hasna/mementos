@@ -2357,6 +2357,74 @@ program
 // tail
 // ============================================================================
 
+// ============================================================================
+// archive <keyOrId>
+// ============================================================================
+
+program
+  .command("archive <keyOrId>")
+  .description("Archive a memory by key or ID (hides from lists, keeps history)")
+  .option("-s, --scope <scope>", "Scope filter for key lookup")
+  .action((keyOrId: string, opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      // Try by ID first, then by key
+      let memory = getMemory(resolvePartialId(getDatabase(), "memories", keyOrId) || keyOrId)
+        || getMemoryByKey(keyOrId, opts.scope as MemoryScope | undefined, globalOpts.agent);
+      if (!memory) {
+        console.error(chalk.red(`No memory found: ${keyOrId}`));
+        process.exit(1);
+      }
+      updateMemory(memory.id, { status: "archived", version: memory.version });
+      if (globalOpts.json) {
+        outputJson({ archived: true, id: memory.id, key: memory.key });
+      } else {
+        console.log(chalk.green(`✓ Archived: ${chalk.bold(memory.key)} (${memory.id.slice(0, 8)})`));
+      }
+    } catch (e) {
+      console.error(chalk.red(`archive failed: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// versions <keyOrId>
+// ============================================================================
+
+program
+  .command("versions <keyOrId>")
+  .description("Show version history for a memory")
+  .option("-s, --scope <scope>", "Scope filter for key lookup")
+  .action((keyOrId: string, opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      let memory = getMemory(resolvePartialId(getDatabase(), "memories", keyOrId) || keyOrId)
+        || getMemoryByKey(keyOrId, opts.scope as MemoryScope | undefined, globalOpts.agent);
+      if (!memory) {
+        console.error(chalk.red(`No memory found: ${keyOrId}`));
+        process.exit(1);
+      }
+      const versions = getMemoryVersions(memory.id);
+      if (globalOpts.json) {
+        outputJson({ memory: { id: memory.id, key: memory.key, current_version: memory.version }, versions });
+        return;
+      }
+      console.log(chalk.bold(`\nVersion history: ${memory.key} (current: v${memory.version})\n`));
+      if (versions.length === 0) {
+        console.log(chalk.dim("  No previous versions."));
+        return;
+      }
+      for (const v of versions) {
+        console.log(`  ${chalk.cyan(`v${v.version}`)} ${chalk.dim(v.created_at.slice(0, 16))} scope=${v.scope} imp=${v.importance}`);
+        console.log(`    ${v.value.slice(0, 120)}${v.value.length > 120 ? "..." : ""}`);
+      }
+      console.log("");
+    } catch (e) {
+      console.error(chalk.red(`versions failed: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+  });
+
 program
   .command("tail")
   .description("Watch for new/updated memories in real-time (like tail -f)")
@@ -3020,7 +3088,7 @@ program
   .command("completions <shell>")
   .description("Output shell completion script (bash, zsh, fish)")
   .action((shell: string) => {
-    const commands = "save recall list update forget search stats export import clean inject context pin unpin doctor tail diff init agents projects bulk completions config backup restore report profile mcp";
+    const commands = "save recall list update forget search stats export import clean inject context pin unpin archive versions doctor tail diff init agents projects bulk completions config backup restore report profile mcp";
     const commandList = commands.split(" ");
 
     switch (shell.toLowerCase()) {

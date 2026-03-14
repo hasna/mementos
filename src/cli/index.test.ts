@@ -47,6 +47,8 @@ describe("CLI", () => {
     expect(stdout).toContain("forget");
     expect(stdout).toContain("update");
     expect(stdout).toContain("pin");
+    expect(stdout).toContain("archive");
+    expect(stdout).toContain("versions");
     // Agent/project commands
     expect(stdout).toContain("agents");
     expect(stdout).toContain("projects");
