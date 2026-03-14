@@ -271,7 +271,7 @@ server.tool(
 
 server.tool(
   "memory_update",
-  "Update a memory's metadata (value, importance, tags, etc.)",
+  "Update a memory's metadata (value, importance, tags, etc.). version is optional — auto-fetched if omitted.",
   {
     id: z.string(),
     value: z.string().optional(),
@@ -284,14 +284,65 @@ server.tool(
     status: z.enum(["active", "archived", "expired"]).optional(),
     metadata: z.record(z.unknown()).optional(),
     expires_at: z.string().nullable().optional(),
-    version: z.coerce.number(),
+    version: z.coerce.number().optional(),
   },
   async (args) => {
     try {
       const id = resolveId(args.id);
-      const { id: _id, ...updateFields } = args;
-      const memory = updateMemory(id, updateFields);
+      const { id: _id, version, ...updateFields } = args;
+      // Auto-fetch version if not provided (eliminates the need for a prior read)
+      const resolvedVersion = version ?? getMemory(id)?.version;
+      if (resolvedVersion === undefined) {
+        return { content: [{ type: "text" as const, text: `Memory not found: ${id}` }] };
+      }
+      const memory = updateMemory(id, { ...updateFields, version: resolvedVersion });
       return { content: [{ type: "text" as const, text: `Memory updated:\n${formatMemory(memory)}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_pin",
+  "Pin or unpin a memory by ID or key. No version needed.",
+  {
+    id: z.string().optional(),
+    key: z.string().optional(),
+    pinned: z.boolean().optional(),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      let memory = args.id ? getMemory(resolveId(args.id)) : getMemoryByKey(args.key!, args.scope, args.agent_id, args.project_id);
+      if (!memory) return { content: [{ type: "text" as const, text: `Memory not found.` }] };
+      const pinned = args.pinned !== false; // default to pin=true
+      updateMemory(memory.id, { pinned, version: memory.version });
+      return { content: [{ type: "text" as const, text: `Memory "${memory.key}" ${pinned ? "pinned" : "unpinned"}.` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_archive",
+  "Archive a memory by ID or key (hides from lists, keeps history). No version needed.",
+  {
+    id: z.string().optional(),
+    key: z.string().optional(),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      let memory = args.id ? getMemory(resolveId(args.id)) : getMemoryByKey(args.key!, args.scope, args.agent_id, args.project_id);
+      if (!memory) return { content: [{ type: "text" as const, text: `Memory not found.` }] };
+      updateMemory(memory.id, { status: "archived", version: memory.version });
+      return { content: [{ type: "text" as const, text: `Memory "${memory.key}" archived.` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -1315,11 +1366,11 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     example: '{"scope":"global","min_importance":7,"limit":20}',
   },
   memory_update: {
-    description: "Update a memory's fields. Requires current version for optimistic concurrency.",
+    description: "Update a memory's fields. version is optional — auto-fetched if omitted (eliminates 2-round-trip pattern).",
     category: "memory",
     params: {
       id: { type: "string", description: "Memory ID (partial OK)", required: true },
-      version: { type: "number", description: "Current version (for conflict detection)", required: true },
+      version: { type: "number", description: "Current version for conflict detection (omit to auto-fetch)" },
       value: { type: "string", description: "New value" },
       category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history"] },
       scope: { type: "string", description: "New scope", enum: ["global", "shared", "private"] },
@@ -1332,6 +1383,27 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       expires_at: { type: "string", description: "New expiry ISO timestamp (null to clear)" },
     },
     example: '{"id":"abc123","version":1,"importance":9,"tags":["correction","important"]}',
+  },
+  memory_pin: {
+    description: "Pin or unpin a memory by ID or key. No version required.",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Memory ID" },
+      key: { type: "string", description: "Memory key (alternative to id)" },
+      pinned: { type: "boolean", description: "true=pin (default), false=unpin" },
+      scope: { type: "string", description: "Scope filter for key lookup", enum: ["global", "shared", "private"] },
+    },
+    example: '{"key":"project-stack","pinned":true}',
+  },
+  memory_archive: {
+    description: "Archive a memory by ID or key. Hides from lists, preserves history. No version required.",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Memory ID" },
+      key: { type: "string", description: "Memory key (alternative to id)" },
+      scope: { type: "string", description: "Scope filter for key lookup", enum: ["global", "shared", "private"] },
+    },
+    example: '{"key":"old-project-stack"}',
   },
   memory_forget: {
     description: "Delete a memory by ID or key.",
