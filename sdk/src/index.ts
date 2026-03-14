@@ -328,6 +328,24 @@ export class MementosClient {
     return this.get("/api/memories/stats");
   }
 
+  /** Get a rich report: totals, activity trend, scope/category breakdown, top memories. */
+  getReport(options?: {
+    days?: number;
+    project_id?: string;
+    agent_id?: string;
+  }): Promise<{
+    total: number;
+    pinned: number;
+    days: number;
+    recent: { total: number; activity: { date: string; memories_created: number }[] };
+    by_scope: Record<string, number>;
+    by_category: Record<string, number>;
+    top_memories: { id: string; key: string; value: string; importance: number; scope: string; category: string }[];
+    top_agents: { agent_id: string; c: number }[];
+  }> {
+    return this.get("/api/report", options as Record<string, string | number | boolean | undefined>);
+  }
+
   /** Get daily memory creation activity over N days. */
   getActivity(options?: {
     days?: number;

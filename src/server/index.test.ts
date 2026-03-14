@@ -576,6 +576,28 @@ describe("404 handling", () => {
 // Security: path traversal prevention
 // ============================================================================
 
+describe("GET /api/report", () => {
+  test("returns report shape", async () => {
+    await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "report-mem", value: "test value", scope: "global", importance: 7 }) });
+    const { status, data } = await api("/api/report?days=7");
+    expect(status).toBe(200);
+    expect(typeof data.total).toBe("number");
+    expect(typeof data.pinned).toBe("number");
+    expect(data.days).toBe(7);
+    expect(typeof data.recent.total).toBe("number");
+    expect(Array.isArray(data.recent.activity)).toBe(true);
+    expect(typeof data.by_scope).toBe("object");
+    expect(typeof data.by_category).toBe("object");
+    expect(Array.isArray(data.top_memories)).toBe(true);
+  });
+
+  test("accepts project_id filter", async () => {
+    const { status, data } = await api("/api/report?days=7&project_id=nonexistent");
+    expect(status).toBe(200);
+    expect(data.total).toBe(0);
+  });
+});
+
 describe("GET /api/activity", () => {
   test("returns activity array and total", async () => {
     await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "activity-test-mem", value: "val", scope: "global" }) });
