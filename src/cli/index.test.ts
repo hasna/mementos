@@ -37,11 +37,26 @@ describe("CLI", () => {
     expect(stdout).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
-  test("--help shows help text", async () => {
+  test("--help shows all key commands", async () => {
     const { stdout } = await runCli("--help");
+    // Core memory commands
     expect(stdout).toContain("save");
     expect(stdout).toContain("recall");
     expect(stdout).toContain("list");
+    expect(stdout).toContain("search");
+    expect(stdout).toContain("forget");
+    expect(stdout).toContain("update");
+    expect(stdout).toContain("pin");
+    // Agent/project commands
+    expect(stdout).toContain("agents");
+    expect(stdout).toContain("projects");
+    // Utility commands
+    expect(stdout).toContain("report");
+    expect(stdout).toContain("stats");
+    expect(stdout).toContain("profile");
+    expect(stdout).toContain("doctor");
+    expect(stdout).toContain("inject");
+    expect(stdout).toContain("mcp");
   });
 
   test("save creates a memory", async () => {
@@ -260,6 +275,35 @@ describe("CLI", () => {
     const { stderr, exitCode } = await runCli("unpin", "nonexistent-unpin-key-xyz");
     expect(exitCode).not.toBe(0);
     expect(stderr.toLowerCase()).toContain("no memory found");
+  });
+
+  test("report shows memory summary", async () => {
+    await runCli("save", "report-test-key", "report-test-value", "--scope", "global", "--importance", "8");
+    const { stdout, exitCode } = await runCli("report", "--days", "7");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Total:");
+    expect(stdout).toContain("Recent:");
+  });
+
+  test("report --json outputs parseable JSON", async () => {
+    // Global --json must come before subcommand in Commander.js
+    const { stdout, exitCode } = await runCli("--json", "report");
+    expect(exitCode).toBe(0);
+    const data = JSON.parse(stdout);
+    expect(typeof data.total).toBe("number");
+    expect(typeof data.pinned).toBe("number");
+    expect(typeof data.recent.total).toBe("number");
+  });
+
+  test("report --markdown outputs markdown", async () => {
+    const { stdout, exitCode } = await runCli("report", "--markdown");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("## Mementos Report");
+  });
+
+  test("profile list shows profiles", async () => {
+    const { exitCode } = await runCli("profile", "list");
+    expect(exitCode).toBe(0);
   });
 
   test("pin by partial ID", async () => {

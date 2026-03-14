@@ -1097,6 +1097,9 @@ program
     try {
       const globalOpts = program.opts<GlobalOpts>();
       const days = parseInt(opts.days as string, 10) || 7;
+      // --json and --markdown may be consumed by global opts — check both
+      const isJson = (opts.json as boolean | undefined) || globalOpts.json;
+      const isMarkdown = opts.markdown as boolean | undefined;
       const projectPath = (opts.project as string | undefined) || globalOpts.project;
       let projectId: string | undefined;
       if (projectPath) {
@@ -1135,12 +1138,12 @@ program
       // Top agents by memory count
       const topAgents = db.query(`SELECT agent_id, COUNT(*) as c FROM memories WHERE status = 'active' AND agent_id IS NOT NULL ${conditions} GROUP BY agent_id ORDER BY c DESC LIMIT 5`).all(...params) as { agent_id: string; c: number }[];
 
-      if (opts.json) {
+      if (isJson) {
         console.log(JSON.stringify({ total, pinned, recent: { days, total: recentTotal, avg_per_day: parseFloat(avgPerDay) }, by_scope: byScope, by_category: byCat, top_memories: topMems, top_agents: topAgents }, null, 2));
         return;
       }
 
-      if (opts.markdown) {
+      if (isMarkdown) {
         const lines = [
           `## Mementos Report (last ${days} days)`,
           "",
