@@ -20,9 +20,9 @@ import {
   listProjects,
   getProject,
 } from "../db/projects.js";
-import { createEntity, getEntity, getEntityByName, listEntities, deleteEntity, mergeEntities } from "../db/entities.js";
-import { createRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
-import { linkEntityToMemory, getMemoriesForEntity } from "../db/entity-memories.js";
+import { createEntity, getEntity, getEntityByName, listEntities, updateEntity, deleteEntity, mergeEntities } from "../db/entities.js";
+import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
+import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../db/entity-memories.js";
 import { getDatabase, resolvePartialId } from "../db/database.js";
 import { searchMemories } from "../lib/search.js";
 import { detectProject } from "../lib/project-detect.js";
@@ -541,6 +541,47 @@ server.tool(
       const total = rows.reduce((s, r) => s + r.memories_created, 0);
       const lines = rows.map(r => `${r.date}: ${r.memories_created} memor${r.memories_created === 1 ? "y" : "ies"}`);
       return { content: [{ type: "text" as const, text: `Memory activity (last ${days} days — ${total} total):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_report",
+  "Get a rich summary report: totals, activity trend, top memories, scope/category breakdown.",
+  {
+    days: z.coerce.number().optional(),
+    project_id: z.string().optional(),
+    agent_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const days = Math.min(args.days || 7, 365);
+      const db = getDatabase();
+      const cond = [args.project_id ? "AND project_id = ?" : "", args.agent_id ? "AND agent_id = ?" : ""].filter(Boolean).join(" ");
+      const params: string[] = [...(args.project_id ? [args.project_id] : []), ...(args.agent_id ? [args.agent_id] : [])];
+
+      const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${cond}`).get(...params) as { c: number }).c;
+      const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${cond}`).get(...params) as { c: number }).c;
+
+      const actRows = db.query(`SELECT date(created_at) AS d, COUNT(*) AS cnt FROM memories WHERE status = 'active' AND date(created_at) >= date('now', '-${days} days') ${cond} GROUP BY d ORDER BY d`).all(...params) as { d: string; cnt: number }[];
+      const recentTotal = actRows.reduce((s, r) => s + r.cnt, 0);
+      const sparkline = actRows.length > 0 ? actRows.map(r => { const bars = "▁▂▃▄▅▆▇█"; const max = Math.max(...actRows.map(x => x.cnt), 1); return bars[Math.round((r.cnt / max) * 7)] || "▁"; }).join("") : "—";
+
+      const byScopeRows = db.query(`SELECT scope, COUNT(*) as c FROM memories WHERE status = 'active' ${cond} GROUP BY scope`).all(...params) as { scope: string; c: number }[];
+      const byCatRows = db.query(`SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' ${cond} GROUP BY category`).all(...params) as { category: string; c: number }[];
+      const topMems = db.query(`SELECT key, value, importance FROM memories WHERE status = 'active' ${cond} ORDER BY importance DESC, access_count DESC LIMIT 5`).all(...params) as { key: string; value: string; importance: number }[];
+
+      const lines = [
+        `Memory Report (last ${days} days)`,
+        `Total: ${total} (${pinned} pinned) | Recent: +${recentTotal} | Activity: ${sparkline}`,
+        `Scopes: ${byScopeRows.map(r => `${r.scope}=${r.c}`).join(" ")}`,
+        `Categories: ${byCatRows.map(r => `${r.category}=${r.c}`).join(" ")}`,
+        topMems.length > 0 ? `\nTop memories:\n${topMems.map(m => `  [${m.importance}] ${m.key}: ${m.value.slice(0, 80)}${m.value.length > 80 ? "..." : ""}`).join("\n")}` : "",
+      ].filter(Boolean);
+
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -1202,6 +1243,63 @@ server.tool(
 );
 
 server.tool(
+  "entity_update",
+  "Update an entity's name, description, or metadata.",
+  {
+    entity_name_or_id: z.string(),
+    name: z.string().optional(),
+    description: z.string().nullable().optional(),
+    metadata: z.record(z.unknown()).optional(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.entity_name_or_id);
+      const { entity_name_or_id: _id, ...updates } = args;
+      const updated = updateEntity(entity.id, updates);
+      return { content: [{ type: "text" as const, text: `Updated entity: ${updated.name} (${updated.id.slice(0, 8)})` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "entity_unlink",
+  "Unlink a memory from an entity.",
+  {
+    entity_name_or_id: z.string(),
+    memory_id: z.string(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.entity_name_or_id);
+      const memoryId = resolveId(args.memory_id);
+      unlinkEntityFromMemory(entity.id, memoryId);
+      return { content: [{ type: "text" as const, text: `Unlinked: ${entity.name} ↛ memory ${memoryId.slice(0, 8)}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "relation_get",
+  "Get a relation by ID.",
+  {
+    id: z.string(),
+  },
+  async (args) => {
+    try {
+      const relation = getRelation(args.id);
+      if (!relation) return { content: [{ type: "text" as const, text: `Relation not found: ${args.id}` }] };
+      return { content: [{ type: "text" as const, text: `Relation ${relation.id.slice(0, 8)}: ${relation.source_entity_id.slice(0, 8)} —[${relation.relation_type}]→ ${relation.target_entity_id.slice(0, 8)} (weight: ${relation.weight})` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "relation_create",
   "Create a relation between two entities (uses, knows, depends_on, created_by, related_to, contradicts, part_of, implements).",
   {
@@ -1692,6 +1790,44 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     category: "utility",
     params: {},
     example: "{}",
+  },
+  memory_report: {
+    description: "Rich summary: total/pinned counts, sparkline activity, scope/category breakdown, top 5 memories by importance.",
+    category: "memory",
+    params: {
+      days: { type: "number", description: "Activity window in days (default 7)" },
+      project_id: { type: "string", description: "Filter by project" },
+      agent_id: { type: "string", description: "Filter by agent" },
+    },
+    example: '{"days":7,"project_id":"proj-uuid"}',
+  },
+  entity_update: {
+    description: "Update an entity's name, description, or metadata.",
+    category: "graph",
+    params: {
+      entity_name_or_id: { type: "string", description: "Entity name or ID", required: true },
+      name: { type: "string", description: "New name" },
+      description: { type: "string", description: "New description (null to clear)" },
+      metadata: { type: "object", description: "New metadata" },
+    },
+    example: '{"entity_name_or_id":"TypeScript","description":"Typed superset of JavaScript by Microsoft"}',
+  },
+  entity_unlink: {
+    description: "Remove the link between an entity and a memory.",
+    category: "graph",
+    params: {
+      entity_name_or_id: { type: "string", description: "Entity name or ID", required: true },
+      memory_id: { type: "string", description: "Memory ID (partial OK)", required: true },
+    },
+    example: '{"entity_name_or_id":"TypeScript","memory_id":"abc12345"}',
+  },
+  relation_get: {
+    description: "Get a specific relation by ID.",
+    category: "graph",
+    params: {
+      id: { type: "string", description: "Relation ID", required: true },
+    },
+    example: '{"id":"rel-uuid"}',
   },
   entity_create: {
     description: "Create a knowledge graph entity.",
