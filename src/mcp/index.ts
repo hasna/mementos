@@ -12,6 +12,7 @@ import {
   bulkDeleteMemories,
   touchMemory,
   cleanExpiredMemories,
+  getMemoryVersions,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../db/agents.js";
 import {
@@ -209,6 +210,38 @@ server.tool(
       }
       touchMemory(memory.id);
       return { content: [{ type: "text" as const, text: formatMemory(memory) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_versions",
+  "Get version history for a memory. Shows what changed across updates.",
+  {
+    id: z.string(),
+  },
+  async (args) => {
+    try {
+      const id = resolveId(args.id);
+      const memory = getMemory(id);
+      if (!memory) {
+        return { content: [{ type: "text" as const, text: `Memory not found: ${args.id}` }] };
+      }
+      const versions = getMemoryVersions(id);
+      if (versions.length === 0) {
+        return { content: [{ type: "text" as const, text: `No version history for "${memory.key}" (current: v${memory.version})` }] };
+      }
+      const lines = versions.map(v =>
+        `v${v.version} [${v.created_at.slice(0, 16)}] scope=${v.scope} importance=${v.importance} status=${v.status}\n  value: ${v.value.slice(0, 120)}${v.value.length > 120 ? "..." : ""}`
+      );
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Version history for "${memory.key}" (${versions.length} version${versions.length === 1 ? "" : "s"}, current: v${memory.version}):\n\n${lines.join("\n\n")}`,
+        }],
+      };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -1364,6 +1397,14 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       metadata: { type: "object", description: "Arbitrary JSON metadata" },
     },
     example: '{"key":"preferred-language","value":"TypeScript","scope":"global","importance":8,"tags":["language","preference"]}',
+  },
+  memory_versions: {
+    description: "Get full version history for a memory — all past values, scopes, importance scores.",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Memory ID (partial OK)", required: true },
+    },
+    example: '{"id":"abc12345"}',
   },
   memory_get: {
     description: "Get a single memory by ID (partial IDs resolved).",

@@ -15,6 +15,7 @@ import {
   deleteMemory,
   cleanExpiredMemories,
   touchMemory,
+  getMemoryVersions,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../db/agents.js";
 import { registerProject, listProjects, getProject } from "../db/projects.js";
@@ -616,6 +617,14 @@ addRoute("PATCH", "/api/memories/:id", async (req, _url, params) => {
     }
     throw e;
   }
+});
+
+// GET /api/memories/:id/versions — version history for a memory
+addRoute("GET", "/api/memories/:id/versions", (_req, _url, params) => {
+  const memory = getMemory(params["id"]!);
+  if (!memory) return errorResponse("Memory not found", 404);
+  const versions = getMemoryVersions(memory.id);
+  return json({ versions, count: versions.length, current_version: memory.version });
 });
 
 // DELETE /api/memories/:id — delete memory

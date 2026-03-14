@@ -49,6 +49,21 @@ export interface Memory {
   accessed_at: string | null;
 }
 
+export interface MemoryVersion {
+  id: string;
+  memory_id: string;
+  version: number;
+  value: string;
+  importance: number;
+  scope: MemoryScope;
+  category: MemoryCategory;
+  tags: string[];
+  summary: string | null;
+  pinned: boolean;
+  status: MemoryStatus;
+  created_at: string;
+}
+
 export interface Agent {
   id: string;
   name: string;
@@ -370,6 +385,11 @@ export class MementosClient {
   /** Get a memory by ID. */
   getMemory(id: string): Promise<Memory> {
     return this.get(`/api/memories/${id}`);
+  }
+
+  /** Get version history for a memory — all past values and metadata. */
+  getMemoryVersions(id: string): Promise<{ versions: MemoryVersion[]; count: number; current_version: number }> {
+    return this.get(`/api/memories/${id}/versions`);
   }
 
   /** Update a memory (requires version for optimistic locking). */
