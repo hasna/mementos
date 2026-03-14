@@ -1,10 +1,10 @@
 # @hasna/mementos
 
-Universal memory system for AI agents. SQLite-backed with CLI, MCP server, and library API.
+Universal memory system for AI agents. SQLite-backed with CLI, MCP server, REST API, and TypeScript library.
 
-Agents can save, recall, search, and share memories across sessions. Memories are scoped (global, shared, private), categorized, importance-ranked, and automatically injected into agent context.
+Agents save, recall, search, and share memories across sessions. Memories are scoped (global/shared/private), categorized, importance-ranked, and injected into agent context on demand.
 
-## Installation
+## Install
 
 ```bash
 bun add -g @hasna/mementos
@@ -14,261 +14,222 @@ bun add -g @hasna/mementos
 
 ```bash
 # Save a memory
-mementos save "preferred-language" "TypeScript" --scope global --importance 8
+mementos save "project-stack" "Bun + TypeScript + SQLite" --scope shared --importance 8
 
 # Recall it
-mementos recall "preferred-language"
+mementos recall "project-stack"
 
-# Search across all memories
-mementos search "typescript"
+# Search
+mementos search "typescript stack"
 
-# List memories with filters
-mementos list --scope global --importance-min 5
+# Inject into agent context (compact = ~60% smaller)
+mementos inject --format compact --project-id <id>
 
 # Get stats
 mementos stats
 ```
 
-## Memory Scopes
-
-| Scope | Visibility | Use Case |
-|-------|-----------|----------|
-| `global` | All agents, all projects | Org-wide preferences, facts |
-| `shared` | All agents in a project | Project conventions, decisions |
-| `private` | Single agent only | Agent-specific context, history |
-
-## Memory Categories
-
-| Category | Description |
-|----------|------------|
-| `preference` | Settings, choices, style preferences |
-| `fact` | Verified truths, known information |
-| `knowledge` | Learned patterns, insights, techniques |
-| `history` | Session context, conversation summaries |
-
-## CLI Reference
-
-### Global Options
-
-```
---project <path>   Project context
---json             Output as JSON
---agent <name>     Agent identifier
---session <id>     Session context
-```
-
-### Commands
-
-```bash
-mementos save <key> <value>     # Save a memory
-  -s, --scope <scope>           # global|shared|private (default: private)
-  -c, --category <cat>          # preference|fact|knowledge|history
-  --importance <1-10>           # Importance score (default: 5)
-  --tags <t1,t2>                # Comma-separated tags
-  --summary <text>              # Brief summary
-  --ttl <ms>                    # Time-to-live in milliseconds
-  --source <src>                # user|agent|system|auto|imported
-
-mementos recall <key>           # Get memory by key
-mementos list                   # List memories (with filters)
-mementos update <id>            # Update memory fields
-mementos forget <key|id>        # Delete a memory
-mementos search <query>         # Full-text search
-mementos stats                  # Memory statistics
-mementos export                 # Export as JSON
-mementos import <file>          # Import from JSON
-mementos clean                  # Remove expired + enforce quotas
-mementos inject                 # Output injection context
-mementos init <name>            # Register agent
-mementos agents                 # List agents
-mementos projects               # Manage projects
-mementos bulk <action> <ids>    # Batch operations
-```
-
 ## MCP Server
 
-### Setup for Claude Code
+### Install into Claude Code (recommended)
 
-Add to `~/.claude/.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "mementos": {
-      "command": "mementos-mcp",
-      "args": []
-    }
-  }
-}
+```bash
+mementos mcp --claude
+# Or manually:
+claude mcp add --transport stdio --scope user mementos -- mementos-mcp
 ```
 
-### Setup for Codex
+### Install into Codex / Gemini
 
-Add to `.codex/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "mementos": {
-      "command": "mementos-mcp"
-    }
-  }
-}
+```bash
+mementos mcp --codex
+mementos mcp --gemini
+mementos mcp --all        # all agents at once
 ```
 
-### Available Tools (19)
+### Available Tools (40+)
 
-**Memory:** `memory_save`, `memory_recall`, `memory_list`, `memory_update`, `memory_forget`, `memory_search`, `memory_stats`, `memory_export`, `memory_import`, `memory_inject`
-
-**Agents:** `register_agent`, `list_agents`, `get_agent`
-
-**Projects:** `register_project`, `list_projects`
+**Memory:** `memory_save`, `memory_recall`, `memory_get`, `memory_list`, `memory_update`, `memory_pin`, `memory_archive`, `memory_forget`, `memory_search`, `memory_stats`, `memory_export`, `memory_import`, `memory_inject`, `memory_context`, `session_extract`
 
 **Bulk:** `bulk_forget`, `bulk_update`
 
-**Utility:** `clean_expired`, `memory_context`
+**Agents:** `register_agent`, `list_agents`, `list_agents_by_project`, `get_agent`, `update_agent`
 
-### Resources
+**Projects:** `register_project`, `list_projects`, `get_project`
 
-- `mementos://memories` — All active memories
-- `mementos://agents` — Registered agents
-- `mementos://projects` — Registered projects
+**Knowledge Graph:** `entity_create`, `entity_get`, `entity_list`, `entity_delete`, `entity_merge`, `entity_link`, `relation_create`, `relation_delete`, `relation_list`, `graph_query`, `graph_path`, `graph_stats`
 
-## Library API
+**Meta:** `search_tools`, `describe_tools` (lean stubs — full docs on demand)
 
-```typescript
-import {
-  createMemory,
-  getMemoryByKey,
-  listMemories,
-  searchMemories,
-  MemoryInjector,
-} from "@hasna/mementos";
+**Utility:** `clean_expired`
 
-// Save a memory
-const memory = createMemory({
-  key: "db-convention",
-  value: "Always use snake_case for column names",
-  scope: "shared",
-  category: "preference",
-  importance: 8,
-  tags: ["database", "conventions"],
-});
+## CLI Reference
 
-// Recall
-const recalled = getMemoryByKey("db-convention", "shared");
+```bash
+mementos save <key> <value>        # Save/upsert a memory
+mementos recall <key>              # Get memory by key
+mementos list                      # List memories (with filters)
+mementos update <id>               # Update memory fields
+mementos pin <key|id>              # Pin a memory
+mementos forget <key|id>           # Delete a memory
+mementos search <query>            # Full-text + fuzzy search
+mementos stats                     # Memory statistics
+mementos export                    # Export as JSON
+mementos import <file>             # Import from JSON
+mementos clean                     # Remove expired + enforce quotas
+mementos inject                    # Output injection context
+mementos init <name>               # Register agent
+mementos agents                    # List agents
+mementos projects                  # Manage projects
+mementos bulk forget <ids>         # Batch delete
+mementos bulk update <ids>         # Batch update
+mementos diff <id>                 # Show memory version history
+mementos doctor                    # Diagnose DB health
 
-// Search
-const results = searchMemories("database");
+# Profiles — isolated DBs per context
+mementos profile set work          # Switch to work profile
+mementos profile list              # List all profiles
+mementos profile get               # Show active profile
+mementos profile unset             # Back to default
+```
 
-// List with filters
-const memories = listMemories({
-  scope: "global",
-  category: "fact",
-  min_importance: 5,
-  limit: 20,
-});
+## Profiles
 
-// Inject into agent context
-const injector = new MemoryInjector();
-const context = injector.getInjectionContext({
-  agent_id: "my-agent",
-  project_id: "my-project",
-  max_tokens: 500,
-});
+```bash
+# Each profile is an isolated DB: ~/.mementos/profiles/<name>.db
+mementos profile set work
+MEMENTOS_PROFILE=work mementos list   # per-command
 ```
 
 ## REST API
-
-Start the server:
 
 ```bash
 mementos-serve --port 19428
 ```
 
-### Endpoints
+Default port: **19428**. Binds to `127.0.0.1` (localhost only). Override with `MEMENTOS_HOST=0.0.0.0`.
+
+### Key Endpoints
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/memories` | List memories |
-| POST | `/api/memories` | Create memory |
-| GET | `/api/memories/:id` | Get memory |
-| PATCH | `/api/memories/:id` | Update memory |
-| DELETE | `/api/memories/:id` | Delete memory |
-| POST | `/api/memories/search` | Search |
+| GET | `/api/memories?fields=key,value` | List memories (?fields, ?scope, ?session_id, ?status) |
+| POST | `/api/memories` | Create/upsert memory |
+| PATCH | `/api/memories/:id` | Update (version optional — auto-fetched) |
+| DELETE | `/api/memories/:id` | Delete |
+| POST | `/api/memories/search` | Full-text search |
+| POST | `/api/memories/extract` | Auto-extract memories from session summary |
+| POST | `/api/memories/bulk-forget` | Delete multiple |
+| POST | `/api/memories/bulk-update` | Update multiple |
 | GET | `/api/memories/stats` | Statistics |
-| POST | `/api/memories/export` | Export |
-| POST | `/api/memories/import` | Import |
-| POST | `/api/memories/clean` | Cleanup |
-| GET/POST | `/api/agents` | Agents |
-| GET/POST | `/api/projects` | Projects |
-| GET | `/api/inject` | Injection context |
+| POST | `/api/memories/export` | Export with filters |
+| GET | `/api/inject?format=compact` | Context injection (compact/markdown/json/xml) |
+| GET/POST | `/api/agents` | Agent registry |
+| PATCH | `/api/agents/:id` | Update agent (including active_project_id) |
+| GET/POST | `/api/projects` | Project registry |
+| GET | `/api/projects/:id/agents` | Agents active on a project |
+| GET | `/api/profile` | Active profile info |
+| GET | `/api/health` | Health check (includes profile, hostname) |
 
-## Configuration
+## SDK
 
-Config file: `~/.mementos/config.json`
-
-```json
-{
-  "default_scope": "private",
-  "default_category": "knowledge",
-  "default_importance": 5,
-  "max_entries": 1000,
-  "max_entries_per_scope": {
-    "global": 500,
-    "shared": 300,
-    "private": 200
-  },
-  "injection": {
-    "max_tokens": 500,
-    "min_importance": 5,
-    "categories": ["preference", "fact"],
-    "refresh_interval": 5
-  },
-  "sync_agents": ["claude", "codex", "gemini"],
-  "auto_cleanup": {
-    "enabled": true,
-    "expired_check_interval": 3600
-  }
-}
+```bash
+bun add @hasna/mementos-sdk
 ```
 
-### Environment Variables
+```typescript
+import { MementosClient } from "@hasna/mementos-sdk";
 
-| Variable | Description |
-|----------|------------|
-| `MEMENTOS_DB_PATH` | Override database path |
-| `MEMENTOS_DB_SCOPE` | Set to `project` for project-level DB |
-| `MEMENTOS_DEFAULT_SCOPE` | Default memory scope |
+const client = new MementosClient({ baseUrl: "http://localhost:19428" });
 
-## Database
+// Save memory
+await client.saveMemory({ key: "db-convention", value: "snake_case", scope: "shared" });
 
-SQLite with WAL mode. Path resolution:
+// Search
+const { results } = await client.searchMemories("database conventions");
 
-1. `MEMENTOS_DB_PATH` environment variable
-2. Nearest `.mementos/mementos.db` (walking up from cwd)
-3. `~/.mementos/mementos.db` (global fallback)
+// Context injection (compact format — 60% smaller)
+const { context } = await client.getContext({ project_id: "...", format: "compact" });
+
+// Sessions → mementos integration
+await client.extractFromSession({
+  session_id: "abc123",
+  title: "Fix auth middleware",
+  key_topics: ["jwt", "compliance"],
+  project_id: "...",
+});
+```
+
+## Agent-Project Binding
+
+Track which agent is working on which project:
+
+```typescript
+// On session start
+await client.updateAgent("my-agent", { active_project_id: "project-uuid" });
+
+// Query: who's on this project?
+const { agents } = await client.getProjectAgents("open-mementos");
+```
+
+## Context Injection
+
+```bash
+# 60% smaller with compact format
+mementos inject --format compact --project-id <id> --max-tokens 400
+```
+
+MCP: `memory_inject(project_id="...", format="compact", max_tokens=400)`
+
+## Sessions Integration
+
+After ingesting a session (open-sessions):
+
+```bash
+sessions remember <session-id> --mementos-url http://localhost:19428
+# Creates: session-summary (history), session-topics (knowledge), session-notes (knowledge)
+```
+
+REST:
+```json
+POST /api/memories/extract
+{ "session_id": "abc", "title": "Fix auth", "key_topics": ["jwt"] }
+```
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `MEMENTOS_DB_PATH` | Override DB path (bypasses profiles) | `~/.mementos/mementos.db` |
+| `MEMENTOS_PROFILE` | Named profile → `~/.mementos/profiles/<name>.db` | none |
+| `MEMENTOS_DB_SCOPE` | `project` = git root `.mementos/mementos.db` | global |
+| `MEMENTOS_HOST` | Server bind address | `127.0.0.1` |
+| `PORT` | Server port | `19428` |
+
+## Library
+
+```typescript
+import {
+  createMemory, getMemoryByKey, listMemories, searchMemories,
+  registerAgent, updateAgent, listAgentsByProject,
+  registerProject, getProject,
+  getActiveProfile, setActiveProfile,
+  MemoryInjector,
+} from "@hasna/mementos";
+```
 
 ## Architecture
 
 ```
 src/
-├── types/index.ts      # Type definitions, enums, errors
-├── db/
-│   ├── database.ts     # SQLite setup, migrations, utilities
-│   ├── memories.ts     # Memory CRUD with optimistic locking
-│   ├── agents.ts       # Agent registration (8-char UUIDs)
-│   └── projects.ts     # Project registry
-├── lib/
-│   ├── config.ts       # Configuration loading
-│   ├── search.ts       # Full-text search engine
-│   ├── injector.ts     # Context injection system
-│   ├── retention.ts    # Auto-cleanup & quota enforcement
-│   └── sync.ts         # Multi-agent memory sync
-├── cli/index.tsx       # CLI (Commander.js + chalk)
-├── mcp/index.ts        # MCP server (19 tools, 3 resources)
-├── server/index.ts     # REST API server
-└── index.ts            # Library exports
+  cli/         Commander.js + Ink TUI — 20+ commands
+  mcp/         MCP server — 40+ tools (lean stubs)
+  server/      REST API — 37+ endpoints (Bun.serve)
+  db/          SQLite (bun:sqlite) — memories, agents, projects, entities, relations
+  lib/         FTS5 search, injection, extraction, retention, config, profiles
+  types/       TypeScript interfaces and errors
+sdk/           @hasna/mementos-sdk — zero-dep fetch client
+dashboard/     React+Vite web UI
 ```
 
 ## License
