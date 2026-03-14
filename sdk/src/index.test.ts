@@ -507,6 +507,19 @@ describe("MementosClient", () => {
 // New methods added in v0.1.x (coverage for uncovered lines)
 // ============================================================================
 
+describe("getHealth", () => {
+  it("GETs /api/health with enriched response", async () => {
+    const health = { status: "ok", version: "0.4.30", profile: "default", db_path: "/tmp/test.db", hostname: "127.0.0.1", memories: { total: 42, expired: 0, pinned: 3 }, agents: 2, projects: 1 };
+    const { calls, fetch } = mockFetch([{ status: 200, body: health }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.getHealth();
+    expect(calls[0]!.url).toBe(`${BASE}/api/health`);
+    expect(result.status).toBe("ok");
+    expect(result.memories.total).toBe(42);
+    expect(result.agents).toBe(2);
+  });
+});
+
 describe("getReport", () => {
   it("GETs /api/report", async () => {
     const report = { total: 50, pinned: 3, days: 7, recent: { total: 10, activity: [] }, by_scope: {}, by_category: {}, top_memories: [], top_agents: [] };

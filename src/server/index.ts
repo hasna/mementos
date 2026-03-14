@@ -1214,11 +1214,18 @@ export function startServer(port: number): void {
       // Health check
       if (pathname === "/api/health" || pathname === "/health") {
         const profile = getActiveProfile();
-        // Read version from package.json dynamically
         const { createRequire } = await import("node:module");
         const req = createRequire(import.meta.url);
         const pkg = req("../../package.json") as { version: string };
-        return json({ status: "ok", version: pkg.version, profile: profile ?? "default", db_path: getDbPath(), hostname });
+        // Enrich with memory metrics for meaningful health assessment
+        const db = getDatabase();
+        const total = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get() as { c: number }).c;
+        const expired = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'expired' OR (expires_at IS NOT NULL AND expires_at < datetime('now'))").get() as { c: number }).c;
+        const pinned = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1").get() as { c: number }).c;
+        const agents = (db.query("SELECT COUNT(*) as c FROM agents").get() as { c: number }).c;
+        const projects = (db.query("SELECT COUNT(*) as c FROM projects").get() as { c: number }).c;
+        const status = expired > 50 ? "warn" : "ok";
+        return json({ status, version: pkg.version, profile: profile ?? "default", db_path: getDbPath(), hostname, memories: { total, expired, pinned }, agents, projects });
       }
 
       // Profile info

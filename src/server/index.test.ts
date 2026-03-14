@@ -55,10 +55,16 @@ async function api(
 // ============================================================================
 
 describe("Server health", () => {
-  test("GET /api/health returns ok", async () => {
+  test("GET /api/health returns ok with memory metrics", async () => {
     const { status, data } = await api("/api/health");
     expect(status).toBe(200);
-    expect(data.status).toBe("ok");
+    expect(["ok", "warn"]).toContain(data.status);
+    expect(typeof data.version).toBe("string");
+    expect(typeof data.memories.total).toBe("number");
+    expect(typeof data.memories.expired).toBe("number");
+    expect(typeof data.memories.pinned).toBe("number");
+    expect(typeof data.agents).toBe("number");
+    expect(typeof data.projects).toBe("number");
   });
 });
 

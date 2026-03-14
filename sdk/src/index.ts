@@ -328,6 +328,20 @@ export class MementosClient {
     return this.get("/api/memories/stats");
   }
 
+  /** Get server health — version, memory counts, status (ok | warn). */
+  getHealth(): Promise<{
+    status: "ok" | "warn";
+    version: string;
+    profile: string;
+    db_path: string;
+    hostname: string;
+    memories: { total: number; expired: number; pinned: number };
+    agents: number;
+    projects: number;
+  }> {
+    return this.get("/api/health");
+  }
+
   /** Get a rich report: totals, activity trend, scope/category breakdown, top memories. */
   getReport(options?: {
     days?: number;
