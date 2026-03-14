@@ -367,6 +367,138 @@ describe("POST /api/memories/clean", () => {
 });
 
 // ============================================================================
+// Bulk operations
+// ============================================================================
+
+describe("POST /api/memories/bulk-forget", () => {
+  test("deletes multiple memories", async () => {
+    const a = await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "bulk-del-a", value: "val-a" }) });
+    const b = await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "bulk-del-b", value: "val-b" }) });
+    const { status, data } = await api("/api/memories/bulk-forget", {
+      method: "POST",
+      body: JSON.stringify({ ids: [a.data.id, b.data.id] }),
+    });
+    expect(status).toBe(200);
+    expect(data.deleted).toBe(2);
+    expect(data.total).toBe(2);
+  });
+
+  test("returns 400 without ids", async () => {
+    const { status } = await api("/api/memories/bulk-forget", { method: "POST", body: JSON.stringify({}) });
+    expect(status).toBe(400);
+  });
+});
+
+describe("POST /api/memories/bulk-update", () => {
+  test("updates multiple memories", async () => {
+    const a = await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "bulk-upd-a", value: "orig" }) });
+    const b = await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "bulk-upd-b", value: "orig" }) });
+    const { status, data } = await api("/api/memories/bulk-update", {
+      method: "POST",
+      body: JSON.stringify({ ids: [a.data.id, b.data.id], importance: 9 }),
+    });
+    expect(status).toBe(200);
+    expect(data.updated).toBe(2);
+  });
+
+  test("returns 400 without ids", async () => {
+    const { status } = await api("/api/memories/bulk-update", { method: "POST", body: JSON.stringify({}) });
+    expect(status).toBe(400);
+  });
+});
+
+// ============================================================================
+// Agent update and project agents
+// ============================================================================
+
+describe("PATCH /api/agents/:id", () => {
+  test("updates agent role", async () => {
+    const { data: agent } = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "patch-test-agent" }) });
+    const { status, data } = await api(`/api/agents/${agent.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ role: "senior-developer" }),
+    });
+    expect(status).toBe(200);
+    expect(data.role).toBe("senior-developer");
+  });
+
+  test("returns 404 for unknown agent", async () => {
+    const { status } = await api("/api/agents/nonexistent-id", { method: "PATCH", body: JSON.stringify({ role: "x" }) });
+    expect(status).toBe(404);
+  });
+});
+
+describe("GET /api/agents?project_id", () => {
+  test("filters agents by project", async () => {
+    const { data: proj } = await api("/api/projects", { method: "POST", body: JSON.stringify({ name: "filter-proj", path: "/tmp/filter-proj" }) });
+    const { data: agent } = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "proj-bound-agent" }) });
+    await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ active_project_id: proj.id }) });
+    const { status, data } = await api(`/api/agents?project_id=${proj.id}`);
+    expect(status).toBe(200);
+    expect(data.agents.some((a: { name: string }) => a.name === "proj-bound-agent")).toBe(true);
+  });
+});
+
+describe("GET /api/projects/:id", () => {
+  test("gets project by id", async () => {
+    const { data: proj } = await api("/api/projects", { method: "POST", body: JSON.stringify({ name: "get-by-id-proj", path: "/tmp/get-by-id-proj" }) });
+    const { status, data } = await api(`/api/projects/${proj.id}`);
+    expect(status).toBe(200);
+    expect(data.name).toBe("get-by-id-proj");
+  });
+
+  test("gets project by name", async () => {
+    await api("/api/projects", { method: "POST", body: JSON.stringify({ name: "get-by-name-proj", path: "/tmp/get-by-name-proj" }) });
+    const { status, data } = await api(`/api/projects/get-by-name-proj`);
+    expect(status).toBe(200);
+    expect(data.name).toBe("get-by-name-proj");
+  });
+
+  test("returns 404 for unknown project", async () => {
+    const { status } = await api("/api/projects/definitely-does-not-exist");
+    expect(status).toBe(404);
+  });
+});
+
+describe("GET /api/projects/:id/agents", () => {
+  test("lists agents active on project", async () => {
+    const { data: proj } = await api("/api/projects", { method: "POST", body: JSON.stringify({ name: "agents-proj", path: "/tmp/agents-proj" }) });
+    const { data: agent } = await api("/api/agents", { method: "POST", body: JSON.stringify({ name: "agents-proj-agent" }) });
+    await api(`/api/agents/${agent.id}`, { method: "PATCH", body: JSON.stringify({ active_project_id: proj.id }) });
+    const { status, data } = await api(`/api/projects/${proj.id}/agents`);
+    expect(status).toBe(200);
+    expect(data.agents.some((a: { name: string }) => a.name === "agents-proj-agent")).toBe(true);
+  });
+});
+
+describe("GET /api/inject format", () => {
+  test("returns compact format", async () => {
+    await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "fmt-test", value: "hello world", scope: "global", importance: 8 }) });
+    const { status, data } = await api("/api/inject?format=compact");
+    expect(status).toBe(200);
+    expect(typeof data.context).toBe("string");
+    if (data.memories_count > 0) {
+      expect(data.context).not.toContain("<agent-memories>");
+      expect(data.context).not.toContain("##");
+    }
+  });
+
+  test("returns markdown format", async () => {
+    const { data } = await api("/api/inject?format=markdown");
+    if (data.memories_count > 0) {
+      expect(data.context).toContain("## Agent Memories");
+    }
+  });
+
+  test("returns xml format by default", async () => {
+    const { data } = await api("/api/inject");
+    if (data.memories_count > 0) {
+      expect(data.context).toContain("<agent-memories>");
+    }
+  });
+});
+
+// ============================================================================
 // 404 for unknown routes
 // ============================================================================
 
