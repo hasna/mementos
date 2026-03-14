@@ -579,6 +579,7 @@ program
   .option("--pinned", "Show only pinned")
   .option("--agent <name>", "Agent filter")
   .option("--project <path>", "Project filter")
+  .option("--session <id>", "Session ID filter")
   .option("--limit <n>", "Max results", parseInt)
   .option("--offset <n>", "Offset for pagination", parseInt)
   .option("--status <status>", "Status filter: active, archived, expired")
@@ -608,7 +609,7 @@ program
         limit: (opts.limit as number | undefined) || 50,
         offset: opts.offset as number | undefined,
         status: opts.status as MemoryStatus | undefined,
-        session_id: globalOpts.session,
+        session_id: (opts.session as string | undefined) || globalOpts.session,
       };
 
       const memories = listMemories(filter);
