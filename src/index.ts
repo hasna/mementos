@@ -61,12 +61,14 @@ export {
   createMemory,
   getMemory,
   getMemoryByKey,
+  getMemoriesByKey,
   listMemories,
   updateMemory,
   deleteMemory,
   bulkDeleteMemories,
   touchMemory,
   cleanExpiredMemories,
+  getMemoryVersions,
 } from "./db/memories.js";
 
 // Agents
@@ -74,7 +76,9 @@ export {
   registerAgent,
   getAgent,
   listAgents,
+  listAgentsByProject,
   updateAgent,
+  touchAgent,
 } from "./db/agents.js";
 
 // Projects
@@ -88,7 +92,14 @@ export {
 export { searchMemories } from "./lib/search.js";
 
 // Config
-export { loadConfig, DEFAULT_CONFIG } from "./lib/config.js";
+export {
+  loadConfig,
+  DEFAULT_CONFIG,
+  getActiveProfile,
+  setActiveProfile,
+  listProfiles,
+  deleteProfile,
+} from "./lib/config.js";
 
 // Injector
 export { MemoryInjector } from "./lib/injector.js";
