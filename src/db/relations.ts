@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { getDatabase, now, shortUuid } from "./database.js";
 import type { Entity, Relation, CreateRelationInput, RelationType } from "../types/index.js";
 
@@ -109,7 +109,7 @@ export function listRelations(
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-  const rows = d.query(`SELECT * FROM relations ${where} ORDER BY created_at DESC`).all(...params) as Record<string, unknown>[];
+  const rows = d.query(`SELECT * FROM relations ${where} ORDER BY created_at DESC`).all(...params as SQLQueryBindings[]) as Record<string, unknown>[];
   return rows.map(parseRelationRow);
 }
 
@@ -161,7 +161,7 @@ export function getRelatedEntities(
     params.push(entityId, entityId);
   }
 
-  const rows = d.query(sql).all(...params) as Record<string, unknown>[];
+  const rows = d.query(sql).all(...params as SQLQueryBindings[]) as Record<string, unknown>[];
   return rows.map(parseEntityRow);
 }
 

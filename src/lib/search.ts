@@ -426,8 +426,6 @@ function searchWithFts5(
     const allConditions = [ftsCondition, ...conditions];
     const allParams: SQLQueryBindings[] = [ftsQuery, queryParam, queryParam, ...params];
 
-    const sql = `SELECT m.*, bm25(memories_fts) as fts_rank FROM memories_fts f JOIN memories m ON m.rowid = f.rowid WHERE ${allConditions.join(" AND ")}`;
-
     // We need a different approach: fetch FTS matches and tag-only matches separately,
     // then merge. The JOIN approach won't work for tag-only matches.
     // Instead, use a simpler strategy: use FTS to get candidates + tag candidates,

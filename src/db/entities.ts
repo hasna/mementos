@@ -5,7 +5,6 @@ import type {
   CreateEntityInput,
   UpdateEntityInput,
   EntityType,
-  EntityWithRelations,
 } from "../types/index.js";
 import { EntityNotFoundError } from "../types/index.js";
 

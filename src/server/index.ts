@@ -26,9 +26,9 @@ import {
   DuplicateMemoryError,
   EntityNotFoundError,
 } from "../types/index.js";
-import { createEntity, getEntity, getEntityByName, listEntities, updateEntity, deleteEntity, mergeEntities } from "../db/entities.js";
-import { createRelation, getRelation, listRelations, deleteRelation, getRelatedEntities, getEntityGraph, findPath } from "../db/relations.js";
-import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity, getEntitiesForMemory } from "../db/entity-memories.js";
+import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities } from "../db/entities.js";
+import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
+import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../db/entity-memories.js";
 import { parseDuration } from "../lib/duration.js";
 import type {
   Memory,
@@ -42,6 +42,7 @@ import type {
   EntityType,
   CreateRelationInput,
   RelationType,
+  EntityRole,
 } from "../types/index.js";
 
 // ============================================================================
@@ -684,7 +685,7 @@ addRoute("POST", "/api/entities/:id/memories", async (req, _url, params) => {
     const link = linkEntityToMemory(
       params["id"]!,
       body["memory_id"] as string,
-      (body["role"] as string) || undefined
+      (body["role"] as EntityRole | undefined) || undefined
     );
     return json(link, 201);
   } catch (e) {

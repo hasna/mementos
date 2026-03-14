@@ -28,7 +28,7 @@ import {
 import { searchMemories, getSearchHistory, getPopularSearches } from "../lib/search.js";
 import { loadConfig, DEFAULT_CONFIG } from "../lib/config.js";
 import { runCleanup } from "../lib/retention.js";
-import { MemoryInjector } from "../lib/injector.js";
+
 import { parseDuration } from "../lib/duration.js";
 import { createEntity, getEntity, getEntityByName, listEntities, deleteEntity, mergeEntities } from "../db/entities.js";
 import { createRelation, listRelations, deleteRelation, getRelatedEntities, getEntityGraph, findPath } from "../db/relations.js";
@@ -767,11 +767,11 @@ program
       }
 
       if (matches.length === 1) {
-        deleteMemory(matches[0].id);
+        deleteMemory(matches[0]!.id);
         if (globalOpts.json) {
-          outputJson({ deleted: matches[0].id, key: keyOrId });
+          outputJson({ deleted: matches[0]!.id, key: keyOrId });
         } else {
-          console.log(chalk.green(`Memory "${keyOrId}" (${matches[0].id}) deleted.`));
+          console.log(chalk.green(`Memory "${keyOrId}" (${matches[0]!.id}) deleted.`));
         }
         return;
       }
@@ -844,7 +844,7 @@ program
   .option("--popular", "Show most popular search queries")
   .action((query: string, opts) => {
     try {
-      const globalOpts = program.opts<GlobalOpts>();
+
 
       if (opts.history) {
         const history = getSearchHistory(20);
@@ -949,7 +949,7 @@ program
   .option("--format <fmt>", "Output format: compact (default), json, csv, yaml")
   .action((opts) => {
     try {
-      const globalOpts = program.opts<GlobalOpts>();
+
       const db = getDatabase();
 
       const total = (
@@ -1740,8 +1740,8 @@ program
       for (const m of all) {
         byScope[m.scope] = (byScope[m.scope] || 0) + 1;
         if (m.status === "expired") expiredCount++;
-        const lastAccess = m.last_accessed_at
-          ? new Date(m.last_accessed_at).getTime()
+        const lastAccess = m.accessed_at
+          ? new Date(m.accessed_at).getTime()
           : new Date(m.created_at).getTime();
         if (now - lastAccess > staleThreshold && m.status === "active") {
           staleCount++;
@@ -2757,7 +2757,7 @@ function diffMemory(
 
   if (globalOpts.json) {
     const changes: Record<string, { old: unknown; new: unknown }> = {};
-    const n = newer as Record<string, unknown>;
+    const n = newer as unknown as Record<string, unknown>;
 
     if (older.value !== n.value) changes.value = { old: older.value, new: n.value };
     if (older.importance !== n.importance) changes.importance = { old: older.importance, new: n.importance };
@@ -2783,7 +2783,7 @@ function diffMemory(
   console.log();
 
   let hasChanges = false;
-  const n = newer as Record<string, unknown>;
+  const n = newer as unknown as Record<string, unknown>;
 
   const oldValue = older.value;
   const newValue = n.value as string;
@@ -2954,13 +2954,13 @@ function setNestedValue(obj: Record<string, unknown>, path: string, value: unkno
   const parts = path.split(".");
   let current = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    const part = parts[i];
+    const part = parts[i]!;
     if (!(part in current) || typeof current[part] !== "object" || current[part] === null) {
       current[part] = {};
     }
     current = current[part] as Record<string, unknown>;
   }
-  current[parts[parts.length - 1]] = value;
+  current[parts[parts.length - 1]!] = value;
 }
 
 /** Remove a nested key using dot-notation key path */
@@ -2968,11 +2968,11 @@ function deleteNestedKey(obj: Record<string, unknown>, path: string): void {
   const parts = path.split(".");
   let current = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    const part = parts[i];
+    const part = parts[i]!;
     if (!(part in current) || typeof current[part] !== "object" || current[part] === null) return;
     current = current[part] as Record<string, unknown>;
   }
-  delete current[parts[parts.length - 1]];
+  delete current[parts[parts.length - 1]!];
 }
 
 /** Parse a CLI value: try JSON.parse for numbers/booleans/arrays, fall back to string */

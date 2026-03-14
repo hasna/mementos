@@ -19,8 +19,8 @@ import {
   listProjects,
 } from "../db/projects.js";
 import { createEntity, getEntity, getEntityByName, listEntities, deleteEntity, mergeEntities } from "../db/entities.js";
-import { createRelation, listRelations, deleteRelation, getRelatedEntities, getEntityGraph, findPath } from "../db/relations.js";
-import { linkEntityToMemory, getMemoriesForEntity, getEntitiesForMemory } from "../db/entity-memories.js";
+import { createRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
+import { linkEntityToMemory, getMemoriesForEntity } from "../db/entity-memories.js";
 import { getDatabase, resolvePartialId } from "../db/database.js";
 import { searchMemories } from "../lib/search.js";
 import { detectProject } from "../lib/project-detect.js";
@@ -40,7 +40,6 @@ import type {
   CreateMemoryInput,
   Entity,
   EntityType,
-  RelationType,
 } from "../types/index.js";
 
 const server = new McpServer({
@@ -139,7 +138,7 @@ server.tool(
       if (args.ttl_ms !== undefined) {
         input.ttl_ms = parseDuration(args.ttl_ms);
       }
-      const memory = createMemory(input as CreateMemoryInput);
+      const memory = createMemory(input as unknown as CreateMemoryInput);
       return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
