@@ -847,6 +847,58 @@ server.tool(
 );
 
 server.tool(
+  "session_extract",
+  "Extract memories from a session summary. Auto-creates structured memories from title, topics, notes.",
+  {
+    session_id: z.string(),
+    title: z.string().optional(),
+    project: z.string().optional(),
+    model: z.string().optional(),
+    messages: z.coerce.number().optional(),
+    key_topics: z.array(z.string()).optional(),
+    summary: z.string().optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const { session_id, title, project, model, messages, key_topics, summary, agent_id, project_id } = args;
+      const created: string[] = [];
+
+      function saveExtracted(key: string, value: string, category: MemoryCategory, importance: number): void {
+        try {
+          const mem = createMemory({
+            key, value, category, scope: "shared", importance,
+            source: "auto", agent_id, project_id, session_id,
+          } as unknown as CreateMemoryInput);
+          created.push(mem.id);
+        } catch { /* duplicate = already extracted */ }
+      }
+
+      if (title) {
+        const meta = [project && `project: ${project}`, model && `model: ${model}`, messages && `messages: ${messages}`].filter(Boolean).join(", ");
+        saveExtracted(`session-${session_id}-summary`, `${title}${meta ? ` (${meta})` : ""}`, "history", 6);
+      }
+      if (key_topics?.length) {
+        saveExtracted(`session-${session_id}-topics`, `Key topics: ${key_topics.join(", ")}`, "knowledge", 5);
+      }
+      if (summary) {
+        saveExtracted(`session-${session_id}-notes`, summary, "knowledge", 7);
+      }
+
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Extracted ${created.length} memor${created.length === 1 ? "y" : "ies"} from session ${session_id}.${created.length > 0 ? `\nIDs: ${created.join(", ")}` : ""}`,
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_context",
   "Get memories relevant to current context, filtered by scope/importance/recency.",
   {
@@ -1347,6 +1399,22 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       raw: { type: "boolean", description: "Deprecated: use format=compact instead. true=plain lines only" },
     },
     example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5,"format":"compact"}',
+  },
+  session_extract: {
+    description: "Auto-create memories from a session summary (title, topics, notes, project). Designed for sessions→mementos integration.",
+    category: "memory",
+    params: {
+      session_id: { type: "string", description: "Session ID to link memories to", required: true },
+      title: { type: "string", description: "Session title" },
+      project: { type: "string", description: "Project name" },
+      model: { type: "string", description: "Model used" },
+      messages: { type: "number", description: "Message count" },
+      key_topics: { type: "array", description: "Key topics extracted from session", items: { type: "string" } },
+      summary: { type: "string", description: "Free-form session summary text" },
+      agent_id: { type: "string", description: "Agent ID to associate memories with" },
+      project_id: { type: "string", description: "Project ID to scope memories to" },
+    },
+    example: '{"session_id":"abc123","title":"Fix auth middleware","project":"alumia","key_topics":["jwt","compliance"],"agent_id":"galba-id"}',
   },
   memory_context: {
     description: "Get active memories for the current context (agent/project/scope).",
