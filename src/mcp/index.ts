@@ -17,6 +17,7 @@ import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, 
 import {
   registerProject,
   listProjects,
+  getProject,
 } from "../db/projects.js";
 import { createEntity, getEntity, getEntityByName, listEntities, deleteEntity, mergeEntities } from "../db/entities.js";
 import { createRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
@@ -187,6 +188,27 @@ server.tool(
       }
 
       return { content: [{ type: "text" as const, text: `No memory found for key: ${args.key}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_get",
+  "Get a single memory by ID.",
+  {
+    id: z.string(),
+  },
+  async (args) => {
+    try {
+      const id = resolveId(args.id);
+      const memory = getMemory(id);
+      if (!memory) {
+        return { content: [{ type: "text" as const, text: `Memory not found: ${args.id}` }] };
+      }
+      touchMemory(memory.id);
+      return { content: [{ type: "text" as const, text: formatMemory(memory) }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -459,6 +481,7 @@ server.tool(
     max_tokens: z.coerce.number().optional(),
     categories: z.array(z.enum(["preference", "fact", "knowledge", "history"])).optional(),
     min_importance: z.coerce.number().optional(),
+    format: z.enum(["xml", "markdown", "compact", "json"]).optional(),
     raw: z.boolean().optional(),
   },
   async (args) => {
@@ -526,8 +549,18 @@ server.tool(
       const lines: string[] = [];
       let totalChars = 0;
 
+      // resolve format: new `format` param takes priority, legacy `raw` maps to compact
+      const fmt = args.format ?? (args.raw ? "compact" : "xml");
+
       for (const m of unique) {
-        const line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+        let line: string;
+        if (fmt === "compact") {
+          line = `${m.key}: ${m.value}`;
+        } else if (fmt === "json") {
+          line = JSON.stringify({ key: m.key, value: m.value, scope: m.scope, category: m.category, importance: m.importance });
+        } else {
+          line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+        }
         if (totalChars + line.length > charBudget) break;
         lines.push(line);
         totalChars += line.length;
@@ -538,10 +571,16 @@ server.tool(
         return { content: [{ type: "text" as const, text: "No relevant memories found for injection." }] };
       }
 
-      // raw=true: plain lines only (pipe-friendly, no wrapper tags or headers)
-      const context = args.raw
-        ? lines.join("\n")
-        : `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+      let context: string;
+      if (fmt === "compact") {
+        context = lines.join("\n");
+      } else if (fmt === "json") {
+        context = `[${lines.join(",")}]`;
+      } else if (fmt === "markdown") {
+        context = `## Agent Memories\n\n${lines.join("\n")}`;
+      } else {
+        context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+      }
       return { content: [{ type: "text" as const, text: context }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -708,6 +747,30 @@ server.tool(
       }
       const lines = projects.map((p) => `${p.id.slice(0, 8)} | ${p.name} | ${p.path}`);
       return { content: [{ type: "text" as const, text: `${projects.length} project(s):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "get_project",
+  "Get a project by ID, path, or name.",
+  {
+    id: z.string(),
+  },
+  async (args) => {
+    try {
+      const project = getProject(args.id);
+      if (!project) {
+        return { content: [{ type: "text" as const, text: `Project not found: ${args.id}` }] };
+      }
+      return {
+        content: [{
+          type: "text" as const,
+          text: `Project:\nID: ${project.id}\nName: ${project.name}\nPath: ${project.path}\nDescription: ${project.description || "-"}\nCreated: ${project.created_at}`,
+        }],
+      };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -1159,6 +1222,14 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     },
     example: '{"key":"preferred-language","value":"TypeScript","scope":"global","importance":8,"tags":["language","preference"]}',
   },
+  memory_get: {
+    description: "Get a single memory by ID (partial IDs resolved).",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Memory ID (full or partial)", required: true },
+    },
+    example: '{"id":"abc12345"}',
+  },
   memory_recall: {
     description: "Recall a memory by exact key. Falls back to fuzzy search if no exact match.",
     category: "memory",
@@ -1272,9 +1343,10 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       max_tokens: { type: "number", description: "Approximate token budget (default 500)" },
       categories: { type: "array", description: "Categories to include (default: preference, fact, knowledge)", items: { type: "string", enum: ["preference", "fact", "knowledge", "history"] } },
       min_importance: { type: "number", description: "Minimum importance (default 3)" },
-      raw: { type: "boolean", description: "true=plain lines only, false=wrapped in <agent-memories> tags" },
+      format: { type: "string", description: "Output format: xml (default, <agent-memories>), compact (key: value, ~60% smaller), markdown, json", enum: ["xml", "compact", "markdown", "json"] },
+      raw: { type: "boolean", description: "Deprecated: use format=compact instead. true=plain lines only" },
     },
-    example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5}',
+    example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5,"format":"compact"}',
   },
   memory_context: {
     description: "Get active memories for the current context (agent/project/scope).",
@@ -1348,6 +1420,14 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     category: "project",
     params: {},
     example: "{}",
+  },
+  get_project: {
+    description: "Get a project by ID, path, or name.",
+    category: "project",
+    params: {
+      id: { type: "string", description: "Project ID, path, or name", required: true },
+    },
+    example: '{"id":"open-mementos"}',
   },
   bulk_forget: {
     description: "Delete multiple memories by IDs in one call.",
