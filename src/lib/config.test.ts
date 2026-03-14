@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { resetDatabase, getDatabase } from "../db/database.js";
-import { loadConfig, DEFAULT_CONFIG, getActiveProfile, setActiveProfile, listProfiles, deleteProfile } from "./config.js";
+import { loadConfig, DEFAULT_CONFIG, getActiveProfile, setActiveProfile, listProfiles, deleteProfile, getDbPath } from "./config.js";
 
 const CONFIG_DIR = join(homedir(), ".mementos");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -452,5 +452,58 @@ describe("profile management", () => {
 
   test("deleteProfile returns false for non-existent profile", () => {
     expect(deleteProfile("nonexistent-profile-xyz")).toBe(false);
+  });
+
+  test("listProfiles finds a created profile DB file", () => {
+    // Create a real profile DB file in the profiles dir
+    const profilesPath = join(homedir(), ".mementos", "profiles");
+    mkdirSync(profilesPath, { recursive: true });
+    const dbPath = join(profilesPath, "galba-test-profile-001.db");
+    writeFileSync(dbPath, ""); // empty file simulates a profile DB
+    try {
+      const profiles = listProfiles();
+      expect(profiles).toContain("galba-test-profile-001");
+    } finally {
+      // cleanup
+      if (existsSync(dbPath)) unlinkSync(dbPath);
+    }
+  });
+
+  test("deleteProfile removes the DB file and returns true", () => {
+    const profilesPath = join(homedir(), ".mementos", "profiles");
+    mkdirSync(profilesPath, { recursive: true });
+    const dbPath = join(profilesPath, "galba-delete-test-002.db");
+    writeFileSync(dbPath, "");
+    expect(existsSync(dbPath)).toBe(true);
+    const result = deleteProfile("galba-delete-test-002");
+    expect(result).toBe(true);
+    expect(existsSync(dbPath)).toBe(false);
+  });
+
+  test("deleteProfile clears active profile if deleted profile was active", () => {
+    const profilesPath = join(homedir(), ".mementos", "profiles");
+    mkdirSync(profilesPath, { recursive: true });
+    const dbPath = join(profilesPath, "galba-active-delete-003.db");
+    writeFileSync(dbPath, "");
+    setActiveProfile("galba-active-delete-003");
+    expect(getActiveProfile()).toBe("galba-active-delete-003");
+    deleteProfile("galba-active-delete-003");
+    // active profile cleared after delete
+    expect(getActiveProfile()).toBeNull();
+  });
+
+  test("getDbPath returns profile path when profile is active", () => {
+    // Temporarily unset MEMENTOS_DB_PATH so profile path takes effect
+    const savedDbPath = process.env["MEMENTOS_DB_PATH"];
+    delete process.env["MEMENTOS_DB_PATH"];
+    try {
+      setActiveProfile("galba-db-path-test");
+      const dbPath = getDbPath();
+      expect(dbPath).toContain("profiles");
+      expect(dbPath).toContain("galba-db-path-test");
+    } finally {
+      setActiveProfile(null);
+      if (savedDbPath) process.env["MEMENTOS_DB_PATH"] = savedDbPath;
+    }
   });
 });
