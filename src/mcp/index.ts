@@ -429,6 +429,7 @@ server.tool(
     tags: z.array(z.string()).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
+    session_id: z.string().optional(),
     limit: z.coerce.number().optional(),
   },
   async (args) => {
@@ -439,6 +440,7 @@ server.tool(
         tags: args.tags,
         agent_id: args.agent_id,
         project_id: args.project_id,
+        session_id: args.session_id,
         search: args.query,
         limit: args.limit || 20,
       };
@@ -1611,6 +1613,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       tags: { type: "array", description: "Tag filter", items: { type: "string" } },
       agent_id: { type: "string", description: "Agent UUID filter" },
       project_id: { type: "string", description: "Project UUID filter" },
+      session_id: { type: "string", description: "Session ID filter" },
       limit: { type: "number", description: "Max results (default 20)" },
     },
     example: '{"query":"typescript","scope":"global","limit":10}',
