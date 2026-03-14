@@ -136,6 +136,7 @@ claude mcp add --transport stdio --scope project mementos -- mementos-mcp
 | `MEMENTOS_PROFILE` | Named profile → `~/.mementos/profiles/<name>.db` | none |
 | `MEMENTOS_DB_SCOPE` | `project` = use git root `.mementos/mementos.db` | global |
 | `PORT` | REST server port | `19428` |
+| `MEMENTOS_HOST` | Server bind address | `127.0.0.1` (localhost only) |
 
 ## Profiles
 

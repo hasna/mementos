@@ -5,7 +5,7 @@
  */
 
 import { existsSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   createMemory,
@@ -1093,8 +1093,10 @@ async function findFreePort(start: number): Promise<number> {
 }
 
 export function startServer(port: number): void {
+  const hostname = process.env["MEMENTOS_HOST"] ?? "127.0.0.1";
   Bun.serve({
     port,
+    hostname,
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const { pathname } = url;
@@ -1107,7 +1109,7 @@ export function startServer(port: number): void {
       // Health check
       if (pathname === "/api/health" || pathname === "/health") {
         const profile = getActiveProfile();
-        return json({ status: "ok", version: "0.1.0", profile: profile ?? "default", db_path: getDbPath() });
+        return json({ status: "ok", version: "0.1.0", profile: profile ?? "default", db_path: getDbPath(), hostname });
       }
 
       // Profile info
@@ -1177,8 +1179,13 @@ export function startServer(port: number): void {
         const dashDir = resolveDashboardDir();
         if (existsSync(dashDir) && (req.method === "GET" || req.method === "HEAD")) {
           if (pathname !== "/") {
-            const staticRes = serveStaticFile(join(dashDir, pathname));
-            if (staticRes) return staticRes;
+            // Path traversal guard: resolved path must stay within dashDir
+            const resolvedDash = resolve(dashDir) + sep;
+            const requestedPath = resolve(join(dashDir, pathname));
+            if (requestedPath.startsWith(resolvedDash)) {
+              const staticRes = serveStaticFile(requestedPath);
+              if (staticRes) return staticRes;
+            }
           }
           // SPA fallback — serve index.html
           const indexRes = serveStaticFile(join(dashDir, "index.html"));
@@ -1198,7 +1205,7 @@ export function startServer(port: number): void {
     },
   });
 
-  console.log(`Mementos server listening on http://localhost:${port}`);
+  console.log(`Mementos server listening on http://${hostname}:${port}`);
 }
 
 async function main(): Promise<void> {

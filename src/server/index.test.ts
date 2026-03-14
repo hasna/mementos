@@ -571,6 +571,35 @@ describe("404 handling", () => {
 });
 
 // ============================================================================
+// Security: path traversal prevention
+// ============================================================================
+
+describe("path traversal prevention", () => {
+  test("traversal attempt does not return /etc/passwd contents", async () => {
+    // URL parser normalizes ../../ before reaching the handler.
+    // The response may be 404 (no dashboard) or 200 (SPA index.html) but must NOT be /etc/passwd.
+    const res = await fetch(`${BASE}/../../etc/passwd`);
+    const text = await res.text();
+    // /etc/passwd always starts with "root:" — if we see that, traversal succeeded
+    expect(text).not.toContain("root:");
+    expect(text).not.toContain("/bin/bash");
+  });
+
+  test("encoded traversal attempt does not expose system files", async () => {
+    const res = await fetch(`${BASE}/..%2F..%2Fetc%2Fpasswd`);
+    const text = await res.text();
+    expect(text).not.toContain("root:");
+    expect(text).not.toContain("/bin/bash");
+  });
+
+  test("health endpoint includes hostname", async () => {
+    const { status, data } = await api("/api/health");
+    expect(status).toBe(200);
+    expect(typeof data.hostname).toBe("string");
+  });
+});
+
+// ============================================================================
 // CORS preflight
 // ============================================================================
 
