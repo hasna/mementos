@@ -86,9 +86,8 @@ function makeEntity(overrides: Partial<Entity> = {}): Entity {
     name: "TestEntity",
     type: "concept",
     description: null,
-    aliases: [],
     metadata: {},
-    observation_count: 0,
+    project_id: null,
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -98,10 +97,10 @@ function makeEntity(overrides: Partial<Entity> = {}): Entity {
 function makeRelation(overrides: Partial<Relation> = {}): Relation {
   return {
     id: "rel-1",
-    from_entity_id: "ent-1",
-    to_entity_id: "ent-2",
+    source_entity_id: "ent-1",
+    target_entity_id: "ent-2",
     relation_type: "related_to",
-    strength: 1,
+    weight: 1,
     metadata: {},
     created_at: "2026-01-01T00:00:00Z",
     ...overrides,
@@ -408,8 +407,8 @@ describe("MementosClient", () => {
       const { calls, fetch } = mockFetch([{ status: 201, body: rel }]);
       const client = new MementosClient({ fetch });
       const result = await client.createRelation({
-        from_entity_id: "ent-1",
-        to_entity_id: "ent-2",
+        source_entity_id: "ent-1",
+        target_entity_id: "ent-2",
         relation_type: "related_to",
       });
       expect(calls[0]!.url).toBe(`${BASE}/api/relations`);

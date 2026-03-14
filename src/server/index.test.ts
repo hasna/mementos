@@ -172,18 +172,20 @@ describe("PATCH /api/memories/:id", () => {
     expect(data.version).toBe(2);
   });
 
-  test("returns 400 when version is missing", async () => {
+  test("succeeds when version is omitted (auto-fetched)", async () => {
     const createRes = await api("/api/memories", {
       method: "POST",
       body: JSON.stringify({ key: "patch-no-ver", value: "val" }),
     });
     const id = createRes.data.id;
 
-    const { status } = await api(`/api/memories/${id}`, {
+    // version is now optional — should succeed by auto-fetching current version
+    const { status, data } = await api(`/api/memories/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ value: "new-val" }),
+      body: JSON.stringify({ value: "new-val-auto" }),
     });
-    expect(status).toBe(400);
+    expect(status).toBe(200);
+    expect(data.value).toBe("new-val-auto");
   });
 
   test("returns 409 on version conflict", async () => {

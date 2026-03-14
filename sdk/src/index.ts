@@ -22,7 +22,7 @@ export type MemoryCategory = "preference" | "fact" | "knowledge" | "history";
 export type MemorySource = "user" | "agent" | "system" | "auto" | "imported";
 export type MemoryStatus = "active" | "archived" | "expired";
 export type EntityType = "person" | "place" | "thing" | "concept" | "project" | "agent" | "file" | "url";
-export type RelationType = "related_to" | "part_of" | "depends_on" | "created_by" | "used_by" | "similar_to" | "opposite_of";
+export type RelationType = "uses" | "knows" | "depends_on" | "created_by" | "related_to" | "contradicts" | "part_of" | "implements";
 export type EntityRole = "subject" | "object" | "context" | "author" | "target";
 
 export interface Memory {
@@ -74,19 +74,18 @@ export interface Entity {
   name: string;
   type: EntityType;
   description: string | null;
-  aliases: string[];
   metadata: Record<string, unknown>;
-  observation_count: number;
+  project_id: string | null;
   created_at: string;
   updated_at: string;
 }
 
 export interface Relation {
   id: string;
-  from_entity_id: string;
-  to_entity_id: string;
+  source_entity_id: string;
+  target_entity_id: string;
   relation_type: RelationType;
-  strength: number;
+  weight: number;
   metadata: Record<string, unknown>;
   created_at: string;
 }
@@ -177,22 +176,22 @@ export interface CreateEntityInput {
   name: string;
   type: EntityType;
   description?: string;
-  aliases?: string[];
   metadata?: Record<string, unknown>;
+  project_id?: string;
 }
 
 export interface UpdateEntityInput {
   name?: string;
+  type?: EntityType;
   description?: string | null;
-  aliases?: string[];
   metadata?: Record<string, unknown>;
 }
 
 export interface CreateRelationInput {
-  from_entity_id: string;
-  to_entity_id: string;
+  source_entity_id: string;
+  target_entity_id: string;
   relation_type: RelationType;
-  strength?: number;
+  weight?: number;
   metadata?: Record<string, unknown>;
 }
 

@@ -552,18 +552,23 @@ addRoute("GET", "/api/memories/:id", (_req, _url, params) => {
   return json(memory);
 });
 
-// PATCH /api/memories/:id — update memory
+// PATCH /api/memories/:id — update memory (version optional — auto-fetched if omitted)
 addRoute("PATCH", "/api/memories/:id", async (req, _url, params) => {
   const body = (await readJson(req)) as Record<string, unknown> | null;
   if (!body) {
     return errorResponse("Invalid JSON body", 400);
   }
-  if (body["version"] === undefined) {
-    return errorResponse("Missing required field: version", 400);
+
+  // Auto-fetch version if not provided (eliminates 2-round-trip read-then-update pattern)
+  const updateBody = { ...body };
+  if (updateBody["version"] === undefined) {
+    const existing = getMemory(params["id"]!);
+    if (!existing) return errorResponse("Memory not found", 404);
+    updateBody["version"] = existing.version;
   }
 
   try {
-    const memory = updateMemory(params["id"]!, body as any);
+    const memory = updateMemory(params["id"]!, updateBody as any);
     return json(memory);
   } catch (e) {
     if (e instanceof MemoryNotFoundError) {
