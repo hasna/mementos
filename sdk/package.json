@@ -1,0 +1,49 @@
+{
+  "name": "@hasna/mementos-sdk",
+  "version": "0.1.0",
+  "description": "Zero-dependency TypeScript client for @hasna/mementos REST API",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "bun build src/index.ts --outdir dist --target browser && tsc --emitDeclarationOnly --outDir dist",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "mementos",
+    "memory",
+    "ai",
+    "agent",
+    "sdk",
+    "mcp",
+    "claude",
+    "codex"
+  ],
+  "author": "Andrei Hasna <andrei@hasna.com>",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hasna/mementos.git"
+  },
+  "homepage": "https://github.com/hasna/mementos",
+  "devDependencies": {
+    "@types/bun": "^1.2.4",
+    "typescript": "^5.7.3"
+  }
+}
