@@ -1217,6 +1217,73 @@ program
   });
 
 // ============================================================================
+// stale
+// ============================================================================
+
+program
+  .command("stale")
+  .description("Find memories not accessed recently (for cleanup/review)")
+  .option("--days <n>", "Stale threshold in days (default: 30)", parseInt)
+  .option("--project <path>", "Project filter")
+  .option("--agent <name>", "Agent filter")
+  .option("--limit <n>", "Max results (default: 20)", parseInt)
+  .option("--format <fmt>", "Output format: compact (default), json")
+  .action((opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const days = (opts.days as number | undefined) || 30;
+      const limit = (opts.limit as number | undefined) || 20;
+      const projectPath = (opts.project as string | undefined) || globalOpts.project;
+      let projectId: string | undefined;
+      if (projectPath) {
+        const project = getProject(resolve(projectPath));
+        if (project) projectId = project.id;
+      }
+      const agentName = (opts.agent as string | undefined) || globalOpts.agent;
+      let agentId: string | undefined;
+      if (agentName) {
+        const agent = getAgent(agentName);
+        if (agent) agentId = agent.id;
+      }
+
+      const db = getDatabase();
+      const conds = [
+        "status = 'active'",
+        `(accessed_at IS NULL OR accessed_at < datetime('now', '-${days} days'))`,
+        "pinned = 0",
+      ];
+      const params: string[] = [];
+      if (projectId) { conds.push("project_id = ?"); params.push(projectId); }
+      if (agentId) { conds.push("agent_id = ?"); params.push(agentId); }
+
+      const rows = db.query(
+        `SELECT id, key, value, importance, scope, category, accessed_at, access_count FROM memories WHERE ${conds.join(" AND ")} ORDER BY COALESCE(accessed_at, created_at) ASC LIMIT ?`
+      ).all(...params, limit) as { id: string; key: string; value: string; importance: number; scope: string; category: string; accessed_at: string | null; access_count: number }[];
+
+      const fmt = getOutputFormat(opts.format as string | undefined);
+      if (fmt === "json") {
+        outputJson({ memories: rows, count: rows.length, days });
+        return;
+      }
+
+      if (rows.length === 0) {
+        console.log(chalk.green(`No stale memories (not accessed in ${days}+ days).`));
+        return;
+      }
+      console.log(chalk.bold(`\nStale memories (not accessed in ${days}+ days):\n`));
+      for (const m of rows) {
+        const lastAccess = m.accessed_at ? m.accessed_at.slice(0, 10) : chalk.dim("never");
+        console.log(`  ${chalk.dim(`[${m.importance}]`)} ${chalk.bold(m.key)} ${chalk.dim(`(${m.scope}/${m.category})`)}`);
+        console.log(`    Last accessed: ${lastAccess} · ${m.access_count} reads · ${m.value.slice(0, 80)}${m.value.length > 80 ? "..." : ""}`);
+      }
+      console.log(`\n${chalk.dim(`${rows.length} result(s). Run 'mementos archive <key>' or 'mementos forget <key>' to clean up.`)}`);
+    } catch (e) {
+      console.error(chalk.red(`stale failed: ${e instanceof Error ? e.message : String(e)}`));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
 // export
 // ============================================================================
 
@@ -1789,7 +1856,7 @@ program
 program
   .command("doctor")
   .description("Diagnose common issues with the mementos installation")
-  .action(() => {
+  .action(async () => {
     const globalOpts = program.opts<GlobalOpts>();
     const checks: { name: string; status: "ok" | "warn" | "fail"; detail: string }[] = [];
 
@@ -1947,12 +2014,25 @@ program
       checks.push({ name: "Active profile", status: "warn", detail: e instanceof Error ? e.message : String(e) });
     }
 
-    // 11. REST server reachability (quick check)
+    // 11. REST server reachability (live check)
     try {
       const mementosUrl = process.env["MEMENTOS_URL"] || `http://127.0.0.1:19428`;
-      checks.push({ name: "REST server URL", status: "ok", detail: `${mementosUrl} (use 'mementos-serve' to start)` });
+      let serverStatus: "ok" | "warn" = "warn";
+      let serverDetail = `${mementosUrl} — not reachable (run 'mementos-serve' to start)`;
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 1000);
+        const res = await fetch(`${mementosUrl}/api/health`, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = await res.json() as { version?: string; status?: string };
+          serverStatus = "ok";
+          serverDetail = `${mementosUrl} — running v${data.version || "?"} (${data.status || "ok"})`;
+        }
+      } catch { /* not running */ }
+      checks.push({ name: "REST server", status: serverStatus, detail: serverDetail });
     } catch {
-      checks.push({ name: "REST server URL", status: "ok", detail: "http://127.0.0.1:19428" });
+      checks.push({ name: "REST server", status: "warn", detail: "Could not check REST server" });
     }
 
     outputDoctorResults(globalOpts, checks);
@@ -3089,7 +3169,7 @@ program
   .command("completions <shell>")
   .description("Output shell completion script (bash, zsh, fish)")
   .action((shell: string) => {
-    const commands = "save recall list update forget search stats export import clean inject context pin unpin archive versions doctor tail diff init agents projects bulk completions config backup restore report profile mcp";
+    const commands = "save recall list update forget search stats export import clean inject context pin unpin archive versions stale doctor tail diff init agents projects bulk completions config backup restore report profile mcp";
     const commandList = commands.split(" ");
 
     switch (shell.toLowerCase()) {

@@ -49,6 +49,7 @@ describe("CLI", () => {
     expect(stdout).toContain("pin");
     expect(stdout).toContain("archive");
     expect(stdout).toContain("versions");
+    expect(stdout).toContain("stale");
     // Agent/project commands
     expect(stdout).toContain("agents");
     expect(stdout).toContain("projects");
