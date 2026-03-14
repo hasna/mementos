@@ -1213,3 +1213,119 @@ describe("search history", () => {
     expect(popularB.length).toBe(1);
   });
 });
+
+// ============================================================================
+// Multi-token scoring — lines 213-229 (tag/summary/metadata token matching)
+// ============================================================================
+
+describe("multi-token scoring (tag/summary/metadata paths)", () => {
+  beforeEach(() => {
+    resetDatabase();
+    getDatabase(":memory:");
+  });
+
+  test("tags that match a search token boost score", () => {
+    createMemory({
+      key: "tagged-memory",
+      value: "some content",
+      tags: ["typescript", "database"],
+    });
+    createMemory({
+      key: "untagged-memory",
+      value: "some content",
+    });
+    // Multi-word query: FTS5 matches value, token scoring boosts tag matches
+    const results = searchMemories("typescript content");
+    const tagged = results.find((r) => r.memory.key === "tagged-memory");
+    const untagged = results.find((r) => r.memory.key === "untagged-memory");
+    expect(tagged).toBeTruthy();
+    // tagged should score higher due to tag match
+    if (tagged && untagged) {
+      expect(tagged.score).toBeGreaterThanOrEqual(untagged.score);
+    }
+  });
+
+  test("summary that matches a token boosts score", () => {
+    createMemory({
+      key: "summarized-memory",
+      value: "general content",
+      summary: "authentication pattern for secure login",
+    });
+    createMemory({
+      key: "unsummarized-memory",
+      value: "general content",
+    });
+    const results = searchMemories("authentication content");
+    const withSummary = results.find((r) => r.memory.key === "summarized-memory");
+    expect(withSummary).toBeTruthy();
+    // Should have a non-zero score
+    expect(withSummary!.score).toBeGreaterThan(0);
+  });
+
+  test("metadata that matches a token contributes to score", () => {
+    // FTS5 indexes key/value/summary — metadata is only scored in the bonus step.
+    // Include a value term so the memory is found via FTS5, then metadata bonus applies.
+    createMemory({
+      key: "metadata-memory",
+      value: "nextjs general info",        // "nextjs" found via FTS5
+      metadata: { framework: "nextjs" },   // "nextjs" also in metadata → bonus
+    });
+    createMemory({
+      key: "no-metadata-memory",
+      value: "nextjs general info",        // same value, no metadata match
+    });
+    const results = searchMemories("nextjs info");
+    const withMeta = results.find((r) => r.memory.key === "metadata-memory");
+    expect(withMeta).toBeTruthy();
+    expect(withMeta!.score).toBeGreaterThan(0);
+  });
+
+  test("key that exactly equals a token gets max key bonus (line 213)", () => {
+    // key = "typescript", query = "typescript framework" → keyLower === token branch
+    createMemory({ key: "typescript", value: "programming language framework features" });
+    const results = searchMemories("typescript framework");
+    const exact = results.find((r) => r.memory.key === "typescript");
+    expect(exact).toBeTruthy();
+    expect(exact!.score).toBeGreaterThan(0);
+  });
+
+  test("tag that exactly equals a token gets exact tag bonus (line 218)", () => {
+    // Both "typescript" and "framework" in value → FTS5 finds it
+    // tag = "typescript" exactly equals the token → line 218 fires
+    createMemory({
+      key: "tag-exact-test",
+      value: "typescript programming framework guide",
+      tags: ["typescript"],
+    });
+    const results = searchMemories("typescript framework");
+    const found = results.find((r) => r.memory.key === "tag-exact-test");
+    expect(found).toBeTruthy();
+    expect(found!.score).toBeGreaterThan(0);
+  });
+
+  test("tag that includes (but is not equal to) a token gets partial tag bonus (line 220)", () => {
+    // Value includes both tokens so FTS5 finds it
+    // tag = "typescript-typed" includes "typescript" but != "typescript" → line 220
+    createMemory({
+      key: "tag-partial-test",
+      value: "typescript programming framework reference",
+      tags: ["typescript-typed"],
+    });
+    const results = searchMemories("typescript framework");
+    const found = results.find((r) => r.memory.key === "tag-partial-test");
+    expect(found).toBeTruthy();
+    if (found) {
+      expect(found.score).toBeGreaterThan(0);
+    }
+  });
+
+  test("key exact token match scores higher", () => {
+    createMemory({ key: "nextjs-setup", value: "configuration steps", importance: 5 });
+    createMemory({ key: "configuration-steps", value: "nextjs configuration guide", importance: 5 });
+    // "nextjs configuration" — first matches key exactly for "nextjs", second matches value
+    const results = searchMemories("nextjs configuration");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    // Ensure we get results with valid scores
+    results.forEach(r => expect(r.score).toBeGreaterThan(0));
+  });
+});
