@@ -54,7 +54,7 @@ export interface Agent {
   name: string;
   role: string | null;
   description: string | null;
-  active_project_id: string | null;
+  active_project_id?: string | null;
   created_at: string;
   last_seen_at: string | null;
 }
