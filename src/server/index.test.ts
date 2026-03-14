@@ -471,6 +471,66 @@ describe("GET /api/projects/:id/agents", () => {
   });
 });
 
+describe("POST /api/memories/extract", () => {
+  test("creates memories from session summary", async () => {
+    const { status, data } = await api("/api/memories/extract", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "test-session-extract-001",
+        title: "Fix auth middleware",
+        project: "alumia",
+        model: "claude-opus-4-5",
+        messages: 100,
+        key_topics: ["jwt", "compliance", "middleware"],
+        summary: "Rewrote auth to comply with new legal requirements",
+      }),
+    });
+    expect(status).toBe(201);
+    expect(data.created).toBeGreaterThan(0);
+    expect(data.session_id).toBe("test-session-extract-001");
+    expect(Array.isArray(data.memory_ids)).toBe(true);
+  });
+
+  test("memories are queryable by session_id", async () => {
+    const sessId = "test-session-query-002";
+    await api("/api/memories/extract", {
+      method: "POST",
+      body: JSON.stringify({ session_id: sessId, title: "Query test session" }),
+    });
+    const { status, data } = await api(`/api/memories?session_id=${sessId}`);
+    expect(status).toBe(200);
+    expect(data.memories.length).toBeGreaterThan(0);
+    expect(data.memories.every((m: { session_id: string }) => m.session_id === sessId)).toBe(true);
+  });
+
+  test("accepts custom memories array", async () => {
+    const { status, data } = await api("/api/memories/extract", {
+      method: "POST",
+      body: JSON.stringify({
+        session_id: "test-session-custom-003",
+        memories: [
+          { key: "custom-extract-key", value: "custom value", category: "fact", importance: 8 },
+        ],
+      }),
+    });
+    expect(status).toBe(201);
+    expect(data.created).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe("GET /api/memories?session_id", () => {
+  test("filters memories by session_id", async () => {
+    const sessId = "filter-session-test-004";
+    await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({ key: "sess-filtered-key", value: "val", session_id: sessId }),
+    });
+    const { status, data } = await api(`/api/memories?session_id=${sessId}`);
+    expect(status).toBe(200);
+    expect(data.memories.every((m: { session_id: string }) => m.session_id === sessId)).toBe(true);
+  });
+});
+
 describe("GET /api/inject format", () => {
   test("returns compact format", async () => {
     await api("/api/memories", { method: "POST", body: JSON.stringify({ key: "fmt-test", value: "hello world", scope: "global", importance: 8 }) });

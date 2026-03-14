@@ -144,6 +144,8 @@ export interface ListMemoriesFilter {
   pinned?: boolean;
   agent_id?: string;
   project_id?: string;
+  session_id?: string;
+  status?: MemoryStatus;
   limit?: number;
   offset?: number;
   fields?: string[];
@@ -299,6 +301,8 @@ export class MementosClient {
     if (filter.pinned !== undefined) q["pinned"] = filter.pinned;
     if (filter.agent_id) q["agent_id"] = filter.agent_id;
     if (filter.project_id) q["project_id"] = filter.project_id;
+    if (filter.session_id) q["session_id"] = filter.session_id;
+    if (filter.status) q["status"] = filter.status;
     if (filter.limit !== undefined) q["limit"] = filter.limit;
     if (filter.offset !== undefined) q["offset"] = filter.offset;
     if (filter.fields?.length) q["fields"] = filter.fields.join(",");
@@ -329,6 +333,24 @@ export class MementosClient {
   /** Clean up expired memories. */
   cleanExpired(): Promise<{ cleaned: number }> {
     return this.post("/api/memories/clean");
+  }
+
+  /** Extract memories from a session summary. For sessions→mementos integration.
+   * Auto-creates: session summary (history), key topics (knowledge), notes (knowledge).
+   */
+  extractFromSession(input: {
+    session_id: string;
+    title?: string;
+    project?: string;
+    model?: string;
+    messages?: number;
+    key_topics?: string[];
+    summary?: string;
+    agent_id?: string;
+    project_id?: string;
+    memories?: Partial<CreateMemoryInput>[];
+  }): Promise<{ created: number; memory_ids: string[]; errors: string[]; session_id: string }> {
+    return this.post("/api/memories/extract", input);
   }
 
   /** Save (create) a memory. */
