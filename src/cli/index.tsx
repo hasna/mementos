@@ -1631,6 +1631,7 @@ program
     "--categories <cats>",
     "Comma-separated categories to include"
   )
+  .option("--format <fmt>", "Output format: xml (default), compact, markdown, json")
   .action((opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
@@ -1721,8 +1722,17 @@ program
       const lines: string[] = [];
       let totalChars = 0;
 
+      const fmt = (opts.format as string | undefined) || "xml";
+
       for (const m of unique) {
-        const line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+        let line: string;
+        if (fmt === "compact") {
+          line = `${m.key}: ${m.value}`;
+        } else if (fmt === "json") {
+          line = JSON.stringify({ key: m.key, value: m.value, scope: m.scope, category: m.category, importance: m.importance });
+        } else {
+          line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+        }
         if (totalChars + line.length > charBudget) break;
         lines.push(line);
         totalChars += line.length;
@@ -1742,7 +1752,16 @@ program
         return;
       }
 
-      const context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+      let context: string;
+      if (fmt === "compact") {
+        context = lines.join("\n");
+      } else if (fmt === "json") {
+        context = `[${lines.join(",")}]`;
+      } else if (fmt === "markdown") {
+        context = `## Agent Memories\n\n${lines.join("\n")}`;
+      } else {
+        context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
+      }
 
       if (globalOpts.json) {
         outputJson({ context, count: lines.length });
