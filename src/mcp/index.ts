@@ -44,9 +44,14 @@ import type {
   EntityType,
 } from "../types/index.js";
 
+// Read version from package.json — never hardcode
+import { createRequire } from "node:module";
+const _require = createRequire(import.meta.url);
+const _pkg = _require("../../package.json") as { version: string };
+
 const server = new McpServer({
   name: "mementos",
-  version: "0.1.0",
+  version: _pkg.version,
 });
 
 // ============================================================================

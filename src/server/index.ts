@@ -1173,7 +1173,11 @@ export function startServer(port: number): void {
       // Health check
       if (pathname === "/api/health" || pathname === "/health") {
         const profile = getActiveProfile();
-        return json({ status: "ok", version: "0.1.0", profile: profile ?? "default", db_path: getDbPath(), hostname });
+        // Read version from package.json dynamically
+        const { createRequire } = await import("node:module");
+        const req = createRequire(import.meta.url);
+        const pkg = req("../../package.json") as { version: string };
+        return json({ status: "ok", version: pkg.version, profile: profile ?? "default", db_path: getDbPath(), hostname });
       }
 
       // Profile info
