@@ -9,6 +9,7 @@ function parseAgentRow(row: Record<string, unknown>): Agent {
     description: (row["description"] as string) || null,
     role: (row["role"] as string) || null,
     metadata: JSON.parse((row["metadata"] as string) || "{}") as Record<string, unknown>,
+    active_project_id: (row["active_project_id"] as string) || null,
     created_at: row["created_at"] as string,
     last_seen_at: row["last_seen_at"] as string,
   };
@@ -94,9 +95,24 @@ export function listAgents(db?: Database): Agent[] {
   return rows.map(parseAgentRow);
 }
 
+export function touchAgent(idOrName: string, db?: Database): void {
+  const d = db || getDatabase();
+  const agent = getAgent(idOrName, d);
+  if (!agent) return;
+  d.run("UPDATE agents SET last_seen_at = ? WHERE id = ?", [now(), agent.id]);
+}
+
+export function listAgentsByProject(projectId: string, db?: Database): Agent[] {
+  const d = db || getDatabase();
+  const rows = d
+    .query("SELECT * FROM agents WHERE active_project_id = ? ORDER BY last_seen_at DESC")
+    .all(projectId) as Record<string, unknown>[];
+  return rows.map(parseAgentRow);
+}
+
 export function updateAgent(
   id: string,
-  updates: { name?: string; description?: string; role?: string; metadata?: Record<string, unknown> },
+  updates: { name?: string; description?: string; role?: string; metadata?: Record<string, unknown>; active_project_id?: string | null },
   db?: Database
 ): Agent | null {
   const d = db || getDatabase();
@@ -129,6 +145,10 @@ export function updateAgent(
 
   if (updates.metadata !== undefined) {
     d.run("UPDATE agents SET metadata = ? WHERE id = ?", [JSON.stringify(updates.metadata), agent.id]);
+  }
+
+  if ("active_project_id" in updates) {
+    d.run("UPDATE agents SET active_project_id = ? WHERE id = ?", [updates.active_project_id ?? null, agent.id]);
   }
 
   // Always update last_seen_at

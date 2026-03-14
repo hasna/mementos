@@ -131,6 +131,7 @@ export interface Agent {
   description: string | null;
   role: string | null;
   metadata: Record<string, unknown>;
+  active_project_id: string | null;
   created_at: string;
   last_seen_at: string;
 }

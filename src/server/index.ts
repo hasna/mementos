@@ -16,7 +16,7 @@ import {
   cleanExpiredMemories,
   touchMemory,
 } from "../db/memories.js";
-import { registerAgent, getAgent, listAgents } from "../db/agents.js";
+import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../db/agents.js";
 import { registerProject, listProjects } from "../db/projects.js";
 import { getDatabase } from "../db/database.js";
 import { searchMemories } from "../lib/search.js";
@@ -461,8 +461,11 @@ addRoute("DELETE", "/api/memories/:id", (_req, _url, params) => {
 // ============================================================================
 
 // GET /api/agents — list agents
-addRoute("GET", "/api/agents", () => {
-  const agents = listAgents();
+addRoute("GET", "/api/agents", (_req: Request, url: URL) => {
+  const q = getSearchParams(url);
+  const agents = q["project_id"]
+    ? listAgentsByProject(q["project_id"])
+    : listAgents();
   return json({ agents, count: agents.length });
 });
 
@@ -488,6 +491,28 @@ addRoute("GET", "/api/agents/:id", (_req, _url, params) => {
     return errorResponse("Agent not found", 404);
   }
   return json(agent);
+});
+
+// PATCH /api/agents/:id — update agent
+addRoute("PATCH", "/api/agents/:id", async (req, _url, params) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body) {
+    return errorResponse("Invalid JSON body", 400);
+  }
+  const updates: { name?: string; description?: string; role?: string; metadata?: Record<string, unknown>; active_project_id?: string | null } = {};
+  if (body["name"] !== undefined) updates.name = body["name"] as string;
+  if (body["description"] !== undefined) updates.description = body["description"] as string;
+  if (body["role"] !== undefined) updates.role = body["role"] as string;
+  if (body["metadata"] !== undefined) updates.metadata = body["metadata"] as Record<string, unknown>;
+  if ("active_project_id" in body) updates.active_project_id = (body["active_project_id"] as string | null) ?? null;
+
+  try {
+    const agent = updateAgent(params["id"]!, updates);
+    if (!agent) return errorResponse("Agent not found", 404);
+    return json(agent);
+  } catch (e) {
+    return errorResponse(e instanceof Error ? e.message : "Update failed", 400);
+  }
 });
 
 // ============================================================================

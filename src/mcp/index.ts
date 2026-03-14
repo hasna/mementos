@@ -13,7 +13,7 @@ import {
   touchMemory,
   cleanExpiredMemories,
 } from "../db/memories.js";
-import { registerAgent, getAgent, listAgents, updateAgent } from "../db/agents.js";
+import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../db/agents.js";
 import {
   registerProject,
   listProjects,
@@ -139,6 +139,7 @@ server.tool(
         input.ttl_ms = parseDuration(args.ttl_ms);
       }
       const memory = createMemory(input as unknown as CreateMemoryInput);
+      if (args.agent_id) touchAgent(args.agent_id);
       return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -162,6 +163,7 @@ server.tool(
       const memory = getMemoryByKey(args.key, args.scope, args.agent_id, args.project_id, args.session_id);
       if (memory) {
         touchMemory(memory.id);
+        if (args.agent_id) touchAgent(args.agent_id);
         return { content: [{ type: "text" as const, text: formatMemory(memory) }] };
       }
 
@@ -584,7 +586,7 @@ server.tool(
       if (agents.length === 0) {
         return { content: [{ type: "text" as const, text: "No agents registered." }] };
       }
-      const lines = agents.map((a) => `${a.id} | ${a.name} | ${a.role || "agent"} | last seen: ${a.last_seen_at}`);
+      const lines = agents.map((a) => `${a.id} | ${a.name} | ${a.role || "agent"} | project: ${a.active_project_id || "-"} | last seen: ${a.last_seen_at}`);
       return { content: [{ type: "text" as const, text: `${agents.length} agent(s):\n${lines.join("\n")}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -618,13 +620,14 @@ server.tool(
 
 server.tool(
   "update_agent",
-  "Update agent name, description, role, or metadata.",
+  "Update agent name, description, role, metadata, or active_project_id.",
   {
     id: z.string(),
     name: z.string().optional(),
     description: z.string().optional(),
     role: z.string().optional(),
     metadata: z.record(z.unknown()).optional(),
+    active_project_id: z.string().nullable().optional(),
   },
   async (args) => {
     try {
@@ -636,9 +639,29 @@ server.tool(
       return {
         content: [{
           type: "text" as const,
-          text: `Agent updated:\nID: ${agent.id}\nName: ${agent.name}\nDescription: ${agent.description || "-"}\nRole: ${agent.role || "agent"}\nMetadata: ${JSON.stringify(agent.metadata)}\nLast seen: ${agent.last_seen_at}`,
+          text: `Agent updated:\nID: ${agent.id}\nName: ${agent.name}\nDescription: ${agent.description || "-"}\nRole: ${agent.role || "agent"}\nActive project: ${agent.active_project_id || "-"}\nLast seen: ${agent.last_seen_at}`,
         }],
       };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "list_agents_by_project",
+  "List agents currently active on a project.",
+  {
+    project_id: z.string(),
+  },
+  async (args) => {
+    try {
+      const agents = listAgentsByProject(args.project_id);
+      if (agents.length === 0) {
+        return { content: [{ type: "text" as const, text: `No active agents for project: ${args.project_id}` }] };
+      }
+      const lines = agents.map((a) => `${a.id} | ${a.name} | ${a.role || "agent"} | last seen: ${a.last_seen_at}`);
+      return { content: [{ type: "text" as const, text: `${agents.length} agent(s) on project ${args.project_id}:\n${lines.join("\n")}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -1097,45 +1120,398 @@ server.tool(
 );
 
 // ============================================================================
-// Meta-tools: search_tools + describe_tools (96% input token reduction)
+// Meta-tools: search_tools + describe_tools (lean stubs — on-demand schema docs)
 // ============================================================================
 
-const TOOL_REGISTRY = [
-  { name: "memory_save", description: "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent.", category: "memory" },
-  { name: "memory_recall", description: "Recall a memory by key. Returns the best matching active memory.", category: "memory" },
-  { name: "memory_list", description: "List memories. Default: compact lines. full=true for complete JSON objects.", category: "memory" },
-  { name: "memory_update", description: "Update a memory's metadata (value, importance, tags, etc.)", category: "memory" },
-  { name: "memory_forget", description: "Delete a memory by ID or key", category: "memory" },
-  { name: "memory_search", description: "Search memories by keyword across key, value, summary, and tags", category: "memory" },
-  { name: "memory_stats", description: "Get aggregate statistics about stored memories", category: "memory" },
-  { name: "memory_export", description: "Export memories as JSON", category: "memory" },
-  { name: "memory_import", description: "Import memories from JSON array", category: "memory" },
-  { name: "memory_inject", description: "Get memory context for system prompt injection. Selects by scope, importance, recency.", category: "memory" },
-  { name: "memory_context", description: "Get memories relevant to current context, filtered by scope/importance/recency.", category: "memory" },
-  { name: "register_agent", description: "Register an agent. Idempotent — same name returns existing agent.", category: "agent" },
-  { name: "list_agents", description: "List all registered agents", category: "agent" },
-  { name: "get_agent", description: "Get agent details by ID or name", category: "agent" },
-  { name: "update_agent", description: "Update agent name, description, role, or metadata.", category: "agent" },
-  { name: "register_project", description: "Register a project for memory scoping", category: "project" },
-  { name: "list_projects", description: "List all registered projects", category: "project" },
-  { name: "bulk_forget", description: "Delete multiple memories by IDs", category: "bulk" },
-  { name: "bulk_update", description: "Update multiple memories with the same changes", category: "bulk" },
-  { name: "clean_expired", description: "Remove expired memories from the database", category: "utility" },
-  { name: "entity_create", description: "Create a knowledge graph entity (person, project, tool, concept, file, api, pattern, organization).", category: "graph" },
-  { name: "entity_get", description: "Get entity details by name or ID, including relations summary and memory count.", category: "graph" },
-  { name: "entity_list", description: "List entities. Optional filters: type, project_id, search, limit.", category: "graph" },
-  { name: "entity_delete", description: "Delete an entity by name or ID.", category: "graph" },
-  { name: "entity_merge", description: "Merge source entity into target. Moves all relations and memory links.", category: "graph" },
-  { name: "entity_link", description: "Link an entity to a memory with a role (subject, object, or context).", category: "graph" },
-  { name: "relation_create", description: "Create a relation between two entities.", category: "graph" },
-  { name: "relation_list", description: "List relations for an entity. Filter by type and direction.", category: "graph" },
-  { name: "relation_delete", description: "Delete a relation by ID.", category: "graph" },
-  { name: "graph_query", description: "Traverse the knowledge graph from an entity up to N hops.", category: "graph" },
-  { name: "graph_path", description: "Find shortest path between two entities.", category: "graph" },
-  { name: "graph_stats", description: "Get entity and relation counts by type.", category: "graph" },
-  { name: "search_tools", description: "Search available tools by name or keyword. Returns names only.", category: "meta" },
-  { name: "describe_tools", description: "Get full schemas for specific tools by name.", category: "meta" },
-];
+type ToolParam = {
+  type: string;
+  description: string;
+  required?: boolean;
+  enum?: string[];
+  items?: { type: string; enum?: string[] };
+};
+
+type ToolSchema = {
+  description: string;
+  category: string;
+  params: Record<string, ToolParam>;
+  example?: string;
+};
+
+const FULL_SCHEMAS: Record<string, ToolSchema> = {
+  memory_save: {
+    description: "Save/upsert a memory. Creates new or merges with existing key.",
+    category: "memory",
+    params: {
+      key: { type: "string", description: "Unique key for the memory (kebab-case recommended)", required: true },
+      value: { type: "string", description: "The memory content", required: true },
+      scope: { type: "string", description: "Visibility: global=all agents, shared=project, private=single agent", enum: ["global", "shared", "private"] },
+      category: { type: "string", description: "Memory type", enum: ["preference", "fact", "knowledge", "history"] },
+      importance: { type: "number", description: "Priority 1-10 (10=critical)" },
+      tags: { type: "array", description: "Searchable tags", items: { type: "string" } },
+      summary: { type: "string", description: "Short summary for display" },
+      agent_id: { type: "string", description: "Agent UUID to scope this memory to" },
+      project_id: { type: "string", description: "Project UUID to scope this memory to" },
+      session_id: { type: "string", description: "Session UUID" },
+      ttl_ms: { type: "string|number", description: "Time-to-live e.g. '7d', '2h', or ms integer" },
+      source: { type: "string", description: "Origin of the memory", enum: ["user", "agent", "system", "auto", "imported"] },
+      metadata: { type: "object", description: "Arbitrary JSON metadata" },
+    },
+    example: '{"key":"preferred-language","value":"TypeScript","scope":"global","importance":8,"tags":["language","preference"]}',
+  },
+  memory_recall: {
+    description: "Recall a memory by exact key. Falls back to fuzzy search if no exact match.",
+    category: "memory",
+    params: {
+      key: { type: "string", description: "Key to look up", required: true },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+      session_id: { type: "string", description: "Session UUID filter" },
+    },
+    example: '{"key":"preferred-language","scope":"global"}',
+  },
+  memory_list: {
+    description: "List memories with optional filters. Returns compact lines by default.",
+    category: "memory",
+    params: {
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history"] },
+      tags: { type: "array", description: "Filter by tags (AND logic)", items: { type: "string" } },
+      min_importance: { type: "number", description: "Minimum importance threshold" },
+      pinned: { type: "boolean", description: "Filter to pinned memories only" },
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+      session_id: { type: "string", description: "Session UUID filter" },
+      status: { type: "string", description: "Memory status filter", enum: ["active", "archived", "expired"] },
+      limit: { type: "number", description: "Max results (default 50)" },
+      offset: { type: "number", description: "Pagination offset" },
+      full: { type: "boolean", description: "Return full JSON objects instead of compact lines" },
+      fields: { type: "array", description: "Fields to include in full mode", items: { type: "string" } },
+    },
+    example: '{"scope":"global","min_importance":7,"limit":20}',
+  },
+  memory_update: {
+    description: "Update a memory's fields. Requires current version for optimistic concurrency.",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Memory ID (partial OK)", required: true },
+      version: { type: "number", description: "Current version (for conflict detection)", required: true },
+      value: { type: "string", description: "New value" },
+      category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history"] },
+      scope: { type: "string", description: "New scope", enum: ["global", "shared", "private"] },
+      importance: { type: "number", description: "New importance 1-10" },
+      tags: { type: "array", description: "New tags (replaces all)", items: { type: "string" } },
+      summary: { type: "string", description: "New summary (null to clear)" },
+      pinned: { type: "boolean", description: "Pin/unpin the memory" },
+      status: { type: "string", description: "New status", enum: ["active", "archived", "expired"] },
+      metadata: { type: "object", description: "New metadata (replaces existing)" },
+      expires_at: { type: "string", description: "New expiry ISO timestamp (null to clear)" },
+    },
+    example: '{"id":"abc123","version":1,"importance":9,"tags":["correction","important"]}',
+  },
+  memory_forget: {
+    description: "Delete a memory by ID or key.",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Memory ID (partial OK)" },
+      key: { type: "string", description: "Memory key" },
+      scope: { type: "string", description: "Scope for key lookup", enum: ["global", "shared", "private"] },
+      agent_id: { type: "string", description: "Agent UUID for key lookup" },
+      project_id: { type: "string", description: "Project UUID for key lookup" },
+    },
+    example: '{"key":"old-preference","scope":"global"}',
+  },
+  memory_search: {
+    description: "Full-text search across key, value, summary, and tags.",
+    category: "memory",
+    params: {
+      query: { type: "string", description: "Search query", required: true },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history"] },
+      tags: { type: "array", description: "Tag filter", items: { type: "string" } },
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+      limit: { type: "number", description: "Max results (default 20)" },
+    },
+    example: '{"query":"typescript","scope":"global","limit":10}',
+  },
+  memory_stats: {
+    description: "Aggregate statistics: total, by scope, by category, pinned, expired counts.",
+    category: "memory",
+    params: {},
+    example: "{}",
+  },
+  memory_export: {
+    description: "Export memories as a JSON array.",
+    category: "memory",
+    params: {
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history"] },
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+    },
+    example: '{"scope":"global"}',
+  },
+  memory_import: {
+    description: "Import memories from a JSON array. Merges by key by default.",
+    category: "memory",
+    params: {
+      memories: { type: "array", description: "Array of memory objects with key+value (required), plus optional fields", required: true, items: { type: "object" } },
+      overwrite: { type: "boolean", description: "false=create-only (skip existing keys), default=merge" },
+    },
+    example: '{"memories":[{"key":"foo","value":"bar","scope":"global","importance":7}]}',
+  },
+  memory_inject: {
+    description: "Get formatted memory context for system prompt injection. Respects token budget.",
+    category: "memory",
+    params: {
+      agent_id: { type: "string", description: "Agent UUID to include private memories" },
+      project_id: { type: "string", description: "Project UUID to include shared memories" },
+      session_id: { type: "string", description: "Session UUID" },
+      max_tokens: { type: "number", description: "Approximate token budget (default 500)" },
+      categories: { type: "array", description: "Categories to include (default: preference, fact, knowledge)", items: { type: "string", enum: ["preference", "fact", "knowledge", "history"] } },
+      min_importance: { type: "number", description: "Minimum importance (default 3)" },
+      raw: { type: "boolean", description: "true=plain lines only, false=wrapped in <agent-memories> tags" },
+    },
+    example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5}',
+  },
+  memory_context: {
+    description: "Get active memories for the current context (agent/project/scope).",
+    category: "memory",
+    params: {
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      limit: { type: "number", description: "Max results (default 30)" },
+    },
+    example: '{"project_id":"proj-uuid","scope":"shared","limit":20}',
+  },
+  register_agent: {
+    description: "Register an agent. Idempotent — same name returns existing agent.",
+    category: "agent",
+    params: {
+      name: { type: "string", description: "Agent name (e.g. 'maximus', 'cassius')", required: true },
+      description: { type: "string", description: "Agent description" },
+      role: { type: "string", description: "Agent role (default: 'agent')" },
+    },
+    example: '{"name":"maximus","role":"developer"}',
+  },
+  list_agents: {
+    description: "List all registered agents with IDs, names, roles, and last-seen timestamps.",
+    category: "agent",
+    params: {},
+    example: "{}",
+  },
+  get_agent: {
+    description: "Get agent details by UUID or name.",
+    category: "agent",
+    params: {
+      id: { type: "string", description: "Agent UUID or name", required: true },
+    },
+    example: '{"id":"maximus"}',
+  },
+  update_agent: {
+    description: "Update agent name, description, role, metadata, or active_project_id. Call on session start to bind agent to current project.",
+    category: "agent",
+    params: {
+      id: { type: "string", description: "Agent UUID or name", required: true },
+      name: { type: "string", description: "New name" },
+      description: { type: "string", description: "New description" },
+      role: { type: "string", description: "New role" },
+      metadata: { type: "object", description: "New metadata" },
+      active_project_id: { type: "string", description: "Project ID this agent is currently working on (null to clear)" },
+    },
+    example: '{"id":"galba","active_project_id":"80a0be92-e0cc-4710-bce4-fb8a2e78e69e"}',
+  },
+  list_agents_by_project: {
+    description: "List all agents currently active on a specific project.",
+    category: "agent",
+    params: {
+      project_id: { type: "string", description: "Project ID", required: true },
+    },
+    example: '{"project_id":"80a0be92-e0cc-4710-bce4-fb8a2e78e69e"}',
+  },
+  register_project: {
+    description: "Register a project for memory scoping. Idempotent by name.",
+    category: "project",
+    params: {
+      name: { type: "string", description: "Project name (use git repo name)", required: true },
+      path: { type: "string", description: "Absolute path to project root", required: true },
+      description: { type: "string", description: "Project description" },
+      memory_prefix: { type: "string", description: "Key prefix for project memories" },
+    },
+    example: '{"name":"open-mementos","path":"/Users/hasna/Workspace/hasna/opensource/opensourcedev/open-mementos"}',
+  },
+  list_projects: {
+    description: "List all registered projects with IDs, names, and paths.",
+    category: "project",
+    params: {},
+    example: "{}",
+  },
+  bulk_forget: {
+    description: "Delete multiple memories by IDs in one call.",
+    category: "bulk",
+    params: {
+      ids: { type: "array", description: "Array of memory IDs (partials OK)", required: true, items: { type: "string" } },
+    },
+    example: '{"ids":["abc123","def456"]}',
+  },
+  bulk_update: {
+    description: "Apply the same field updates to multiple memories.",
+    category: "bulk",
+    params: {
+      ids: { type: "array", description: "Array of memory IDs (partials OK)", required: true, items: { type: "string" } },
+      importance: { type: "number", description: "New importance 1-10" },
+      tags: { type: "array", description: "New tags (replaces all)", items: { type: "string" } },
+      pinned: { type: "boolean", description: "Pin/unpin" },
+      category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history"] },
+      status: { type: "string", description: "New status", enum: ["active", "archived", "expired"] },
+    },
+    example: '{"ids":["abc123","def456"],"importance":9,"tags":["important"]}',
+  },
+  clean_expired: {
+    description: "Remove expired memories from the database. Returns count of removed entries.",
+    category: "utility",
+    params: {},
+    example: "{}",
+  },
+  entity_create: {
+    description: "Create a knowledge graph entity.",
+    category: "graph",
+    params: {
+      name: { type: "string", description: "Entity name", required: true },
+      type: { type: "string", description: "Entity type", required: true, enum: ["person", "project", "tool", "concept", "file", "api", "pattern", "organization"] },
+      description: { type: "string", description: "Entity description" },
+      project_id: { type: "string", description: "Project UUID to scope this entity" },
+    },
+    example: '{"name":"TypeScript","type":"tool","description":"Typed superset of JavaScript"}',
+  },
+  entity_get: {
+    description: "Get entity details including relations summary and linked memory count.",
+    category: "graph",
+    params: {
+      name_or_id: { type: "string", description: "Entity name or ID (partial OK)", required: true },
+      type: { type: "string", description: "Type hint for name disambiguation", enum: ["person", "project", "tool", "concept", "file", "api", "pattern", "organization"] },
+    },
+    example: '{"name_or_id":"TypeScript"}',
+  },
+  entity_list: {
+    description: "List entities with optional type, project, and search filters.",
+    category: "graph",
+    params: {
+      type: { type: "string", description: "Type filter", enum: ["person", "project", "tool", "concept", "file", "api", "pattern", "organization"] },
+      project_id: { type: "string", description: "Project UUID filter" },
+      search: { type: "string", description: "Name search string" },
+      limit: { type: "number", description: "Max results (default 50)" },
+    },
+    example: '{"type":"tool","limit":20}',
+  },
+  entity_delete: {
+    description: "Delete an entity and all its relations.",
+    category: "graph",
+    params: {
+      name_or_id: { type: "string", description: "Entity name or ID (partial OK)", required: true },
+    },
+    example: '{"name_or_id":"OldEntity"}',
+  },
+  entity_merge: {
+    description: "Merge source entity into target — moves all relations and memory links.",
+    category: "graph",
+    params: {
+      source: { type: "string", description: "Source entity name or ID (will be deleted)", required: true },
+      target: { type: "string", description: "Target entity name or ID (will be kept)", required: true },
+    },
+    example: '{"source":"OldName","target":"NewName"}',
+  },
+  entity_link: {
+    description: "Link an entity to a memory with a semantic role.",
+    category: "graph",
+    params: {
+      entity_name_or_id: { type: "string", description: "Entity name or ID", required: true },
+      memory_id: { type: "string", description: "Memory ID (partial OK)", required: true },
+      role: { type: "string", description: "Semantic role (default: context)", enum: ["subject", "object", "context"] },
+    },
+    example: '{"entity_name_or_id":"TypeScript","memory_id":"abc123","role":"subject"}',
+  },
+  relation_create: {
+    description: "Create a typed relation between two entities.",
+    category: "graph",
+    params: {
+      source_entity: { type: "string", description: "Source entity name or ID", required: true },
+      target_entity: { type: "string", description: "Target entity name or ID", required: true },
+      relation_type: { type: "string", description: "Relation type", required: true, enum: ["uses", "knows", "depends_on", "created_by", "related_to", "contradicts", "part_of", "implements"] },
+      weight: { type: "number", description: "Relation weight 0-1 (default 1.0)" },
+    },
+    example: '{"source_entity":"MyApp","target_entity":"TypeScript","relation_type":"uses"}',
+  },
+  relation_list: {
+    description: "List relations for an entity, with optional type and direction filters.",
+    category: "graph",
+    params: {
+      entity_name_or_id: { type: "string", description: "Entity name or ID", required: true },
+      relation_type: { type: "string", description: "Type filter", enum: ["uses", "knows", "depends_on", "created_by", "related_to", "contradicts", "part_of", "implements"] },
+      direction: { type: "string", description: "Direction filter (default: both)", enum: ["outgoing", "incoming", "both"] },
+    },
+    example: '{"entity_name_or_id":"MyApp","direction":"outgoing"}',
+  },
+  relation_delete: {
+    description: "Delete a relation by ID.",
+    category: "graph",
+    params: {
+      id: { type: "string", description: "Relation ID (partial OK)", required: true },
+    },
+    example: '{"id":"rel-abc123"}',
+  },
+  graph_query: {
+    description: "Traverse the knowledge graph from an entity up to N hops. Returns entities and relations.",
+    category: "graph",
+    params: {
+      entity_name_or_id: { type: "string", description: "Starting entity name or ID", required: true },
+      depth: { type: "number", description: "Max traversal depth (default 2)" },
+    },
+    example: '{"entity_name_or_id":"MyApp","depth":3}',
+  },
+  graph_path: {
+    description: "Find the shortest path between two entities in the knowledge graph.",
+    category: "graph",
+    params: {
+      from_entity: { type: "string", description: "Starting entity name or ID", required: true },
+      to_entity: { type: "string", description: "Target entity name or ID", required: true },
+      max_depth: { type: "number", description: "Max search depth (default 5)" },
+    },
+    example: '{"from_entity":"Agent","to_entity":"Database","max_depth":4}',
+  },
+  graph_stats: {
+    description: "Get entity and relation counts broken down by type.",
+    category: "graph",
+    params: {},
+    example: "{}",
+  },
+  search_tools: {
+    description: "Search available tools by name or keyword. Returns matching tool names and categories.",
+    category: "meta",
+    params: {
+      query: { type: "string", description: "Search keyword (matches tool name or description)", required: true },
+      category: { type: "string", description: "Category filter", enum: ["memory", "agent", "project", "bulk", "utility", "graph", "meta"] },
+    },
+    example: '{"query":"memory","category":"memory"}',
+  },
+  describe_tools: {
+    description: "Get full parameter schemas and examples for specific tools. Omit names to list all tools.",
+    category: "meta",
+    params: {
+      names: { type: "array", description: "Tool names to describe (omit for all tools)", items: { type: "string" } },
+    },
+    example: '{"names":["memory_save","memory_recall"]}',
+  },
+};
+
+const TOOL_REGISTRY = Object.entries(FULL_SCHEMAS).map(([name, schema]) => ({
+  name,
+  description: schema.description,
+  category: schema.category,
+}));
 
 server.tool(
   "search_tools",
@@ -1151,21 +1527,45 @@ server.tool(
       (t.name.includes(q) || t.description.toLowerCase().includes(q))
     );
     if (results.length === 0) return { content: [{ type: "text" as const, text: "No tools found." }] };
-    return { content: [{ type: "text" as const, text: results.map(t => `${t.name} [${t.category}]`).join("\n") }] };
+    return { content: [{ type: "text" as const, text: results.map(t => `${t.name} [${t.category}]: ${t.description}`).join("\n") }] };
   }
 );
 
 server.tool(
   "describe_tools",
-  "Get full schemas for specific tools by name.",
+  "Get full parameter schemas and examples for tools. Omit names to list all tools.",
   {
-    names: z.array(z.string()),
+    names: z.array(z.string()).optional(),
   },
   async (args) => {
-    const found = TOOL_REGISTRY.filter(t => args.names.includes(t.name));
-    if (found.length === 0) return { content: [{ type: "text" as const, text: "No matching tools." }] };
-    const lines = found.map(t => `**${t.name}** [${t.category}]: ${t.description}`);
-    return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    const targets = (args.names && args.names.length > 0)
+      ? args.names
+      : Object.keys(FULL_SCHEMAS);
+    const results = targets
+      .filter(name => name in FULL_SCHEMAS)
+      .map(name => {
+        const schema = FULL_SCHEMAS[name]!;
+        const paramLines = Object.entries(schema.params).map(([pname, p]) => {
+          const req = p.required ? " [required]" : "";
+          const enumStr = p.enum ? ` (${p.enum.join("|")})` : "";
+          return `  ${pname}${req}: ${p.type}${enumStr} — ${p.description}`;
+        });
+        const lines = [
+          `### ${name} [${schema.category}]`,
+          schema.description,
+        ];
+        if (paramLines.length > 0) {
+          lines.push("Params:", ...paramLines);
+        } else {
+          lines.push("Params: none");
+        }
+        if (schema.example) lines.push(`Example: ${schema.example}`);
+        return lines.join("\n");
+      });
+    if (results.length === 0) {
+      return { content: [{ type: "text" as const, text: "No matching tools." }] };
+    }
+    return { content: [{ type: "text" as const, text: results.join("\n\n") }] };
   }
 );
 

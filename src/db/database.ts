@@ -269,6 +269,13 @@ const MIGRATIONS = [
 
   INSERT OR IGNORE INTO _migrations (id) VALUES (5);
   `,
+
+  // Migration 6: active_project_id on agents for agent→project binding (Option D)
+  `
+  ALTER TABLE agents ADD COLUMN active_project_id TEXT REFERENCES projects(id) ON DELETE SET NULL;
+  CREATE INDEX IF NOT EXISTS idx_agents_active_project ON agents(active_project_id);
+  INSERT OR IGNORE INTO _migrations (id) VALUES (6);
+  `,
 ];
 
 // ============================================================================
