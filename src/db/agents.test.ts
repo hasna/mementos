@@ -2,7 +2,7 @@ process.env.MEMENTOS_DB_PATH = ":memory:";
 
 import { describe, test, expect, beforeEach } from "bun:test";
 import { resetDatabase } from "./database.js";
-import { registerAgent, getAgent, listAgents } from "./agents.js";
+import { registerAgent, getAgent, listAgents, updateAgent } from "./agents.js";
 
 beforeEach(() => {
   resetDatabase();
@@ -121,5 +121,82 @@ describe("listAgents", () => {
     // "first" was re-registered last, so it should be first in the list
     expect(agents[0]!.name).toBe("first");
     expect(agents[1]!.name).toBe("second");
+  });
+});
+
+// ============================================================================
+// updateAgent
+// ============================================================================
+
+describe("updateAgent", () => {
+  test("updates name", () => {
+    const agent = registerAgent("old-name");
+    const updated = updateAgent(agent.id, { name: "new-name" });
+    expect(updated).not.toBeNull();
+    expect(updated!.name).toBe("new-name");
+  });
+
+  test("updates description", () => {
+    const agent = registerAgent("desc-agent");
+    const updated = updateAgent(agent.id, { description: "new desc" });
+    expect(updated).not.toBeNull();
+    expect(updated!.description).toBe("new desc");
+  });
+
+  test("updates role", () => {
+    const agent = registerAgent("role-agent");
+    const updated = updateAgent(agent.id, { role: "supervisor" });
+    expect(updated).not.toBeNull();
+    expect(updated!.role).toBe("supervisor");
+  });
+
+  test("updates metadata", () => {
+    const agent = registerAgent("meta-agent");
+    const updated = updateAgent(agent.id, { metadata: { key: "value" } });
+    expect(updated).not.toBeNull();
+    expect(updated!.metadata).toEqual({ key: "value" });
+  });
+
+  test("returns null for non-existent agent", () => {
+    const result = updateAgent("nonexistent-id", { name: "x" });
+    expect(result).toBeNull();
+  });
+
+  test("throws on duplicate name", () => {
+    registerAgent("taken-name");
+    const agent = registerAgent("other-name");
+    expect(() => {
+      updateAgent(agent.id, { name: "taken-name" });
+    }).toThrow("Agent name already taken: taken-name");
+  });
+
+  test("updates last_seen_at", () => {
+    const agent = registerAgent("seen-agent");
+    const originalSeen = agent.last_seen_at;
+    const updated = updateAgent(agent.id, { description: "bump" });
+    expect(updated).not.toBeNull();
+    expect(
+      new Date(updated!.last_seen_at).getTime()
+    ).toBeGreaterThanOrEqual(new Date(originalSeen).getTime());
+  });
+
+  test("updates multiple fields at once", () => {
+    const agent = registerAgent("multi-update");
+    const updated = updateAgent(agent.id, {
+      description: "new desc",
+      role: "coordinator",
+      metadata: { foo: "bar" },
+    });
+    expect(updated).not.toBeNull();
+    expect(updated!.description).toBe("new desc");
+    expect(updated!.role).toBe("coordinator");
+    expect(updated!.metadata).toEqual({ foo: "bar" });
+  });
+
+  test("name change to same name is no-op", () => {
+    const agent = registerAgent("same-name-agent");
+    const updated = updateAgent(agent.id, { name: "same-name-agent" });
+    expect(updated).not.toBeNull();
+    expect(updated!.name).toBe("same-name-agent");
   });
 });

@@ -15,6 +15,8 @@ import {
   ChevronRightIcon,
   PinIcon,
   TagIcon,
+  PencilIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -35,6 +37,8 @@ import {
 } from "@/components/ui/select";
 import { SearchBar } from "@/components/search-bar";
 import { MemoryDetail } from "@/components/memory-detail";
+import { MemoryEditDialog } from "@/components/memory-edit-dialog";
+import { MemoryDeleteDialog } from "@/components/memory-delete-dialog";
 import type { Memory, MemoryScope, MemoryCategory } from "@/types";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -80,7 +84,10 @@ function truncate(s: string, max: number): string {
 
 // ── Column definitions ───────────────────────────────────────────────────────
 
-function makeColumns(): ColumnDef<Memory>[] {
+function makeColumns(
+  onEdit: (memory: Memory) => void,
+  onDelete: (memory: Memory) => void,
+): ColumnDef<Memory>[] {
   return [
     {
       accessorKey: "key",
@@ -174,6 +181,33 @@ function makeColumns(): ColumnDef<Memory>[] {
         <span className="text-sm text-muted-foreground whitespace-nowrap">{timeAgo(row.original.created_at)}</span>
       ),
     },
+    {
+      id: "actions",
+      header: "",
+      cell: ({ row }) => (
+        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            title="Edit memory"
+            onClick={() => onEdit(row.original)}
+          >
+            <PencilIcon className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-destructive hover:text-destructive"
+            title="Delete memory"
+            onClick={() => onDelete(row.original)}
+          >
+            <Trash2Icon className="size-3.5" />
+          </Button>
+        </div>
+      ),
+      enableSorting: false,
+    },
   ];
 }
 
@@ -181,9 +215,10 @@ function makeColumns(): ColumnDef<Memory>[] {
 
 interface MemoryTableProps {
   data: Memory[];
+  onRefresh?: () => void;
 }
 
-export function MemoryTable({ data }: MemoryTableProps) {
+export function MemoryTable({ data, onRefresh }: MemoryTableProps) {
   const [sorting, setSorting] = React.useState<SortingState>([{ id: "created_at", desc: true }]);
   const [globalFilter, setGlobalFilter] = React.useState("");
   const [scopeFilter, setScopeFilter] = React.useState<string>("all");
@@ -191,8 +226,43 @@ export function MemoryTable({ data }: MemoryTableProps) {
   const [importanceFilter, setImportanceFilter] = React.useState<string>("all");
   const [pinnedFilter, setPinnedFilter] = React.useState(false);
   const [selectedMemory, setSelectedMemory] = React.useState<Memory | null>(null);
+  const [editMemory, setEditMemory] = React.useState<Memory | null>(null);
+  const [editOpen, setEditOpen] = React.useState(false);
+  const [deleteMemory, setDeleteMemory] = React.useState<Memory | null>(null);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [statusMessage, setStatusMessage] = React.useState<{ type: "success" | "error"; text: string } | null>(null);
 
-  const columns = React.useMemo(() => makeColumns(), []);
+  const handleEdit = React.useCallback((memory: Memory) => {
+    setEditMemory(memory);
+    setEditOpen(true);
+  }, []);
+
+  const handleDelete = React.useCallback((memory: Memory) => {
+    setDeleteMemory(memory);
+    setDeleteOpen(true);
+  }, []);
+
+  const handleSaved = React.useCallback(() => {
+    setStatusMessage({ type: "success", text: "Memory updated successfully." });
+    setTimeout(() => setStatusMessage(null), 3000);
+    // If we're viewing the detail of the edited memory, go back to list
+    if (selectedMemory && editMemory && selectedMemory.id === editMemory.id) {
+      setSelectedMemory(null);
+    }
+    onRefresh?.();
+  }, [selectedMemory, editMemory, onRefresh]);
+
+  const handleDeleted = React.useCallback(() => {
+    setStatusMessage({ type: "success", text: "Memory deleted successfully." });
+    setTimeout(() => setStatusMessage(null), 3000);
+    // If we're viewing the detail of the deleted memory, go back to list
+    if (selectedMemory && deleteMemory && selectedMemory.id === deleteMemory.id) {
+      setSelectedMemory(null);
+    }
+    onRefresh?.();
+  }, [selectedMemory, deleteMemory, onRefresh]);
+
+  const columns = React.useMemo(() => makeColumns(handleEdit, handleDelete), [handleEdit, handleDelete]);
 
   const filteredData = React.useMemo(() => {
     let d = data;
@@ -231,7 +301,18 @@ export function MemoryTable({ data }: MemoryTableProps) {
   });
 
   if (selectedMemory) {
-    return <MemoryDetail memory={selectedMemory} onBack={() => setSelectedMemory(null)} />;
+    return (
+      <>
+        <MemoryDetail
+          memory={selectedMemory}
+          onBack={() => setSelectedMemory(null)}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
+        />
+        <MemoryEditDialog memory={editMemory} open={editOpen} onOpenChange={setEditOpen} onSaved={handleSaved} />
+        <MemoryDeleteDialog memory={deleteMemory} open={deleteOpen} onOpenChange={setDeleteOpen} onDeleted={handleDeleted} />
+      </>
+    );
   }
 
   return (
@@ -355,6 +436,23 @@ export function MemoryTable({ data }: MemoryTableProps) {
           </div>
         )}
       </div>
+
+      {/* Status message */}
+      {statusMessage && (
+        <div
+          className={`rounded-md border px-4 py-3 text-sm ${
+            statusMessage.type === "success"
+              ? "border-green-500/30 bg-green-500/10 text-green-500"
+              : "border-destructive/50 bg-destructive/10 text-destructive"
+          }`}
+        >
+          {statusMessage.text}
+        </div>
+      )}
+
+      {/* Edit / Delete dialogs */}
+      <MemoryEditDialog memory={editMemory} open={editOpen} onOpenChange={setEditOpen} onSaved={handleSaved} />
+      <MemoryDeleteDialog memory={deleteMemory} open={deleteOpen} onOpenChange={setDeleteOpen} onDeleted={handleDeleted} />
     </div>
   );
 }

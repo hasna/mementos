@@ -117,7 +117,7 @@ export function App() {
           </div>
 
           <TabsContent value="memories">
-            <MemoryTable data={memories} />
+            <MemoryTable data={memories} onRefresh={fetchAll} />
           </TabsContent>
           <TabsContent value="agents">
             <AgentsTable data={agents} />

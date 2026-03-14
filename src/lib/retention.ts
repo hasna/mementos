@@ -32,17 +32,20 @@ export function enforceQuotas(config: MementosConfig, db?: Database): number {
     // Delete the oldest and lowest-importance memories first.
     // Order by importance ASC (lowest first), then created_at ASC (oldest first).
     // Skip pinned memories — they should not be evicted.
-    const result = d.run(
-      `DELETE FROM memories WHERE id IN (
-        SELECT id FROM memories
+    const subquery = `SELECT id FROM memories
         WHERE scope = ? AND status = 'active' AND pinned = 0
         ORDER BY importance ASC, created_at ASC
-        LIMIT ?
-      )`,
+        LIMIT ?`;
+    // Count actual deletable rows — result.changes includes FTS5 trigger operations
+    const delCount = (d
+      .query(`SELECT COUNT(*) as c FROM (${subquery})`)
+      .get(scope, excess) as { c: number }).c;
+    d.run(
+      `DELETE FROM memories WHERE id IN (${subquery})`,
       [scope, excess]
     );
 
-    totalEvicted += result.changes;
+    totalEvicted += delCount;
   }
 
   return totalEvicted;
@@ -64,16 +67,18 @@ export function archiveStale(staleDays: number, db?: Database): number {
   // Archive active memories that haven't been accessed since the cutoff.
   // Use accessed_at if available, otherwise fall back to created_at.
   // Skip pinned memories.
-  const result = d.run(
-    `UPDATE memories
-     SET status = 'archived', updated_at = ?
-     WHERE status = 'active'
-       AND pinned = 0
-       AND COALESCE(accessed_at, created_at) < ?`,
-    [timestamp, cutoff]
-  );
-
-  return result.changes;
+  const archiveWhere = `status = 'active' AND pinned = 0 AND COALESCE(accessed_at, created_at) < ?`;
+  // Count first — result.changes includes FTS5 trigger operations
+  const count = (d
+    .query(`SELECT COUNT(*) as c FROM memories WHERE ${archiveWhere}`)
+    .get(cutoff) as { c: number }).c;
+  if (count > 0) {
+    d.run(
+      `UPDATE memories SET status = 'archived', updated_at = ? WHERE ${archiveWhere}`,
+      [timestamp, cutoff]
+    );
+  }
+  return count;
 }
 
 // ============================================================================
@@ -88,17 +93,18 @@ export function archiveUnused(days: number, db?: Database): number {
     Date.now() - days * 24 * 60 * 60 * 1000
   ).toISOString();
 
-  const result = d.run(
-    `UPDATE memories
-     SET status = 'archived', updated_at = ?
-     WHERE status = 'active'
-       AND pinned = 0
-       AND access_count = 0
-       AND created_at < ?`,
-    [timestamp, cutoff]
-  );
-
-  return result.changes;
+  const unusedWhere = `status = 'active' AND pinned = 0 AND access_count = 0 AND created_at < ?`;
+  // Count first — result.changes includes FTS5 trigger operations
+  const count = (d
+    .query(`SELECT COUNT(*) as c FROM memories WHERE ${unusedWhere}`)
+    .get(cutoff) as { c: number }).c;
+  if (count > 0) {
+    d.run(
+      `UPDATE memories SET status = 'archived', updated_at = ? WHERE ${unusedWhere}`,
+      [timestamp, cutoff]
+    );
+  }
+  return count;
 }
 
 // ============================================================================
@@ -116,19 +122,22 @@ export function deprioritizeStale(days: number, db?: Database): number {
   // Find active memories not accessed in `days` days.
   // Use accessed_at if available, otherwise fall back to updated_at.
   // Skip pinned memories. Lower importance by 1 (floor at 1) and bump version.
-  const result = d.run(
-    `UPDATE memories
-     SET importance = MAX(importance - 1, 1),
-         version = version + 1,
-         updated_at = ?
-     WHERE status = 'active'
-       AND pinned = 0
-       AND importance > 1
-       AND COALESCE(accessed_at, updated_at) < ?`,
-    [timestamp, cutoff]
-  );
-
-  return result.changes;
+  const deprioWhere = `status = 'active' AND pinned = 0 AND importance > 1 AND COALESCE(accessed_at, updated_at) < ?`;
+  // Count first — result.changes includes FTS5 trigger operations
+  const count = (d
+    .query(`SELECT COUNT(*) as c FROM memories WHERE ${deprioWhere}`)
+    .get(cutoff) as { c: number }).c;
+  if (count > 0) {
+    d.run(
+      `UPDATE memories
+       SET importance = MAX(importance - 1, 1),
+           version = version + 1,
+           updated_at = ?
+       WHERE ${deprioWhere}`,
+      [timestamp, cutoff]
+    );
+  }
+  return count;
 }
 
 // ============================================================================

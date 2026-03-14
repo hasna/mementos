@@ -1,4 +1,4 @@
-import { ArrowLeftIcon, PinIcon, ClockIcon, TagIcon, BrainIcon } from "lucide-react";
+import { ArrowLeftIcon, PinIcon, ClockIcon, TagIcon, BrainIcon, PencilIcon, Trash2Icon } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,9 +53,11 @@ function renderMarkdown(text: string): string {
 interface MemoryDetailProps {
   memory: Memory;
   onBack: () => void;
+  onEdit?: (memory: Memory) => void;
+  onDelete?: (memory: Memory) => void;
 }
 
-export function MemoryDetail({ memory, onBack }: MemoryDetailProps) {
+export function MemoryDetail({ memory, onBack, onEdit, onDelete }: MemoryDetailProps) {
   return (
     <div className="space-y-4">
       <Button variant="ghost" size="sm" onClick={onBack} className="gap-1.5 -ml-2">
@@ -81,7 +83,19 @@ export function MemoryDetail({ memory, onBack }: MemoryDetailProps) {
                 <Badge variant="outline">{memory.status}</Badge>
               </div>
             </div>
-            <code className="text-xs text-muted-foreground">{memory.id}</code>
+            <div className="flex items-center gap-2">
+              {onEdit && (
+                <Button variant="outline" size="sm" className="gap-1.5" onClick={() => onEdit(memory)}>
+                  <PencilIcon className="size-3.5" /> Edit
+                </Button>
+              )}
+              {onDelete && (
+                <Button variant="outline" size="sm" className="gap-1.5 text-destructive hover:bg-destructive/10" onClick={() => onDelete(memory)}>
+                  <Trash2Icon className="size-3.5" /> Delete
+                </Button>
+              )}
+              <code className="text-xs text-muted-foreground">{memory.id}</code>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-6">

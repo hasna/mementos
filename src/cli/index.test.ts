@@ -212,4 +212,63 @@ describe("CLI", () => {
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Saved:");
   });
+
+  test("pin by key", async () => {
+    await runCli("save", "pin-test-key", "pin-test-value");
+    const { stdout, exitCode } = await runCli("pin", "pin-test-key");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Pinned:");
+    expect(stdout).toContain("pin-test-key");
+  });
+
+  test("unpin by key", async () => {
+    await runCli("save", "unpin-test-key", "unpin-test-value");
+    // Pin first, then unpin
+    await runCli("pin", "unpin-test-key");
+    const { stdout, exitCode } = await runCli("unpin", "unpin-test-key");
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Unpinned:");
+    expect(stdout).toContain("unpin-test-key");
+  });
+
+  test("pin --json returns full memory object", async () => {
+    await runCli("save", "pin-json-key", "pin-json-value");
+    const { stdout, exitCode } = await runCli("--json", "pin", "pin-json-key");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.key).toBe("pin-json-key");
+    expect(parsed.pinned).toBe(true);
+  });
+
+  test("unpin --json returns full memory object", async () => {
+    await runCli("save", "unpin-json-key", "unpin-json-value");
+    await runCli("pin", "unpin-json-key");
+    const { stdout, exitCode } = await runCli("--json", "unpin", "unpin-json-key");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.key).toBe("unpin-json-key");
+    expect(parsed.pinned).toBe(false);
+  });
+
+  test("pin nonexistent key fails", async () => {
+    const { stderr, exitCode } = await runCli("pin", "nonexistent-pin-key-xyz");
+    expect(exitCode).not.toBe(0);
+    expect(stderr.toLowerCase()).toContain("no memory found");
+  });
+
+  test("unpin nonexistent key fails", async () => {
+    const { stderr, exitCode } = await runCli("unpin", "nonexistent-unpin-key-xyz");
+    expect(exitCode).not.toBe(0);
+    expect(stderr.toLowerCase()).toContain("no memory found");
+  });
+
+  test("pin by partial ID", async () => {
+    // Save and get the ID from JSON output
+    const { stdout: saveOut } = await runCli("--json", "save", "pin-id-key", "pin-id-value");
+    const saved = JSON.parse(saveOut);
+    const partialId = saved.id.slice(0, 8);
+    const { stdout, exitCode } = await runCli("pin", partialId);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("Pinned:");
+  });
 });
