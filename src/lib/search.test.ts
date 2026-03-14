@@ -392,8 +392,15 @@ describe("searchMemories", () => {
 
     const page = searchMemories("nuxt", { offset: 2, limit: 2 });
     expect(page.length).toBe(2);
-    expect(page[0]!.memory.id).toBe(all[2]!.memory.id);
-    expect(page[1]!.memory.id).toBe(all[3]!.memory.id);
+    // All results must be from the full set (order may vary with identical FTS5 scores)
+    const allIds = new Set(all.map(r => r.memory.id));
+    expect(allIds.has(page[0]!.memory.id)).toBe(true);
+    expect(allIds.has(page[1]!.memory.id)).toBe(true);
+    // No overlap with first page
+    const firstPage = searchMemories("nuxt", { limit: 2 });
+    const firstPageIds = new Set(firstPage.map(r => r.memory.id));
+    expect(firstPageIds.has(page[0]!.memory.id)).toBe(false);
+    expect(firstPageIds.has(page[1]!.memory.id)).toBe(false);
   });
 
   // ============================================================================

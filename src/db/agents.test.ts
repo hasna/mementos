@@ -1,8 +1,9 @@
 process.env.MEMENTOS_DB_PATH = ":memory:";
 
 import { describe, test, expect, beforeEach } from "bun:test";
-import { resetDatabase } from "./database.js";
-import { registerAgent, getAgent, listAgents, updateAgent } from "./agents.js";
+import { resetDatabase, getDatabase } from "./database.js";
+import { registerAgent, getAgent, listAgents, updateAgent, touchAgent, listAgentsByProject } from "./agents.js";
+import { registerProject } from "./projects.js";
 
 beforeEach(() => {
   resetDatabase();
@@ -198,5 +199,60 @@ describe("updateAgent", () => {
     const updated = updateAgent(agent.id, { name: "same-name-agent" });
     expect(updated).not.toBeNull();
     expect(updated!.name).toBe("same-name-agent");
+  });
+
+  test("sets active_project_id", () => {
+    const proj = registerProject("test-proj", "/tmp/test-proj");
+    const agent = registerAgent("project-agent");
+    const updated = updateAgent(agent.id, { active_project_id: proj.id });
+    expect(updated!.active_project_id).toBe(proj.id);
+  });
+
+  test("clears active_project_id with null", () => {
+    const proj = registerProject("clear-proj", "/tmp/clear-proj");
+    const agent = registerAgent("clearable-agent");
+    updateAgent(agent.id, { active_project_id: proj.id });
+    const cleared = updateAgent(agent.id, { active_project_id: null });
+    expect(cleared!.active_project_id).toBeNull();
+  });
+});
+
+describe("touchAgent", () => {
+  test("updates last_seen_at for existing agent", () => {
+    const agent = registerAgent("touch-me");
+    const before = agent.last_seen_at;
+    // Small sleep to ensure timestamp difference
+    Bun.sleepSync(5);
+    touchAgent(agent.id);
+    const refreshed = getAgent(agent.id)!;
+    expect(refreshed.last_seen_at).not.toBe(before);
+  });
+
+  test("no-op for unknown agent", () => {
+    // Should not throw
+    expect(() => touchAgent("nonexistent-xyz")).not.toThrow();
+  });
+});
+
+describe("listAgentsByProject", () => {
+  test("returns agents bound to a project", () => {
+    const proj = registerProject("list-proj", "/tmp/list-proj");
+    const a = registerAgent("agent-on-proj");
+    updateAgent(a.id, { active_project_id: proj.id });
+    const result = listAgentsByProject(proj.id);
+    expect(result.some(x => x.id === a.id)).toBe(true);
+  });
+
+  test("excludes agents not on the project", () => {
+    const proj = registerProject("exclusive-proj", "/tmp/exclusive-proj");
+    registerAgent("unbound-agent-exclusive");
+    const result = listAgentsByProject(proj.id);
+    expect(result.every(x => x.active_project_id === proj.id)).toBe(true);
+  });
+
+  test("returns empty for project with no agents", () => {
+    const proj = registerProject("empty-proj", "/tmp/empty-proj");
+    const result = listAgentsByProject(proj.id);
+    expect(result).toEqual([]);
   });
 });
