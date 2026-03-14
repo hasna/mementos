@@ -603,6 +603,11 @@ addRoute("GET", "/api/agents", (_req: Request, url: URL) => {
   const agents = q["project_id"]
     ? listAgentsByProject(q["project_id"])
     : listAgents();
+  if (q["fields"]) {
+    const fields = q["fields"].split(",").map((f: string) => f.trim());
+    const filtered = agents.map(a => Object.fromEntries(fields.map((f: string) => [f, (a as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined)));
+    return json({ agents: filtered, count: filtered.length });
+  }
   return json({ agents, count: agents.length });
 });
 
@@ -657,8 +662,14 @@ addRoute("PATCH", "/api/agents/:id", async (req, _url, params) => {
 // ============================================================================
 
 // GET /api/projects — list projects
-addRoute("GET", "/api/projects", () => {
+addRoute("GET", "/api/projects", (_req: Request, url: URL) => {
+  const q = getSearchParams(url);
   const projects = listProjects();
+  if (q["fields"]) {
+    const fields = q["fields"].split(",").map((f: string) => f.trim());
+    const filtered = projects.map(p => Object.fromEntries(fields.map((f: string) => [f, (p as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined)));
+    return json({ projects: filtered, count: filtered.length });
+  }
   return json({ projects, count: projects.length });
 });
 
@@ -820,6 +831,11 @@ addRoute("GET", "/api/entities", (_req: Request, url: URL) => {
   if (q["offset"]) filter.offset = parseInt(q["offset"], 10);
 
   const entities = listEntities(filter);
+  if (q["fields"]) {
+    const fields = q["fields"].split(",").map((f: string) => f.trim());
+    const filtered = entities.map(e => Object.fromEntries(fields.map((f: string) => [f, (e as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined)));
+    return json({ entities: filtered, count: filtered.length });
+  }
   return json({ entities, count: entities.length });
 });
 

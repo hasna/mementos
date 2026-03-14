@@ -1962,20 +1962,26 @@ program
     for (const target of targets) {
       try {
         if (target === "claude") {
-          const configPath = pathJoin(home, ".claude", ".mcp.json");
-          let config: Record<string, unknown> = {};
-          if (fileExists(configPath)) {
-            config = JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-          }
-          const servers = (config["mcpServers"] || {}) as Record<string, unknown>;
+          // CORRECT: use `claude mcp add` CLI — do NOT write ~/.claude/.mcp.json directly
+          const { execSync } = require("node:child_process") as typeof import("node:child_process");
           if (opts.uninstall) {
-            delete servers["mementos"];
+            try {
+              execSync(`claude mcp remove mementos`, { stdio: "pipe" });
+              console.log(chalk.green("Removed mementos from Claude Code MCP"));
+            } catch {
+              console.log(chalk.yellow("mementos was not installed in Claude Code (or claude CLI not found)"));
+            }
           } else {
-            servers["mementos"] = { command: mementosCmd, args: [] };
+            try {
+              execSync(`claude mcp add --transport stdio --scope user mementos -- ${mementosCmd}`, { stdio: "pipe" });
+              console.log(chalk.green(`Installed mementos into Claude Code (user scope)`));
+              console.log(chalk.gray("  Restart Claude Code for the change to take effect."));
+            } catch (e) {
+              // claude CLI not available — print the command for manual install
+              console.log(chalk.yellow("claude CLI not found. Run this manually:"));
+              console.log(chalk.white(`  claude mcp add --transport stdio --scope user mementos -- ${mementosCmd}`));
+            }
           }
-          config["mcpServers"] = servers;
-          writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
-          console.log(chalk.green(`${opts.uninstall ? "Removed from" : "Installed into"} Claude Code: ${configPath}`));
         }
 
         if (target === "codex") {
