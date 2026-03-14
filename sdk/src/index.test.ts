@@ -507,6 +507,29 @@ describe("MementosClient", () => {
 // New methods added in v0.1.x (coverage for uncovered lines)
 // ============================================================================
 
+describe("MementosClient.fromEnv", () => {
+  it("uses MEMENTOS_URL env var when set", () => {
+    const orig = process.env["MEMENTOS_URL"];
+    process.env["MEMENTOS_URL"] = "http://custom-host:9999";
+    const { calls, fetch } = mockFetch([{ status: 200, body: { memories: [], count: 0 } }]);
+    const client = MementosClient.fromEnv({ fetch });
+    client.listMemories();
+    expect(calls[0]!.url).toStartWith("http://custom-host:9999");
+    process.env["MEMENTOS_URL"] = orig ?? "";
+    if (!orig) delete process.env["MEMENTOS_URL"];
+  });
+
+  it("defaults to localhost:19428 when MEMENTOS_URL not set", () => {
+    const orig = process.env["MEMENTOS_URL"];
+    delete process.env["MEMENTOS_URL"];
+    const { calls, fetch } = mockFetch([{ status: 200, body: { memories: [], count: 0 } }]);
+    const client = MementosClient.fromEnv({ fetch });
+    client.listMemories();
+    expect(calls[0]!.url).toStartWith("http://localhost:19428");
+    if (orig) process.env["MEMENTOS_URL"] = orig;
+  });
+});
+
 describe("getHealth", () => {
   it("GETs /api/health with enriched response", async () => {
     const health = { status: "ok", version: "0.4.30", profile: "default", db_path: "/tmp/test.db", hostname: "127.0.0.1", memories: { total: 42, expired: 0, pinned: 3 }, agents: 2, projects: 1 };

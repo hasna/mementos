@@ -6,7 +6,8 @@
  * @example
  * ```ts
  * import { MementosClient } from "@hasna/mementos-sdk";
- * const client = new MementosClient({ baseUrl: "http://localhost:19428" });
+ * const client = MementosClient.fromEnv();          // reads MEMENTOS_URL
+ * // or: const client = new MementosClient({ baseUrl: "http://localhost:19428" });
  *
  * await client.saveMemory({ key: "my-key", value: "my value", category: "knowledge" });
  * const results = await client.searchMemories("my query");
@@ -247,6 +248,17 @@ export class MementosClient {
   constructor(config: MementosClientConfig = {}) {
     this.baseUrl = (config.baseUrl ?? "http://localhost:19428").replace(/\/$/, "");
     this._fetch = config.fetch ?? globalThis.fetch.bind(globalThis);
+  }
+
+  /**
+   * Create a client from environment variables.
+   * Reads MEMENTOS_URL (default: http://localhost:19428)
+   * @example const client = MementosClient.fromEnv();
+   */
+  static fromEnv(overrides: Partial<MementosClientConfig> = {}): MementosClient {
+    const envUrl = typeof process !== "undefined" ? process.env?.["MEMENTOS_URL"] : undefined;
+    const baseUrl = envUrl ?? "http://localhost:19428";
+    return new MementosClient({ baseUrl, ...overrides });
   }
 
   // --------------------------------------------------------------------------
