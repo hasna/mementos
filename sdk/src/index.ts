@@ -372,6 +372,16 @@ export class MementosClient {
     return this.get("/api/report", options as Record<string, string | number | boolean | undefined>);
   }
 
+  /** Find memories not accessed recently — for cleanup/review/gardening. */
+  getStaleMemories(options?: {
+    days?: number;
+    project_id?: string;
+    agent_id?: string;
+    limit?: number;
+  }): Promise<{ memories: Memory[]; count: number; days: number }> {
+    return this.get("/api/memories/stale", options as Record<string, string | number | boolean | undefined>);
+  }
+
   /** Get daily memory creation activity over N days. */
   getActivity(options?: {
     days?: number;

@@ -530,6 +530,18 @@ describe("MementosClient.fromEnv", () => {
   });
 });
 
+describe("getStaleMemories", () => {
+  it("GETs /api/memories/stale with days param", async () => {
+    const { calls, fetch } = mockFetch([{ status: 200, body: { memories: [], count: 0, days: 14 } }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.getStaleMemories({ days: 14, project_id: "proj-1" });
+    expect(calls[0]!.url).toContain("/api/memories/stale");
+    expect(calls[0]!.url).toContain("days=14");
+    expect(calls[0]!.url).toContain("project_id=proj-1");
+    expect(result.days).toBe(14);
+  });
+});
+
 describe("getHealth", () => {
   it("GETs /api/health with enriched response", async () => {
     const health = { status: "ok", version: "0.4.30", profile: "default", db_path: "/tmp/test.db", hostname: "127.0.0.1", memories: { total: 42, expired: 0, pinned: 3 }, agents: 2, projects: 1 };
