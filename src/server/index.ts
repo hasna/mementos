@@ -18,6 +18,7 @@ import {
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../db/agents.js";
 import { registerProject, listProjects, getProject } from "../db/projects.js";
+import { getActiveProfile, listProfiles, getDbPath } from "../lib/config.js";
 import { getDatabase } from "../db/database.js";
 import { searchMemories } from "../lib/search.js";
 import {
@@ -1105,7 +1106,14 @@ export function startServer(port: number): void {
 
       // Health check
       if (pathname === "/api/health" || pathname === "/health") {
-        return json({ status: "ok", version: "0.1.0" });
+        const profile = getActiveProfile();
+        return json({ status: "ok", version: "0.1.0", profile: profile ?? "default", db_path: getDbPath() });
+      }
+
+      // Profile info
+      if (pathname === "/api/profile" && req.method === "GET") {
+        const profile = getActiveProfile();
+        return json({ active: profile ?? null, profiles: listProfiles(), db_path: getDbPath() });
       }
 
       // SSE stream for live memory updates

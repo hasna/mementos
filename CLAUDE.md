@@ -132,9 +132,27 @@ claude mcp add --transport stdio --scope project mementos -- mementos-mcp
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `MEMENTOS_DB_PATH` | Override DB location | `~/.mementos/mementos.db` |
-| `MEMENTOS_DB_SCOPE` | `project` = use git root | global |
+| `MEMENTOS_DB_PATH` | Override DB location (bypasses profiles) | `~/.mementos/mementos.db` |
+| `MEMENTOS_PROFILE` | Named profile → `~/.mementos/profiles/<name>.db` | none |
+| `MEMENTOS_DB_SCOPE` | `project` = use git root `.mementos/mementos.db` | global |
 | `PORT` | REST server port | `19428` |
+
+## Profiles
+
+Profiles isolate memory contexts into separate DBs — useful for separating work, personal, or per-client memories.
+
+```bash
+mementos profile set work        # switch to work profile
+mementos profile list            # list all profiles (active marked with ✓)
+mementos profile get             # show current profile
+mementos profile unset           # revert to default DB
+mementos profile delete work     # delete profile + its DB
+
+# Or per-command via env var:
+MEMENTOS_PROFILE=work mementos list
+```
+
+**Priority**: `MEMENTOS_DB_PATH` > `MEMENTOS_PROFILE` > `MEMENTOS_DB_SCOPE=project` > cwd walk > default
 
 ## Cross-Project Integration
 
