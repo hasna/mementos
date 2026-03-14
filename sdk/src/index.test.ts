@@ -237,6 +237,16 @@ describe("MementosClient", () => {
       expect(calls[0]!.url).toBe(`${BASE}/api/memories/mem-1`);
       expect(result.value).toBe("updated");
     });
+
+    it("PATCHes /api/memories/:id without version when omitted", async () => {
+      const mem = makeMemory({ value: "updated-without-version" });
+      const { calls, fetch } = mockFetch([{ status: 200, body: mem }]);
+      const client = new MementosClient({ fetch });
+      const result = await client.updateMemory("mem-1", { value: "updated-without-version" });
+      expect(calls[0]!.url).toBe(`${BASE}/api/memories/mem-1`);
+      expect(calls[0]!.init?.body).toBe(JSON.stringify({ value: "updated-without-version" }));
+      expect(result.value).toBe("updated-without-version");
+    });
   });
 
   describe("deleteMemory", () => {

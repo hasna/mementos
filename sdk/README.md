@@ -57,7 +57,7 @@ new MementosClient({ baseUrl?: string, fetch?: typeof globalThis.fetch })
 | `listMemories(filter?)` | List memories with optional filters |
 | `saveMemory(input)` | Create a memory |
 | `getMemory(id)` | Get memory by ID |
-| `updateMemory(id, input)` | Update memory (requires `version` for optimistic locking) |
+| `updateMemory(id, input)` | Update memory (`version` optional; server auto-fetches current version if omitted) |
 | `deleteMemory(id)` | Delete a memory |
 | `searchMemories(query)` | Full-text + fuzzy search |
 | `getStats()` | Memory statistics |

@@ -148,7 +148,7 @@ export interface UpdateMemoryInput {
   status?: MemoryStatus;
   metadata?: Record<string, unknown>;
   expires_at?: string | null;
-  version: number;
+  version?: number;
 }
 
 export interface ListMemoriesFilter {
@@ -446,7 +446,7 @@ export class MementosClient {
     return this.get(`/api/memories/${id}/versions`);
   }
 
-  /** Update a memory (requires version for optimistic locking). */
+  /** Update a memory. If version is omitted, the server auto-fetches the current version. */
   updateMemory(id: string, input: UpdateMemoryInput): Promise<Memory> {
     return this.patch(`/api/memories/${id}`, input);
   }
