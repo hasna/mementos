@@ -502,3 +502,99 @@ describe("MementosClient", () => {
     });
   });
 });
+
+// ============================================================================
+// New methods added in v0.1.x (coverage for uncovered lines)
+// ============================================================================
+
+describe("getReport", () => {
+  it("GETs /api/report", async () => {
+    const report = { total: 50, pinned: 3, days: 7, recent: { total: 10, activity: [] }, by_scope: {}, by_category: {}, top_memories: [], top_agents: [] };
+    const { calls, fetch } = mockFetch([{ status: 200, body: report }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.getReport({ days: 7 });
+    expect(calls[0]!.url).toContain("/api/report");
+    expect(calls[0]!.url).toContain("days=7");
+    expect(result.total).toBe(50);
+    expect(result.days).toBe(7);
+  });
+
+  it("GETs /api/report without options", async () => {
+    const { calls, fetch } = mockFetch([{ status: 200, body: { total: 0, pinned: 0, days: 7, recent: { total: 0, activity: [] }, by_scope: {}, by_category: {}, top_memories: [], top_agents: [] } }]);
+    const client = new MementosClient({ fetch });
+    await client.getReport();
+    expect(calls[0]!.url).toBe(`${BASE}/api/report`);
+  });
+});
+
+describe("getActivity", () => {
+  it("GETs /api/activity with days", async () => {
+    const { calls, fetch } = mockFetch([{ status: 200, body: { activity: [], days: 14, total: 0 } }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.getActivity({ days: 14 });
+    expect(calls[0]!.url).toContain("/api/activity");
+    expect(calls[0]!.url).toContain("days=14");
+    expect(result.days).toBe(14);
+  });
+});
+
+describe("extractFromSession", () => {
+  it("POSTs /api/memories/extract", async () => {
+    const { calls, fetch } = mockFetch([{ status: 201, body: { created: 3, memory_ids: ["a", "b", "c"], errors: [], session_id: "sess-1" } }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.extractFromSession({ session_id: "sess-1", title: "Fix auth", key_topics: ["jwt"] });
+    expect(calls[0]!.url).toBe(`${BASE}/api/memories/extract`);
+    expect(result.created).toBe(3);
+    expect(result.session_id).toBe("sess-1");
+  });
+});
+
+describe("updateAgent", () => {
+  it("PATCHes /api/agents/:id", async () => {
+    const agent = makeAgent({ active_project_id: "proj-1" });
+    const { calls, fetch } = mockFetch([{ status: 200, body: agent }]);
+    const client = new MementosClient({ fetch });
+    await client.updateAgent("galba", { active_project_id: "proj-1" });
+    expect(calls[0]!.url).toBe(`${BASE}/api/agents/galba`);
+  });
+});
+
+describe("listAgentsByProject", () => {
+  it("GETs /api/agents?project_id=X", async () => {
+    const { calls, fetch } = mockFetch([{ status: 200, body: { agents: [], count: 0 } }]);
+    const client = new MementosClient({ fetch });
+    await client.listAgentsByProject("proj-1");
+    expect(calls[0]!.url).toContain("/api/agents");
+    expect(calls[0]!.url).toContain("project_id=proj-1");
+  });
+});
+
+describe("getProject", () => {
+  it("GETs /api/projects/:id", async () => {
+    const proj = makeProject({ name: "open-mementos" });
+    const { calls, fetch } = mockFetch([{ status: 200, body: proj }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.getProject("open-mementos");
+    expect(calls[0]!.url).toContain("/api/projects/open-mementos");
+    expect(result.name).toBe("open-mementos");
+  });
+});
+
+describe("getProjectAgents", () => {
+  it("GETs /api/projects/:id/agents", async () => {
+    const { calls, fetch } = mockFetch([{ status: 200, body: { agents: [], count: 0 } }]);
+    const client = new MementosClient({ fetch });
+    await client.getProjectAgents("open-mementos");
+    expect(calls[0]!.url).toContain("/api/projects/open-mementos/agents");
+  });
+});
+
+describe("getMemoryVersions", () => {
+  it("GETs /api/memories/:id/versions", async () => {
+    const { calls, fetch } = mockFetch([{ status: 200, body: { versions: [], count: 0, current_version: 1 } }]);
+    const client = new MementosClient({ fetch });
+    const result = await client.getMemoryVersions("mem-1");
+    expect(calls[0]!.url).toBe(`${BASE}/api/memories/mem-1/versions`);
+    expect(result.current_version).toBe(1);
+  });
+});
