@@ -19,7 +19,7 @@ import {
   parseMemoryRow,
   getMemoryVersions,
 } from "../db/memories.js";
-import { registerAgent, listAgents, updateAgent } from "../db/agents.js";
+import { registerAgent, getAgent, listAgents, updateAgent } from "../db/agents.js";
 import {
   registerProject,
   getProject,
@@ -838,6 +838,9 @@ program
   .option("-s, --scope <scope>", "Scope filter")
   .option("-c, --category <cat>", "Category filter")
   .option("--tags <tags>", "Comma-separated tags filter")
+  .option("--project <path>", "Project filter (path or name)")
+  .option("--agent <name>", "Agent filter")
+  .option("--session <id>", "Session ID filter")
   .option("--limit <n>", "Max results", parseInt)
   .option("--format <fmt>", "Output format: compact (default), json, csv, yaml")
   .option("--history", "Show recent search queries instead of searching")
@@ -882,12 +885,29 @@ program
         return;
       }
 
+      const globalOpts = program.opts<GlobalOpts>();
+      const projectPath = (opts.project as string | undefined) || globalOpts.project;
+      let projectId: string | undefined;
+      if (projectPath) {
+        const project = getProject(resolve(projectPath));
+        if (project) projectId = project.id;
+      }
+      const agentName = (opts.agent as string | undefined) || globalOpts.agent;
+      let agentId: string | undefined;
+      if (agentName) {
+        const agent = getAgent(agentName);
+        if (agent) agentId = agent.id;
+      }
+
       const filter: MemoryFilter = {
         scope: opts.scope as MemoryScope | undefined,
         category: opts.category as MemoryCategory | undefined,
         tags: opts.tags
           ? (opts.tags as string).split(",").map((t: string) => t.trim())
           : undefined,
+        project_id: projectId,
+        agent_id: agentId,
+        session_id: (opts.session as string | undefined) || globalOpts.session,
         limit: (opts.limit as number | undefined) || 20,
       };
 
