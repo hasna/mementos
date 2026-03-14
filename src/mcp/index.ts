@@ -420,6 +420,45 @@ server.tool(
 );
 
 server.tool(
+  "memory_stale",
+  "Find memories not accessed recently. Useful for cleanup or review.",
+  {
+    days: z.coerce.number().optional(),
+    project_id: z.string().optional(),
+    agent_id: z.string().optional(),
+    limit: z.coerce.number().optional(),
+  },
+  async (args) => {
+    try {
+      const days = args.days || 30;
+      const db = getDatabase();
+      const conditions = [
+        "status = 'active'",
+        `(accessed_at IS NULL OR accessed_at < datetime('now', '-${days} days'))`,
+        "pinned = 0",
+      ];
+      const params: string[] = [];
+      if (args.project_id) { conditions.push("project_id = ?"); params.push(args.project_id); }
+      if (args.agent_id) { conditions.push("agent_id = ?"); params.push(args.agent_id); }
+      const limit = args.limit || 20;
+      const rows = db.query(
+        `SELECT id, key, value, importance, scope, category, accessed_at, access_count FROM memories WHERE ${conditions.join(" AND ")} ORDER BY COALESCE(accessed_at, created_at) ASC LIMIT ?`
+      ).all(...params, limit) as { id: string; key: string; value: string; importance: number; scope: string; category: string; accessed_at: string | null; access_count: number }[];
+
+      if (rows.length === 0) {
+        return { content: [{ type: "text" as const, text: `No stale memories found (last accessed > ${days} days ago).` }] };
+      }
+      const lines = rows.map((m) =>
+        `[${m.importance}] ${m.key} (${m.scope}/${m.category}) — last accessed: ${m.accessed_at?.slice(0, 10) || "never"}, ${m.access_count} reads`
+      );
+      return { content: [{ type: "text" as const, text: `${rows.length} stale memor${rows.length === 1 ? "y" : "ies"} (not accessed in ${days}+ days):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_search",
   "Search memories by keyword across key, value, summary, and tags",
   {
@@ -1602,6 +1641,17 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       project_id: { type: "string", description: "Project UUID for key lookup" },
     },
     example: '{"key":"old-preference","scope":"global"}',
+  },
+  memory_stale: {
+    description: "Find memories not accessed recently — useful for cleanup review (same pattern as get_stale_tasks in todos).",
+    category: "memory",
+    params: {
+      days: { type: "number", description: "Stale threshold in days (default 30)" },
+      project_id: { type: "string", description: "Filter by project" },
+      agent_id: { type: "string", description: "Filter by agent" },
+      limit: { type: "number", description: "Max results (default 20)" },
+    },
+    example: '{"days":14,"project_id":"proj-uuid"}',
   },
   memory_search: {
     description: "Full-text search across key, value, summary, and tags.",

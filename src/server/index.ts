@@ -351,6 +351,31 @@ addRoute("GET", "/api/activity", (_req: Request, url: URL) => {
   return json({ activity: rows, days, total: rows.reduce((s, r) => s + r.memories_created, 0) });
 });
 
+// GET /api/memories/stale — memories not accessed recently
+addRoute("GET", "/api/memories/stale", (_req: Request, url: URL) => {
+  const q = getSearchParams(url);
+  const days = Math.min(parseInt(q["days"] || "30", 10), 365);
+  const projectId = q["project_id"];
+  const agentId = q["agent_id"];
+  const limit = Math.min(parseInt(q["limit"] || "20", 10), 100);
+  const db = getDatabase();
+
+  const conds = [
+    "status = 'active'",
+    `(accessed_at IS NULL OR accessed_at < datetime('now', '-${days} days'))`,
+    "pinned = 0",
+  ];
+  const params: string[] = [];
+  if (projectId) { conds.push("project_id = ?"); params.push(projectId); }
+  if (agentId) { conds.push("agent_id = ?"); params.push(agentId); }
+
+  const rows = db.query(
+    `SELECT id, key, value, importance, scope, category, accessed_at, access_count, created_at FROM memories WHERE ${conds.join(" AND ")} ORDER BY COALESCE(accessed_at, created_at) ASC LIMIT ?`
+  ).all(...params, limit) as Record<string, unknown>[];
+
+  return json({ memories: rows, count: rows.length, days });
+});
+
 // POST /api/memories/search — search
 // GET /api/report — rich activity summary
 addRoute("GET", "/api/report", (_req: Request, url: URL) => {
