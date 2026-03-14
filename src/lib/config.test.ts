@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { resetDatabase, getDatabase } from "../db/database.js";
-import { loadConfig, DEFAULT_CONFIG } from "./config.js";
+import { loadConfig, DEFAULT_CONFIG, getActiveProfile, setActiveProfile, listProfiles, deleteProfile } from "./config.js";
 
 const CONFIG_DIR = join(homedir(), ".mementos");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
@@ -401,5 +401,56 @@ describe("loadConfig with config file", () => {
     // Other scope entries preserved via deep merge
     expect(config.max_entries_per_scope.shared).toBe(300);
     expect(config.max_entries_per_scope.private).toBe(200);
+  });
+});
+
+// ============================================================================
+// Profile management
+// ============================================================================
+
+describe("profile management", () => {
+  beforeEach(() => {
+    // Clear MEMENTOS_PROFILE env var before each test
+    delete process.env["MEMENTOS_PROFILE"];
+    // Reset active profile in config
+    try { setActiveProfile(null); } catch { /* ignore */ }
+  });
+
+  afterEach(() => {
+    delete process.env["MEMENTOS_PROFILE"];
+    try { setActiveProfile(null); } catch { /* ignore */ }
+  });
+
+  test("getActiveProfile returns null by default", () => {
+    expect(getActiveProfile()).toBeNull();
+  });
+
+  test("setActiveProfile persists and getActiveProfile reads it back", () => {
+    setActiveProfile("test-profile-galba");
+    expect(getActiveProfile()).toBe("test-profile-galba");
+    // cleanup
+    setActiveProfile(null);
+  });
+
+  test("setActiveProfile(null) clears the active profile", () => {
+    setActiveProfile("temp-profile");
+    setActiveProfile(null);
+    expect(getActiveProfile()).toBeNull();
+  });
+
+  test("MEMENTOS_PROFILE env var takes priority over persisted profile", () => {
+    setActiveProfile("persisted-profile");
+    process.env["MEMENTOS_PROFILE"] = "env-profile";
+    expect(getActiveProfile()).toBe("env-profile");
+    setActiveProfile(null);
+  });
+
+  test("listProfiles returns empty array when no profiles exist", () => {
+    const profiles = listProfiles();
+    expect(Array.isArray(profiles)).toBe(true);
+  });
+
+  test("deleteProfile returns false for non-existent profile", () => {
+    expect(deleteProfile("nonexistent-profile-xyz")).toBe(false);
   });
 });

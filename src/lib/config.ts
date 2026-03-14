@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 import type { MementosConfig, MemoryCategory, MemoryScope } from "../types";
 
@@ -183,8 +183,68 @@ function findGitRoot(): string | null {
 // getDbPath — resolve the database file path
 // ============================================================================
 
+// ============================================================================
+// Profile management
+// ============================================================================
+
+function profilesDir(): string {
+  return join(homedir(), ".mementos", "profiles");
+}
+
+function globalConfigPath(): string {
+  return join(homedir(), ".mementos", "config.json");
+}
+
+function readGlobalConfig(): Record<string, unknown> {
+  const p = globalConfigPath();
+  if (!existsSync(p)) return {};
+  try { return JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>; } catch { return {}; }
+}
+
+function writeGlobalConfig(data: Record<string, unknown>): void {
+  const p = globalConfigPath();
+  ensureDir(dirname(p));
+  writeFileSync(p, JSON.stringify(data, null, 2), "utf-8");
+}
+
+export function getActiveProfile(): string | null {
+  // Env var takes priority over persisted setting
+  const envProfile = process.env["MEMENTOS_PROFILE"];
+  if (envProfile) return envProfile.trim();
+  const cfg = readGlobalConfig();
+  return (cfg["active_profile"] as string) || null;
+}
+
+export function setActiveProfile(name: string | null): void {
+  const cfg = readGlobalConfig();
+  if (name === null) {
+    delete cfg["active_profile"];
+  } else {
+    cfg["active_profile"] = name;
+  }
+  writeGlobalConfig(cfg);
+}
+
+export function listProfiles(): string[] {
+  const dir = profilesDir();
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".db"))
+    .map((f) => basename(f, ".db"))
+    .sort();
+}
+
+export function deleteProfile(name: string): boolean {
+  const dbPath = join(profilesDir(), `${name}.db`);
+  if (!existsSync(dbPath)) return false;
+  unlinkSync(dbPath);
+  // Clear active profile if it was the deleted one
+  if (getActiveProfile() === name) setActiveProfile(null);
+  return true;
+}
+
 export function getDbPath(): string {
-  // 1. MEMENTOS_DB_PATH env var — highest priority
+  // 1. MEMENTOS_DB_PATH env var — highest priority (bypasses profiles)
   const envDbPath = process.env["MEMENTOS_DB_PATH"];
   if (envDbPath) {
     const resolved = resolve(envDbPath);
@@ -192,7 +252,15 @@ export function getDbPath(): string {
     return resolved;
   }
 
-  // 2. MEMENTOS_DB_SCOPE=project — force git-root/.mementos/mementos.db
+  // 2. MEMENTOS_PROFILE env var / persisted active profile
+  const profile = getActiveProfile();
+  if (profile) {
+    const profilePath = join(profilesDir(), `${profile}.db`);
+    ensureDir(dirname(profilePath));
+    return profilePath;
+  }
+
+  // 3. MEMENTOS_DB_SCOPE=project — force git-root/.mementos/mementos.db
   const dbScope = process.env["MEMENTOS_DB_SCOPE"];
   if (dbScope === "project") {
     const gitRoot = findGitRoot();
@@ -204,13 +272,13 @@ export function getDbPath(): string {
     // No git root found — fall through to walking up / home
   }
 
-  // 3. Walk up from cwd looking for .mementos/mementos.db
+  // 4. Walk up from cwd looking for .mementos/mementos.db
   const found = findFileWalkingUp(join(".mementos", "mementos.db"));
   if (found) {
     return found;
   }
 
-  // 4. Fallback — ~/.mementos/mementos.db
+  // 5. Fallback — ~/.mementos/mementos.db
   const fallback = join(homedir(), ".mementos", "mementos.db");
   ensureDir(dirname(fallback));
   return fallback;
