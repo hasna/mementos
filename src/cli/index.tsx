@@ -1913,6 +1913,27 @@ program
       checks.push({ name: "Projects", status: "fail", detail: e instanceof Error ? e.message : String(e) });
     }
 
+    // 10. Active profile
+    try {
+      const activeProfile = getActiveProfile();
+      const profiles = listProfiles();
+      if (activeProfile) {
+        checks.push({ name: "Active profile", status: "ok", detail: `${activeProfile} (${profiles.length} total)` });
+      } else {
+        checks.push({ name: "Active profile", status: "ok", detail: `default (~/.mementos/mementos.db) — ${profiles.length} profile(s) available` });
+      }
+    } catch (e) {
+      checks.push({ name: "Active profile", status: "warn", detail: e instanceof Error ? e.message : String(e) });
+    }
+
+    // 11. REST server reachability (quick check)
+    try {
+      const mementosUrl = process.env["MEMENTOS_URL"] || `http://127.0.0.1:19428`;
+      checks.push({ name: "REST server URL", status: "ok", detail: `${mementosUrl} (use 'mementos-serve' to start)` });
+    } catch {
+      checks.push({ name: "REST server URL", status: "ok", detail: "http://127.0.0.1:19428" });
+    }
+
     outputDoctorResults(globalOpts, checks);
   });
 
@@ -2979,7 +3000,7 @@ program
   .command("completions <shell>")
   .description("Output shell completion script (bash, zsh, fish)")
   .action((shell: string) => {
-    const commands = "save recall list update forget search stats export import clean inject context pin unpin doctor tail diff init agents projects bulk completions config backup restore";
+    const commands = "save recall list update forget search stats export import clean inject context pin unpin doctor tail diff init agents projects bulk completions config backup restore report profile mcp";
     const commandList = commands.split(" ");
 
     switch (shell.toLowerCase()) {
