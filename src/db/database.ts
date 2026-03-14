@@ -154,6 +154,121 @@ const MIGRATIONS = [
 
   INSERT OR IGNORE INTO _migrations (id) VALUES (1);
   `,
+
+  // Migration 2: Memory versions table for diff tracking
+  `
+  CREATE TABLE IF NOT EXISTS memory_versions (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    value TEXT NOT NULL,
+    importance INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    category TEXT NOT NULL,
+    tags TEXT NOT NULL DEFAULT '[]',
+    summary TEXT,
+    pinned INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(memory_id, version)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_memory_versions_memory ON memory_versions(memory_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_versions_version ON memory_versions(memory_id, version);
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (2);
+  `,
+
+  // Migration 3: FTS5 full-text search index on memories
+  `
+  CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+    key, value, summary,
+    content='memories',
+    content_rowid='rowid'
+  );
+
+  CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+    INSERT INTO memories_fts(rowid, key, value, summary) VALUES (new.rowid, new.key, new.value, new.summary);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, key, value, summary) VALUES('delete', old.rowid, old.key, old.value, old.summary);
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+    INSERT INTO memories_fts(memories_fts, rowid, key, value, summary) VALUES('delete', old.rowid, old.key, old.value, old.summary);
+    INSERT INTO memories_fts(rowid, key, value, summary) VALUES (new.rowid, new.key, new.value, new.summary);
+  END;
+
+  INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (3);
+  `,
+
+  // Migration 4: Search history table
+  `
+  CREATE TABLE IF NOT EXISTS search_history (
+    id TEXT PRIMARY KEY,
+    query TEXT NOT NULL,
+    result_count INTEGER NOT NULL DEFAULT 0,
+    agent_id TEXT,
+    project_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_search_history_query ON search_history(query);
+  CREATE INDEX IF NOT EXISTS idx_search_history_created ON search_history(created_at);
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (4);
+  `,
+
+  // Migration 5: Knowledge graph tables (entities, relations, entity_memories)
+  `
+  CREATE TABLE IF NOT EXISTS entities (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK (type IN ('person','project','tool','concept','file','api','pattern','organization')),
+    description TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    project_id TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE SET NULL
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_entities_unique_name_type_project
+    ON entities(name, type, COALESCE(project_id, ''));
+  CREATE INDEX IF NOT EXISTS idx_entities_name ON entities(name);
+  CREATE INDEX IF NOT EXISTS idx_entities_type ON entities(type);
+  CREATE INDEX IF NOT EXISTS idx_entities_project ON entities(project_id);
+
+  CREATE TABLE IF NOT EXISTS relations (
+    id TEXT PRIMARY KEY,
+    source_entity_id TEXT NOT NULL,
+    target_entity_id TEXT NOT NULL,
+    relation_type TEXT NOT NULL CHECK (relation_type IN ('uses','knows','depends_on','created_by','related_to','contradicts','part_of','implements')),
+    weight REAL NOT NULL DEFAULT 1.0,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source_entity_id, target_entity_id, relation_type),
+    FOREIGN KEY (source_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY (target_entity_id) REFERENCES entities(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity_id);
+  CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_entity_id);
+  CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(relation_type);
+
+  CREATE TABLE IF NOT EXISTS entity_memories (
+    entity_id TEXT NOT NULL,
+    memory_id TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'context' CHECK (role IN ('subject','object','context')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (entity_id, memory_id),
+    FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+    FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+  );
+  CREATE INDEX IF NOT EXISTS idx_entity_memories_memory ON entity_memories(memory_id);
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (5);
+  `,
 ];
 
 // ============================================================================

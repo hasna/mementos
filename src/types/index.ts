@@ -118,6 +118,7 @@ export interface MemorySearchResult {
   memory: Memory;
   score: number;
   match_type: "exact" | "fuzzy" | "tag";
+  highlights?: { field: string; snippet: string }[];
 }
 
 // ============================================================================
@@ -178,6 +179,10 @@ export interface MementosConfig {
     categories: MemoryCategory[];
     refresh_interval: number;
   };
+  extraction: {
+    enabled: boolean;
+    min_confidence: number;
+  };
   sync_agents: string[];
   auto_cleanup: {
     enabled: boolean;
@@ -213,6 +218,100 @@ export interface SyncResult {
   pulled: number;
   conflicts: number;
   errors: string[];
+}
+
+// ============================================================================
+// Knowledge Graph types
+// ============================================================================
+
+export type EntityType = 'person' | 'project' | 'tool' | 'concept' | 'file' | 'api' | 'pattern' | 'organization';
+export type RelationType = 'uses' | 'knows' | 'depends_on' | 'created_by' | 'related_to' | 'contradicts' | 'part_of' | 'implements';
+export type EntityRole = 'subject' | 'object' | 'context';
+
+export interface Entity {
+  id: string;
+  name: string;
+  type: EntityType;
+  description: string | null;
+  metadata: Record<string, unknown>;
+  project_id: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Relation {
+  id: string;
+  source_entity_id: string;
+  target_entity_id: string;
+  relation_type: RelationType;
+  weight: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface EntityMemory {
+  entity_id: string;
+  memory_id: string;
+  role: EntityRole;
+  created_at: string;
+}
+
+export interface EntityWithRelations extends Entity {
+  relations: Relation[];
+  memories: Memory[];
+}
+
+export interface CreateEntityInput {
+  name: string;
+  type: EntityType;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  project_id?: string;
+}
+
+export interface UpdateEntityInput {
+  name?: string;
+  type?: EntityType;
+  description?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateRelationInput {
+  source_entity_id: string;
+  target_entity_id: string;
+  relation_type: RelationType;
+  weight?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export class EntityNotFoundError extends Error {
+  constructor(id: string) {
+    super(`Entity not found: ${id}`);
+    this.name = "EntityNotFoundError";
+  }
+}
+
+// ============================================================================
+// Custom Errors
+// ============================================================================
+
+// ============================================================================
+// Memory Version (for diff/history tracking)
+// ============================================================================
+
+export interface MemoryVersion {
+  id: string;
+  memory_id: string;
+  version: number;
+  value: string;
+  importance: number;
+  scope: MemoryScope;
+  category: MemoryCategory;
+  tags: string[];
+  summary: string | null;
+  pinned: boolean;
+  status: MemoryStatus;
+  created_at: string;
 }
 
 // ============================================================================

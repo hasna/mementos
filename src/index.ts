@@ -21,6 +21,17 @@ export type {
   SyncOptions,
   SyncResult,
   ConflictResolution,
+  // Knowledge Graph types
+  Entity,
+  Relation,
+  EntityMemory,
+  EntityType,
+  RelationType,
+  EntityRole,
+  EntityWithRelations,
+  CreateEntityInput,
+  UpdateEntityInput,
+  CreateRelationInput,
 } from "./types/index.js";
 
 // Errors
@@ -30,6 +41,7 @@ export {
   MemoryExpiredError,
   InvalidScopeError,
   VersionConflictError,
+  EntityNotFoundError,
 } from "./types/index.js";
 
 // Database
@@ -90,3 +102,43 @@ export { syncMemories, defaultSyncAgents } from "./lib/sync.js";
 
 // Redaction
 export { redactSecrets, containsSecrets } from "./lib/redact.js";
+
+// Knowledge Graph - Entities
+export {
+  createEntity,
+  getEntity,
+  getEntityByName,
+  listEntities,
+  updateEntity,
+  deleteEntity,
+  mergeEntities,
+  parseEntityRow,
+} from "./db/entities.js";
+
+// Knowledge Graph - Relations
+export {
+  createRelation,
+  getRelation,
+  listRelations,
+  deleteRelation,
+  getRelatedEntities,
+  getEntityGraph,
+  findPath,
+  parseRelationRow,
+} from "./db/relations.js";
+
+// Knowledge Graph - Entity-Memory Links
+export {
+  linkEntityToMemory,
+  unlinkEntityFromMemory,
+  getMemoriesForEntity,
+  getEntitiesForMemory,
+  bulkLinkEntities,
+  getEntityMemoryLinks,
+} from "./db/entity-memories.js";
+
+// Knowledge Graph - Entity Extraction
+export {
+  extractEntities,
+  type ExtractedEntity,
+} from "./lib/extractor.js";

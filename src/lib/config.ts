@@ -24,6 +24,10 @@ export const DEFAULT_CONFIG: MementosConfig = {
     categories: ["preference", "fact"],
     refresh_interval: 5,
   },
+  extraction: {
+    enabled: true,
+    min_confidence: 0.5,
+  },
   sync_agents: ["claude", "codex", "gemini"],
   auto_cleanup: {
     enabled: true,

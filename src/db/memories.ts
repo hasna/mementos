@@ -4,6 +4,7 @@ import type {
   DedupeMode,
   Memory,
   MemoryFilter,
+  MemoryVersion,
   UpdateMemoryInput,
 } from "../types/index.js";
 import {
@@ -12,6 +13,46 @@ import {
 } from "../types/index.js";
 import { getDatabase, now, uuid } from "./database.js";
 import { redactSecrets } from "../lib/redact.js";
+import { extractEntities } from "../lib/extractor.js";
+import { createEntity } from "./entities.js";
+import { linkEntityToMemory, unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
+import { createRelation } from "./relations.js";
+import { loadConfig } from "../lib/config.js";
+
+// ============================================================================
+// Entity extraction helper
+// ============================================================================
+
+function runEntityExtraction(memory: Memory, projectId: string | undefined, d: Database): void {
+  const config = loadConfig();
+  if (config.extraction?.enabled === false) return;
+
+  const extracted = extractEntities(memory, d);
+  const minConfidence = config.extraction?.min_confidence ?? 0.5;
+  const entityIds: string[] = [];
+
+  for (const ext of extracted) {
+    if (ext.confidence >= minConfidence) {
+      const entity = createEntity({ name: ext.name, type: ext.type, project_id: projectId }, d);
+      linkEntityToMemory(entity.id, memory.id, "context", d);
+      entityIds.push(entity.id);
+    }
+  }
+
+  // Auto-relate co-occurring entities
+  for (let i = 0; i < entityIds.length; i++) {
+    for (let j = i + 1; j < entityIds.length; j++) {
+      try {
+        createRelation(
+          { source_entity_id: entityIds[i]!, target_entity_id: entityIds[j]!, relation_type: "related_to" },
+          d
+        );
+      } catch {
+        // skip duplicates
+      }
+    }
+  }
+}
 
 // ============================================================================
 // Helpers
@@ -118,7 +159,21 @@ export function createMemory(
         insertTag.run(existing.id, tag);
       }
 
-      return getMemory(existing.id, d)!;
+      const merged = getMemory(existing.id, d)!;
+
+      // Re-extract entities on merge (value changed)
+      try {
+        // Remove old entity links
+        const oldLinks = getEntityMemoryLinks(undefined, merged.id, d);
+        for (const link of oldLinks) {
+          unlinkEntityFromMemory(link.entity_id, merged.id, d);
+        }
+        runEntityExtraction(merged, input.project_id, d);
+      } catch {
+        // Don't block save if extraction fails
+      }
+
+      return merged;
     }
   }
 
@@ -154,7 +209,16 @@ export function createMemory(
     insertTag.run(id, tag);
   }
 
-  return getMemory(id, d)!;
+  const memory = getMemory(id, d)!;
+
+  // Auto-extract entities (non-blocking)
+  try {
+    runEntityExtraction(memory, input.project_id, d);
+  } catch {
+    // Don't block save if extraction fails
+  }
+
+  return memory;
 }
 
 // ============================================================================
@@ -205,6 +269,41 @@ export function getMemoryByKey(
   const row = d.query(sql).get(...params) as Record<string, unknown> | null;
   if (!row) return null;
   return parseMemoryRow(row);
+}
+
+/**
+ * Return ALL active memories matching a key (across scopes/agents/projects).
+ * Optional filters narrow the result set.
+ */
+export function getMemoriesByKey(
+  key: string,
+  scope?: string,
+  agentId?: string,
+  projectId?: string,
+  db?: Database
+): Memory[] {
+  const d = db || getDatabase();
+
+  let sql = "SELECT * FROM memories WHERE key = ?";
+  const params: SQLQueryBindings[] = [key];
+
+  if (scope) {
+    sql += " AND scope = ?";
+    params.push(scope);
+  }
+  if (agentId) {
+    sql += " AND agent_id = ?";
+    params.push(agentId);
+  }
+  if (projectId) {
+    sql += " AND project_id = ?";
+    params.push(projectId);
+  }
+
+  sql += " AND status = 'active' ORDER BY importance DESC";
+
+  const rows = d.query(sql).all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
 }
 
 // ============================================================================
@@ -338,6 +437,30 @@ export function updateMemory(
     throw new VersionConflictError(id, input.version, existing.version);
   }
 
+  // Snapshot current state into memory_versions before mutating
+  try {
+    d.run(
+      `INSERT OR IGNORE INTO memory_versions (id, memory_id, version, value, importance, scope, category, tags, summary, pinned, status, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        uuid(),
+        existing.id,
+        existing.version,
+        existing.value,
+        existing.importance,
+        existing.scope,
+        existing.category,
+        JSON.stringify(existing.tags),
+        existing.summary,
+        existing.pinned ? 1 : 0,
+        existing.status,
+        existing.updated_at,
+      ]
+    );
+  } catch {
+    // memory_versions table may not exist yet (pre-migration) — skip gracefully
+  }
+
   const sets: string[] = ["version = version + 1", "updated_at = ?"];
   const params: SQLQueryBindings[] = [now()];
 
@@ -393,7 +516,23 @@ export function updateMemory(
   params.push(id);
   d.run(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`, params);
 
-  return getMemory(id, d)!;
+  const updated = getMemory(id, d)!;
+
+  // Re-extract entities if value changed
+  try {
+    if (input.value !== undefined) {
+      // Remove old entity links
+      const oldLinks = getEntityMemoryLinks(undefined, updated.id, d);
+      for (const link of oldLinks) {
+        unlinkEntityFromMemory(link.entity_id, updated.id, d);
+      }
+      runEntityExtraction(updated, existing.project_id || undefined, d);
+    }
+  } catch {
+    // Don't block update if extraction fails
+  }
+
+  return updated;
 }
 
 // ============================================================================
@@ -411,11 +550,20 @@ export function bulkDeleteMemories(ids: string[], db?: Database): number {
   if (ids.length === 0) return 0;
 
   const placeholders = ids.map(() => "?").join(",");
-  const result = d.run(
-    `DELETE FROM memories WHERE id IN (${placeholders})`,
-    ids as SQLQueryBindings[]
-  );
-  return result.changes;
+  // Count first — result.changes includes FTS5 trigger operations
+  const countRow = d
+    .query(
+      `SELECT COUNT(*) as c FROM memories WHERE id IN (${placeholders})`
+    )
+    .get(...(ids as SQLQueryBindings[])) as { c: number };
+  const count = countRow.c;
+  if (count > 0) {
+    d.run(
+      `DELETE FROM memories WHERE id IN (${placeholders})`,
+      ids as SQLQueryBindings[]
+    );
+  }
+  return count;
 }
 
 // ============================================================================
@@ -437,9 +585,48 @@ export function touchMemory(id: string, db?: Database): void {
 export function cleanExpiredMemories(db?: Database): number {
   const d = db || getDatabase();
   const timestamp = now();
-  const result = d.run(
-    "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?",
-    [timestamp]
-  );
-  return result.changes;
+  // Count first — result.changes includes FTS5 trigger operations
+  const countRow = d
+    .query(
+      "SELECT COUNT(*) as c FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?"
+    )
+    .get(timestamp) as { c: number };
+  const count = countRow.c;
+  if (count > 0) {
+    d.run(
+      "DELETE FROM memories WHERE expires_at IS NOT NULL AND expires_at < ?",
+      [timestamp]
+    );
+  }
+  return count;
+}
+
+// ============================================================================
+// Version history
+// ============================================================================
+
+export function getMemoryVersions(memoryId: string, db?: Database): MemoryVersion[] {
+  const d = db || getDatabase();
+  try {
+    const rows = d
+      .query("SELECT * FROM memory_versions WHERE memory_id = ? ORDER BY version ASC")
+      .all(memoryId) as Record<string, unknown>[];
+    return rows.map((row) => ({
+      id: row["id"] as string,
+      memory_id: row["memory_id"] as string,
+      version: row["version"] as number,
+      value: row["value"] as string,
+      importance: row["importance"] as number,
+      scope: row["scope"] as MemoryVersion["scope"],
+      category: row["category"] as MemoryVersion["category"],
+      tags: JSON.parse((row["tags"] as string) || "[]") as string[],
+      summary: (row["summary"] as string) || null,
+      pinned: !!(row["pinned"] as number),
+      status: row["status"] as MemoryVersion["status"],
+      created_at: row["created_at"] as string,
+    }));
+  } catch {
+    // memory_versions table may not exist yet
+    return [];
+  }
 }

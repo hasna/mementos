@@ -7,12 +7,14 @@ import {
   createMemory,
   getMemory,
   getMemoryByKey,
+  getMemoriesByKey,
   listMemories,
   updateMemory,
   deleteMemory,
   bulkDeleteMemories,
   touchMemory,
   cleanExpiredMemories,
+  getMemoryVersions,
 } from "./memories.js";
 import {
   MemoryNotFoundError,
@@ -914,5 +916,223 @@ describe("cleanExpiredMemories", () => {
     const removed = cleanExpiredMemories(db);
     expect(removed).toBe(0);
     expect(listMemories(undefined, db).length).toBe(1);
+  });
+});
+
+// ============================================================================
+// getMemoriesByKey
+// ============================================================================
+
+describe("getMemoriesByKey", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("returns all active memories with given key", () => {
+    seedAgent(db, "a1", "agentGBK1");
+    seedAgent(db, "a2", "agentGBK2");
+    createMemory({ key: "same-key", value: "v1", agent_id: "a1" }, "merge", db);
+    createMemory({ key: "same-key", value: "v2", agent_id: "a2" }, "merge", db);
+    createMemory({ key: "other-key", value: "v3" }, "merge", db);
+
+    const results = getMemoriesByKey("same-key", undefined, undefined, undefined, db);
+    expect(results.length).toBe(2);
+    expect(results.every((m) => m.key === "same-key")).toBe(true);
+  });
+
+  it("filters by scope", () => {
+    createMemory({ key: "sk", value: "v1", scope: "global" }, "merge", db);
+    createMemory({ key: "sk", value: "v2", scope: "shared" }, "merge", db);
+
+    const results = getMemoriesByKey("sk", "global", undefined, undefined, db);
+    expect(results.length).toBe(1);
+    expect(results[0]!.scope).toBe("global");
+  });
+
+  it("filters by agent_id", () => {
+    seedAgent(db, "ag1", "agentGBK3");
+    seedAgent(db, "ag2", "agentGBK4");
+    createMemory({ key: "ak2", value: "v1", agent_id: "ag1" }, "merge", db);
+    createMemory({ key: "ak2", value: "v2", agent_id: "ag2" }, "merge", db);
+
+    const results = getMemoriesByKey("ak2", undefined, "ag1", undefined, db);
+    expect(results.length).toBe(1);
+    expect(results[0]!.agent_id).toBe("ag1");
+  });
+
+  it("filters by project_id", () => {
+    seedProject(db, "p1", "proj-gbk1", "/gbk1");
+    seedProject(db, "p2", "proj-gbk2", "/gbk2");
+    createMemory({ key: "pk2", value: "v1", project_id: "p1" }, "merge", db);
+    createMemory({ key: "pk2", value: "v2", project_id: "p2" }, "merge", db);
+
+    const results = getMemoriesByKey("pk2", undefined, undefined, "p1", db);
+    expect(results.length).toBe(1);
+    expect(results[0]!.project_id).toBe("p1");
+  });
+
+  it("returns empty array for non-existent key", () => {
+    const results = getMemoriesByKey("nope-key", undefined, undefined, undefined, db);
+    expect(results).toEqual([]);
+  });
+
+  it("excludes archived memories", () => {
+    const m = createMemory({ key: "arch-k", value: "v" }, "merge", db);
+    updateMemory(m.id, { status: "archived", version: 1 }, db);
+
+    const results = getMemoriesByKey("arch-k", undefined, undefined, undefined, db);
+    expect(results.length).toBe(0);
+  });
+
+  it("sorted by importance DESC", () => {
+    seedAgent(db, "a3", "agentGBK5");
+    seedAgent(db, "a4", "agentGBK6");
+    createMemory({ key: "sorted-k", value: "low", importance: 2, agent_id: "a3" }, "merge", db);
+    createMemory({ key: "sorted-k", value: "high", importance: 9, agent_id: "a4" }, "merge", db);
+
+    const results = getMemoriesByKey("sorted-k", undefined, undefined, undefined, db);
+    expect(results.length).toBe(2);
+    expect(results[0]!.importance).toBe(9);
+    expect(results[1]!.importance).toBe(2);
+  });
+});
+
+// ============================================================================
+// getMemoryVersions
+// ============================================================================
+
+describe("getMemoryVersions", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+    // Create memory_versions table (from migration 2)
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS memory_versions (
+        id TEXT PRIMARY KEY,
+        memory_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        value TEXT NOT NULL,
+        importance INTEGER NOT NULL,
+        scope TEXT NOT NULL,
+        category TEXT NOT NULL,
+        tags TEXT NOT NULL DEFAULT '[]',
+        summary TEXT,
+        pinned INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'active',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(memory_id, version)
+      );
+    `);
+  });
+
+  it("returns empty array for memory with no versions", () => {
+    const m = createMemory({ key: "no-ver", value: "v" }, "merge", db);
+    const versions = getMemoryVersions(m.id, db);
+    expect(versions).toEqual([]);
+  });
+
+  it("returns versions after updates", () => {
+    const m = createMemory({ key: "ver-test", value: "v1", importance: 5 }, "merge", db);
+    updateMemory(m.id, { value: "v2", version: 1 }, db);
+    updateMemory(m.id, { value: "v3", version: 2 }, db);
+
+    const versions = getMemoryVersions(m.id, db);
+    expect(versions.length).toBe(2);
+    expect(versions[0]!.version).toBe(1);
+    expect(versions[0]!.value).toBe("v1");
+    expect(versions[1]!.version).toBe(2);
+    expect(versions[1]!.value).toBe("v2");
+  });
+
+  it("version entries have correct fields", () => {
+    const m = createMemory(
+      { key: "ver-fields", value: "orig", importance: 7, tags: ["t1"], summary: "sum", scope: "shared", category: "fact" },
+      "merge",
+      db
+    );
+    updateMemory(m.id, { value: "new", version: 1 }, db);
+
+    const versions = getMemoryVersions(m.id, db);
+    expect(versions.length).toBe(1);
+    const v = versions[0]!;
+    expect(v.memory_id).toBe(m.id);
+    expect(v.version).toBe(1);
+    expect(v.value).toBe("orig");
+    expect(v.importance).toBe(7);
+    expect(v.scope).toBe("shared");
+    expect(v.category).toBe("fact");
+    expect(v.tags).toEqual(["t1"]);
+    expect(v.summary).toBe("sum");
+    expect(v.pinned).toBe(false);
+    expect(v.status).toBe("active");
+    expect(v.id).toBeTruthy();
+    expect(v.created_at).toBeTruthy();
+  });
+
+  it("returns empty array when memory_versions table does not exist", () => {
+    // Drop the table to simulate pre-migration state
+    db.exec("DROP TABLE IF EXISTS memory_versions");
+    const versions = getMemoryVersions("nonexistent-id", db);
+    expect(versions).toEqual([]);
+  });
+});
+
+// ============================================================================
+// listMemories — additional coverage for source and multiple status arrays
+// ============================================================================
+
+describe("listMemories additional filters", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("filters by source (single)", () => {
+    createMemory({ key: "a", value: "1", source: "user" }, "merge", db);
+    createMemory({ key: "b", value: "2", source: "agent" }, "merge", db);
+
+    const result = listMemories({ source: "user" }, db);
+    expect(result.length).toBe(1);
+    expect(result[0]!.source).toBe("user");
+  });
+
+  it("filters by source (array)", () => {
+    createMemory({ key: "a", value: "1", source: "user" }, "merge", db);
+    createMemory({ key: "b", value: "2", source: "system" }, "merge", db);
+    createMemory({ key: "c", value: "3", source: "agent" }, "merge", db);
+
+    const result = listMemories({ source: ["user", "system"] }, db);
+    expect(result.length).toBe(2);
+  });
+
+  it("filters by status (array)", () => {
+    const m1 = createMemory({ key: "a", value: "1" }, "merge", db);
+    const m2 = createMemory({ key: "b", value: "2" }, "merge", db);
+    updateMemory(m1.id, { status: "archived", version: 1 }, db);
+
+    const result = listMemories({ status: ["active", "archived"] }, db);
+    expect(result.length).toBe(2);
+  });
+
+  it("filters by multiple categories (array)", () => {
+    createMemory({ key: "a", value: "1", category: "fact" }, "merge", db);
+    createMemory({ key: "b", value: "2", category: "history" }, "merge", db);
+    createMemory({ key: "c", value: "3", category: "preference" }, "merge", db);
+
+    const result = listMemories({ category: ["fact", "history"] }, db);
+    expect(result.length).toBe(2);
+  });
+
+  it("filters by session_id in getMemoryByKey", () => {
+    createMemory({ key: "sess-k", value: "v1", session_id: "s1" }, "merge", db);
+    createMemory({ key: "sess-k", value: "v2", session_id: "s2" }, "merge", db);
+
+    const found = getMemoryByKey("sess-k", undefined, undefined, undefined, "s1", db);
+    expect(found).not.toBeNull();
+    expect(found!.session_id).toBe("s1");
   });
 });

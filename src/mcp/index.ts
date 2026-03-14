@@ -18,6 +18,9 @@ import {
   registerProject,
   listProjects,
 } from "../db/projects.js";
+import { createEntity, getEntity, getEntityByName, listEntities, deleteEntity, mergeEntities } from "../db/entities.js";
+import { createRelation, listRelations, deleteRelation, getRelatedEntities, getEntityGraph, findPath } from "../db/relations.js";
+import { linkEntityToMemory, getMemoriesForEntity, getEntitiesForMemory } from "../db/entity-memories.js";
 import { getDatabase, resolvePartialId } from "../db/database.js";
 import { searchMemories } from "../lib/search.js";
 import { detectProject } from "../lib/project-detect.js";
@@ -27,6 +30,7 @@ import {
   DuplicateMemoryError,
   InvalidScopeError,
 } from "../types/index.js";
+import { parseDuration } from "../lib/duration.js";
 import type {
   Memory,
   MemoryCategory,
@@ -34,6 +38,9 @@ import type {
   MemoryStats,
   MemoryFilter,
   CreateMemoryInput,
+  Entity,
+  EntityType,
+  RelationType,
 } from "../types/index.js";
 
 const server = new McpServer({
@@ -121,14 +128,18 @@ server.tool(
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     session_id: z.string().optional(),
-    ttl_ms: z.coerce.number().optional(),
+    ttl_ms: z.union([z.string(), z.number()]).optional(),
     source: z.enum(["user", "agent", "system", "auto", "imported"]).optional(),
     metadata: z.record(z.unknown()).optional(),
   },
   async (args) => {
     try {
       ensureAutoProject();
-      const memory = createMemory(args as CreateMemoryInput);
+      const input = { ...args } as Record<string, unknown>;
+      if (args.ttl_ms !== undefined) {
+        input.ttl_ms = parseDuration(args.ttl_ms);
+      }
+      const memory = createMemory(input as CreateMemoryInput);
       return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -783,6 +794,310 @@ server.tool(
 );
 
 // ============================================================================
+// Knowledge Graph Tools
+// ============================================================================
+
+function resolveEntityParam(nameOrId: string, type?: string): Entity {
+  const byName = getEntityByName(nameOrId, type as EntityType | undefined);
+  if (byName) return byName;
+  try { return getEntity(nameOrId); } catch { /* not found */ }
+  const db = getDatabase();
+  const id = resolvePartialId(db, "entities", nameOrId);
+  if (id) return getEntity(id);
+  throw new Error(`Entity not found: ${nameOrId}`);
+}
+
+server.tool(
+  "entity_create",
+  "Create a knowledge graph entity (person, project, tool, concept, file, api, pattern, organization).",
+  {
+    name: z.string(),
+    type: z.enum(["person", "project", "tool", "concept", "file", "api", "pattern", "organization"]),
+    description: z.string().optional(),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const entity = createEntity(args);
+      return { content: [{ type: "text" as const, text: `Entity: ${entity.name} [${entity.type}] (${entity.id.slice(0, 8)})` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "entity_get",
+  "Get entity details by name or ID, including relations summary and memory count.",
+  {
+    name_or_id: z.string(),
+    type: z.enum(["person", "project", "tool", "concept", "file", "api", "pattern", "organization"]).optional(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.name_or_id, args.type);
+      const relations = listRelations({ entity_id: entity.id });
+      const memories = getMemoriesForEntity(entity.id);
+      const lines = [
+        `ID: ${entity.id}`,
+        `Name: ${entity.name}`,
+        `Type: ${entity.type}`,
+      ];
+      if (entity.description) lines.push(`Description: ${entity.description}`);
+      if (entity.project_id) lines.push(`Project: ${entity.project_id}`);
+      lines.push(`Relations: ${relations.length}`);
+      lines.push(`Memories: ${memories.length}`);
+      lines.push(`Created: ${entity.created_at}`);
+      lines.push(`Updated: ${entity.updated_at}`);
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "entity_list",
+  "List entities. Optional filters: type, project_id, search, limit.",
+  {
+    type: z.enum(["person", "project", "tool", "concept", "file", "api", "pattern", "organization"]).optional(),
+    project_id: z.string().optional(),
+    search: z.string().optional(),
+    limit: z.coerce.number().optional(),
+  },
+  async (args) => {
+    try {
+      const entities = listEntities({ ...args, limit: args.limit || 50 });
+      if (entities.length === 0) {
+        return { content: [{ type: "text" as const, text: "No entities found." }] };
+      }
+      const lines = entities.map(e => `${e.id.slice(0, 8)} | ${e.type} | ${e.name}`);
+      return { content: [{ type: "text" as const, text: `${entities.length} entit${entities.length === 1 ? "y" : "ies"}:\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "entity_delete",
+  "Delete an entity by name or ID.",
+  {
+    name_or_id: z.string(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.name_or_id);
+      deleteEntity(entity.id);
+      return { content: [{ type: "text" as const, text: `Deleted: ${entity.name} [${entity.type}] (${entity.id.slice(0, 8)})` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "entity_merge",
+  "Merge source entity into target. Moves all relations and memory links.",
+  {
+    source: z.string(),
+    target: z.string(),
+  },
+  async (args) => {
+    try {
+      const sourceEntity = resolveEntityParam(args.source);
+      const targetEntity = resolveEntityParam(args.target);
+      const merged = mergeEntities(sourceEntity.id, targetEntity.id);
+      return { content: [{ type: "text" as const, text: `Merged: ${sourceEntity.name} → ${merged.name} [${merged.type}] (${merged.id.slice(0, 8)})` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "entity_link",
+  "Link an entity to a memory with a role (subject, object, or context).",
+  {
+    entity_name_or_id: z.string(),
+    memory_id: z.string(),
+    role: z.enum(["subject", "object", "context"]).optional(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.entity_name_or_id);
+      const memoryId = resolveId(args.memory_id);
+      const link = linkEntityToMemory(entity.id, memoryId, args.role || "context");
+      return { content: [{ type: "text" as const, text: `Linked: ${entity.name} → memory ${memoryId.slice(0, 8)} [${link.role}]` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "relation_create",
+  "Create a relation between two entities (uses, knows, depends_on, created_by, related_to, contradicts, part_of, implements).",
+  {
+    source_entity: z.string(),
+    target_entity: z.string(),
+    relation_type: z.enum(["uses", "knows", "depends_on", "created_by", "related_to", "contradicts", "part_of", "implements"]),
+    weight: z.coerce.number().optional(),
+  },
+  async (args) => {
+    try {
+      const source = resolveEntityParam(args.source_entity);
+      const target = resolveEntityParam(args.target_entity);
+      const relation = createRelation({
+        source_entity_id: source.id,
+        target_entity_id: target.id,
+        relation_type: args.relation_type,
+        weight: args.weight,
+      });
+      return { content: [{ type: "text" as const, text: `Relation: ${source.name} —[${relation.relation_type}]→ ${target.name} (${relation.id.slice(0, 8)})` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "relation_list",
+  "List relations for an entity. Filter by type and direction (outgoing, incoming, both).",
+  {
+    entity_name_or_id: z.string(),
+    relation_type: z.enum(["uses", "knows", "depends_on", "created_by", "related_to", "contradicts", "part_of", "implements"]).optional(),
+    direction: z.enum(["outgoing", "incoming", "both"]).optional(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.entity_name_or_id);
+      const relations = listRelations({
+        entity_id: entity.id,
+        relation_type: args.relation_type,
+        direction: args.direction || "both",
+      });
+      if (relations.length === 0) {
+        return { content: [{ type: "text" as const, text: `No relations found for: ${entity.name}` }] };
+      }
+      const lines = relations.map(r =>
+        `${r.id.slice(0, 8)} | ${r.source_entity_id.slice(0, 8)} —[${r.relation_type}]→ ${r.target_entity_id.slice(0, 8)} (w:${r.weight})`
+      );
+      return { content: [{ type: "text" as const, text: `${relations.length} relation(s) for ${entity.name}:\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "relation_delete",
+  "Delete a relation by ID.",
+  {
+    id: z.string(),
+  },
+  async (args) => {
+    try {
+      const id = resolveId(args.id, "relations");
+      deleteRelation(id);
+      return { content: [{ type: "text" as const, text: `Relation ${id.slice(0, 8)} deleted.` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "graph_query",
+  "Traverse the knowledge graph from an entity up to N hops. Returns entities and relations.",
+  {
+    entity_name_or_id: z.string(),
+    depth: z.coerce.number().optional(),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.entity_name_or_id);
+      const depth = args.depth ?? 2;
+      const graph = getEntityGraph(entity.id, depth);
+      if (graph.entities.length === 0) {
+        return { content: [{ type: "text" as const, text: `No graph found for: ${entity.name}` }] };
+      }
+      const entityLines = graph.entities.map(e => `  ${e.id.slice(0, 8)} | ${e.type} | ${e.name}`);
+      const relationLines = graph.relations.map(r =>
+        `  ${r.source_entity_id.slice(0, 8)} —[${r.relation_type}]→ ${r.target_entity_id.slice(0, 8)}`
+      );
+      const lines = [
+        `Graph for ${entity.name} (depth ${depth}):`,
+        `Entities (${graph.entities.length}):`,
+        ...entityLines,
+      ];
+      if (relationLines.length > 0) {
+        lines.push(`Relations (${graph.relations.length}):`, ...relationLines);
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "graph_path",
+  "Find shortest path between two entities in the knowledge graph.",
+  {
+    from_entity: z.string(),
+    to_entity: z.string(),
+    max_depth: z.coerce.number().optional(),
+  },
+  async (args) => {
+    try {
+      const from = resolveEntityParam(args.from_entity);
+      const to = resolveEntityParam(args.to_entity);
+      const maxDepth = args.max_depth ?? 5;
+      const path = findPath(from.id, to.id, maxDepth);
+      if (!path || path.length === 0) {
+        return { content: [{ type: "text" as const, text: `No path found: ${from.name} → ${to.name} (max depth ${maxDepth})` }] };
+      }
+      const pathStr = path.map(e => e.name).join(" → ");
+      return { content: [{ type: "text" as const, text: `Path: ${pathStr}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "graph_stats",
+  "Get entity and relation counts by type.",
+  {},
+  async () => {
+    try {
+      const db = getDatabase();
+      const entityTotal = (db.query("SELECT COUNT(*) as c FROM entities").get() as { c: number }).c;
+      const byType = db.query("SELECT type, COUNT(*) as c FROM entities GROUP BY type").all() as { type: string; c: number }[];
+      const relationTotal = (db.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }).c;
+      const byRelType = db.query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type").all() as { relation_type: string; c: number }[];
+      const linkTotal = (db.query("SELECT COUNT(*) as c FROM entity_memories").get() as { c: number }).c;
+
+      const lines = [
+        `Entities: ${entityTotal}`,
+      ];
+      if (byType.length > 0) {
+        lines.push(`  By type: ${byType.map(r => `${r.type}=${r.c}`).join(", ")}`);
+      }
+      lines.push(`Relations: ${relationTotal}`);
+      if (byRelType.length > 0) {
+        lines.push(`  By type: ${byRelType.map(r => `${r.relation_type}=${r.c}`).join(", ")}`);
+      }
+      lines.push(`Entity-memory links: ${linkTotal}`);
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
 // Meta-tools: search_tools + describe_tools (96% input token reduction)
 // ============================================================================
 
@@ -807,6 +1122,18 @@ const TOOL_REGISTRY = [
   { name: "bulk_forget", description: "Delete multiple memories by IDs", category: "bulk" },
   { name: "bulk_update", description: "Update multiple memories with the same changes", category: "bulk" },
   { name: "clean_expired", description: "Remove expired memories from the database", category: "utility" },
+  { name: "entity_create", description: "Create a knowledge graph entity (person, project, tool, concept, file, api, pattern, organization).", category: "graph" },
+  { name: "entity_get", description: "Get entity details by name or ID, including relations summary and memory count.", category: "graph" },
+  { name: "entity_list", description: "List entities. Optional filters: type, project_id, search, limit.", category: "graph" },
+  { name: "entity_delete", description: "Delete an entity by name or ID.", category: "graph" },
+  { name: "entity_merge", description: "Merge source entity into target. Moves all relations and memory links.", category: "graph" },
+  { name: "entity_link", description: "Link an entity to a memory with a role (subject, object, or context).", category: "graph" },
+  { name: "relation_create", description: "Create a relation between two entities.", category: "graph" },
+  { name: "relation_list", description: "List relations for an entity. Filter by type and direction.", category: "graph" },
+  { name: "relation_delete", description: "Delete a relation by ID.", category: "graph" },
+  { name: "graph_query", description: "Traverse the knowledge graph from an entity up to N hops.", category: "graph" },
+  { name: "graph_path", description: "Find shortest path between two entities.", category: "graph" },
+  { name: "graph_stats", description: "Get entity and relation counts by type.", category: "graph" },
   { name: "search_tools", description: "Search available tools by name or keyword. Returns names only.", category: "meta" },
   { name: "describe_tools", description: "Get full schemas for specific tools by name.", category: "meta" },
 ];
@@ -816,7 +1143,7 @@ server.tool(
   "Search available tools by name or keyword. Returns names only.",
   {
     query: z.string(),
-    category: z.enum(["memory", "agent", "project", "bulk", "utility", "meta"]).optional(),
+    category: z.enum(["memory", "agent", "project", "bulk", "utility", "graph", "meta"]).optional(),
   },
   async (args) => {
     const q = args.query.toLowerCase();
