@@ -1,11 +1,15 @@
 import { Database } from "bun:sqlite";
 import type { Agent } from "../types/index.js";
+import { AgentConflictError } from "../types/index.js";
 import { getDatabase, now, shortUuid } from "./database.js";
+
+const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
 function parseAgentRow(row: Record<string, unknown>): Agent {
   return {
     id: row["id"] as string,
     name: row["name"] as string,
+    session_id: (row["session_id"] as string) || null,
     description: (row["description"] as string) || null,
     role: (row["role"] as string) || null,
     metadata: JSON.parse((row["metadata"] as string) || "{}") as Record<string, unknown>,
@@ -17,6 +21,7 @@ function parseAgentRow(row: Record<string, unknown>): Agent {
 
 export function registerAgent(
   name: string,
+  sessionId?: string,
   description?: string,
   role?: string,
   db?: Database
@@ -25,36 +30,43 @@ export function registerAgent(
   const timestamp = now();
   const normalizedName = name.trim().toLowerCase();
 
-  // Idempotent: same name returns existing agent, updates last_seen_at (case-insensitive)
   const existing = d
     .query("SELECT * FROM agents WHERE LOWER(name) = ?")
     .get(normalizedName) as Record<string, unknown> | null;
 
   if (existing) {
     const existingId = existing["id"] as string;
-    d.run("UPDATE agents SET last_seen_at = ? WHERE id = ?", [
+    const existingSessionId = (existing["session_id"] as string) || null;
+    const existingLastSeen = existing["last_seen_at"] as string;
+
+    // Conflict detection: if a different session is active within the 30-min window, reject
+    if (sessionId && existingSessionId && existingSessionId !== sessionId) {
+      const lastSeenMs = new Date(existingLastSeen).getTime();
+      const nowMs = Date.now();
+      if (nowMs - lastSeenMs < CONFLICT_WINDOW_MS) {
+        throw new AgentConflictError(normalizedName, existingSessionId, existingLastSeen);
+      }
+    }
+
+    // Same session or expired — update and take over
+    d.run("UPDATE agents SET last_seen_at = ?, session_id = ? WHERE id = ?", [
       timestamp,
+      sessionId ?? existingSessionId,
       existingId,
     ]);
     if (description) {
-      d.run("UPDATE agents SET description = ? WHERE id = ?", [
-        description,
-        existingId,
-      ]);
+      d.run("UPDATE agents SET description = ? WHERE id = ?", [description, existingId]);
     }
     if (role) {
-      d.run("UPDATE agents SET role = ? WHERE id = ?", [
-        role,
-        existingId,
-      ]);
+      d.run("UPDATE agents SET role = ? WHERE id = ?", [role, existingId]);
     }
     return getAgent(existingId, d)!;
   }
 
   const id = shortUuid();
   d.run(
-    "INSERT INTO agents (id, name, description, role, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?)",
-    [id, normalizedName, description || null, role || "agent", timestamp, timestamp]
+    "INSERT INTO agents (id, name, session_id, description, role, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    [id, normalizedName, sessionId ?? null, description || null, role || "agent", timestamp, timestamp]
   );
 
   return getAgent(id, d)!;

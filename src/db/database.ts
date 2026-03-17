@@ -276,6 +276,13 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_agents_active_project ON agents(active_project_id);
   INSERT OR IGNORE INTO _migrations (id) VALUES (6);
   `,
+
+  // Migration 7: session_id on agents for conflict detection (brutus standardization)
+  `
+  ALTER TABLE agents ADD COLUMN session_id TEXT;
+  CREATE INDEX IF NOT EXISTS idx_agents_session ON agents(session_id);
+  INSERT OR IGNORE INTO _migrations (id) VALUES (7);
+  `,
 ];
 
 // ============================================================================

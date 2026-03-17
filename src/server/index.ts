@@ -729,6 +729,7 @@ addRoute("POST", "/api/agents", async (req) => {
 
   const agent = registerAgent(
     body["name"] as string,
+    body["session_id"] as string | undefined,
     body["description"] as string | undefined,
     body["role"] as string | undefined
   );

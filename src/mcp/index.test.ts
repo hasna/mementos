@@ -560,8 +560,8 @@ describe("agent registration flow", () => {
   });
 
   test("register updates description on re-register", () => {
-    registerAgent("desc-agent", "first desc");
-    const a2 = registerAgent("desc-agent", "updated desc");
+    registerAgent("desc-agent", undefined, "first desc");
+    const a2 = registerAgent("desc-agent", undefined, "updated desc");
     expect(a2.description).toBe("updated desc");
   });
 

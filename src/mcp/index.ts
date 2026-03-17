@@ -808,12 +808,13 @@ server.tool(
   "Register an agent. Idempotent — same name returns existing agent.",
   {
     name: z.string(),
+    session_id: z.string().optional(),
     description: z.string().optional(),
     role: z.string().optional(),
   },
   async (args) => {
     try {
-      const agent = registerAgent(args.name, args.description, args.role);
+      const agent = registerAgent(args.name, args.session_id, args.description, args.role);
       return {
         content: [{
           type: "text" as const,

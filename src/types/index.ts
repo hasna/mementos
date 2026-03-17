@@ -128,12 +128,27 @@ export interface MemorySearchResult {
 export interface Agent {
   id: string; // 8-char UUID
   name: string;
+  session_id: string | null;
   description: string | null;
   role: string | null;
   metadata: Record<string, unknown>;
   active_project_id: string | null;
   created_at: string;
   last_seen_at: string;
+}
+
+export class AgentConflictError extends Error {
+  constructor(
+    public readonly agentName: string,
+    public readonly existingSessionId: string,
+    public readonly lastSeenAt: string
+  ) {
+    super(
+      `Agent "${agentName}" is already active (session ${existingSessionId}, last seen ${lastSeenAt}). ` +
+      `Wait 30 minutes or use a different name.`
+    );
+    this.name = "AgentConflictError";
+  }
 }
 
 // ============================================================================

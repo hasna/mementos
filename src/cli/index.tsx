@@ -1426,6 +1426,7 @@ program
       const globalOpts = program.opts<GlobalOpts>();
       const agent = registerAgent(
         name,
+        undefined,
         opts.description as string | undefined,
         opts.role as string | undefined
       );

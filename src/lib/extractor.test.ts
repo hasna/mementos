@@ -161,7 +161,7 @@ describe("extractEntities", () => {
   describe("known agent matching", () => {
     test("matches registered agent names", () => {
       const db = getDatabase(":memory:");
-      registerAgent("maximus", "Test agent", undefined, db);
+      registerAgent("maximus", undefined, "Test agent", undefined, db);
 
       const memory = makeMemory({ value: "maximus deployed the fix" });
       const entities = extractEntities(memory, db);
@@ -173,7 +173,7 @@ describe("extractEntities", () => {
 
     test("matches agent names case-insensitively", () => {
       const db = getDatabase(":memory:");
-      registerAgent("Cassius", "Test agent", undefined, db);
+      registerAgent("Cassius", undefined, "Test agent", undefined, db);
 
       const memory = makeMemory({ value: "cassius reviewed the PR" });
       const entities = extractEntities(memory, db);
@@ -198,7 +198,7 @@ describe("extractEntities", () => {
   describe("deduplication", () => {
     test("keeps highest confidence when same entity found in key and value", () => {
       const db = getDatabase(":memory:");
-      registerAgent("aurelius", "Test agent", undefined, db);
+      registerAgent("aurelius", undefined, "Test agent", undefined, db);
 
       // "aurelius" appears in both key and value; agent match (0.95) should win
       const memory = makeMemory({
@@ -225,7 +225,7 @@ describe("extractEntities", () => {
   describe("confidence ordering", () => {
     test("results are sorted by confidence descending", () => {
       const db = getDatabase(":memory:");
-      registerAgent("brutus", "Test agent", undefined, db);
+      registerAgent("brutus", undefined, "Test agent", undefined, db);
 
       const memory = makeMemory({
         value: "brutus fixed src/lib/extractor.ts using typescript and MemoryManager at https://example.com",
@@ -261,7 +261,7 @@ describe("extractEntities", () => {
   describe("mixed content extraction", () => {
     test("extracts multiple entity types from rich content", () => {
       const db = getDatabase(":memory:");
-      registerAgent("seneca", "Test agent", undefined, db);
+      registerAgent("seneca", undefined, "Test agent", undefined, db);
       registerProject("alumia", "/home/user/alumia", undefined, undefined, db);
 
       const memory = makeMemory({

@@ -41,25 +41,52 @@ describe("registerAgent", () => {
   });
 
   test("updates description on re-register", () => {
-    const first = registerAgent("brutus", "original desc");
+    const first = registerAgent("brutus", undefined, "original desc");
     expect(first.description).toBe("original desc");
-    const second = registerAgent("brutus", "updated desc");
+    const second = registerAgent("brutus", undefined, "updated desc");
     expect(second.description).toBe("updated desc");
     expect(second.id).toBe(first.id);
   });
 
   test("updates role on re-register", () => {
-    const first = registerAgent("titus", undefined, "agent");
+    const first = registerAgent("titus", undefined, undefined, "agent");
     expect(first.role).toBe("agent");
-    const second = registerAgent("titus", undefined, "supervisor");
+    const second = registerAgent("titus", undefined, undefined, "supervisor");
     expect(second.role).toBe("supervisor");
     expect(second.id).toBe(first.id);
   });
 
   test("sets custom description and role on creation", () => {
-    const agent = registerAgent("nero", "a helper", "coordinator");
+    const agent = registerAgent("nero", undefined, "a helper", "coordinator");
     expect(agent.description).toBe("a helper");
     expect(agent.role).toBe("coordinator");
+  });
+
+  test("session_id is stored and returned", () => {
+    const agent = registerAgent("session-agent", "sess-abc123");
+    expect(agent.session_id).toBe("sess-abc123");
+  });
+
+  test("same session_id re-register is idempotent (no conflict)", () => {
+    const first = registerAgent("session-idem", "same-sess");
+    const second = registerAgent("session-idem", "same-sess");
+    expect(second.id).toBe(first.id);
+    expect(second.session_id).toBe("same-sess");
+  });
+
+  test("different session_id within 30 min throws AgentConflictError", () => {
+    registerAgent("conflict-agent", "session-A");
+    expect(() => {
+      registerAgent("conflict-agent", "session-B");
+    }).toThrow("conflict-agent");
+  });
+
+  test("no session_id does not conflict", () => {
+    registerAgent("no-sess-agent", "session-X");
+    // Re-registering without session_id should not conflict
+    expect(() => {
+      registerAgent("no-sess-agent");
+    }).not.toThrow();
   });
 });
 
