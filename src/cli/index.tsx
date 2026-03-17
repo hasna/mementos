@@ -4344,6 +4344,336 @@ autoMemory
   });
 
 // ============================================================================
+// Hook / Webhook CLI commands
+// ============================================================================
+
+const hooksCmd = program
+  .command("hooks")
+  .description("Hook registry and webhook management");
+
+hooksCmd
+  .command("list")
+  .description("List registered hooks in the in-memory registry")
+  .option("--type <type>", "Filter by hook type")
+  .action(async (opts) => {
+    const { hookRegistry } = await import("../lib/hooks.js");
+    const hooks = hookRegistry.list(opts.type);
+    if (hooks.length === 0) {
+      console.log(chalk.gray("No hooks registered."));
+      return;
+    }
+    for (const h of hooks) {
+      const builtinTag = h.builtin ? chalk.blue(" [builtin]") : "";
+      const blockingTag = h.blocking ? chalk.red(" [blocking]") : chalk.gray(" [non-blocking]");
+      console.log(`${chalk.cyan(h.id)} ${chalk.bold(h.type)}${builtinTag}${blockingTag} priority=${h.priority}`);
+      if (h.description) console.log(`  ${chalk.gray(h.description)}`);
+    }
+  });
+
+hooksCmd
+  .command("stats")
+  .description("Show hook registry statistics")
+  .action(async () => {
+    const { hookRegistry } = await import("../lib/hooks.js");
+    const stats = hookRegistry.stats();
+    console.log(chalk.bold("Hook Registry Stats"));
+    console.log(`  Total:       ${chalk.cyan(stats.total)}`);
+    console.log(`  Blocking:    ${chalk.red(stats.blocking)}`);
+    console.log(`  Non-blocking:${chalk.green(stats.nonBlocking)}`);
+    if (Object.keys(stats.byType).length > 0) {
+      console.log(chalk.bold("\nBy type:"));
+      for (const [type, count] of Object.entries(stats.byType)) {
+        console.log(`  ${type}: ${count}`);
+      }
+    }
+  });
+
+const webhooksCmd = hooksCmd
+  .command("webhooks")
+  .alias("wh")
+  .description("Manage persistent HTTP webhook hooks");
+
+webhooksCmd
+  .command("list")
+  .description("List all persisted webhook hooks")
+  .option("--type <type>", "Filter by hook type")
+  .option("--disabled", "Show only disabled webhooks")
+  .action(async (opts) => {
+    const { listWebhookHooks } = await import("../db/webhook_hooks.js");
+    const webhooks = listWebhookHooks({
+      type: opts.type,
+      enabled: opts.disabled ? false : undefined,
+    });
+    if (webhooks.length === 0) {
+      console.log(chalk.gray("No webhooks registered."));
+      return;
+    }
+    for (const wh of webhooks) {
+      const enabledTag = wh.enabled ? chalk.green("enabled") : chalk.red("disabled");
+      const blockingTag = wh.blocking ? chalk.red("blocking") : chalk.gray("non-blocking");
+      console.log(`${chalk.cyan(wh.id)} [${enabledTag}] ${chalk.bold(wh.type)} → ${wh.handlerUrl}`);
+      console.log(`  ${blockingTag} | priority=${wh.priority} | invocations=${wh.invocationCount} failures=${wh.failureCount}`);
+      if (wh.description) console.log(`  ${chalk.gray(wh.description)}`);
+    }
+  });
+
+webhooksCmd
+  .command("create <type> <url>")
+  .description("Create a persistent webhook hook")
+  .option("--blocking", "Block the operation until the webhook responds")
+  .option("--priority <n>", "Hook priority (default 50)", "50")
+  .option("--agent <id>", "Scope to specific agent")
+  .option("--project <id>", "Scope to specific project")
+  .option("--description <text>", "Human-readable description")
+  .action(async (type, url, opts) => {
+    const { createWebhookHook } = await import("../db/webhook_hooks.js");
+    const { reloadWebhooks } = await import("../lib/built-in-hooks.js");
+    const wh = createWebhookHook({
+      type,
+      handlerUrl: url,
+      blocking: opts.blocking ?? false,
+      priority: parseInt(opts.priority, 10),
+      agentId: opts.agent,
+      projectId: opts.project,
+      description: opts.description,
+    });
+    reloadWebhooks();
+    console.log(chalk.green("✓ Webhook created"));
+    console.log(`  ID:   ${chalk.cyan(wh.id)}`);
+    console.log(`  Type: ${wh.type}`);
+    console.log(`  URL:  ${wh.handlerUrl}`);
+  });
+
+webhooksCmd
+  .command("delete <id>")
+  .description("Delete a webhook by ID")
+  .action(async (id) => {
+    const { deleteWebhookHook } = await import("../db/webhook_hooks.js");
+    const deleted = deleteWebhookHook(id);
+    if (deleted) {
+      console.log(chalk.green(`✓ Webhook ${id} deleted`));
+    } else {
+      console.error(chalk.red(`Webhook not found: ${id}`));
+      process.exit(1);
+    }
+  });
+
+webhooksCmd
+  .command("enable <id>")
+  .description("Enable a webhook")
+  .action(async (id) => {
+    const { updateWebhookHook } = await import("../db/webhook_hooks.js");
+    const { reloadWebhooks } = await import("../lib/built-in-hooks.js");
+    const updated = updateWebhookHook(id, { enabled: true });
+    if (updated) {
+      reloadWebhooks();
+      console.log(chalk.green(`✓ Webhook ${id} enabled`));
+    } else {
+      console.error(chalk.red(`Webhook not found: ${id}`));
+      process.exit(1);
+    }
+  });
+
+webhooksCmd
+  .command("disable <id>")
+  .description("Disable a webhook (without deleting it)")
+  .action(async (id) => {
+    const { updateWebhookHook } = await import("../db/webhook_hooks.js");
+    const { reloadWebhooks } = await import("../lib/built-in-hooks.js");
+    const updated = updateWebhookHook(id, { enabled: false });
+    if (updated) {
+      reloadWebhooks();
+      console.log(chalk.yellow(`⊘ Webhook ${id} disabled`));
+    } else {
+      console.error(chalk.red(`Webhook not found: ${id}`));
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// Synthesis CLI commands
+// ============================================================================
+
+const synthesisCmd = program
+  .command("synthesis")
+  .alias("synth")
+  .description("ALMA memory synthesis — analyze and consolidate memories");
+
+synthesisCmd
+  .command("run")
+  .description("Run memory synthesis on the corpus")
+  .option("--project <id>", "Project ID to synthesize")
+  .option("--dry-run", "Preview proposals without applying them")
+  .option("--max-proposals <n>", "Maximum proposals to generate", "20")
+  .option("--provider <name>", "LLM provider (anthropic, openai, cerebras, grok)")
+  .action(async (opts) => {
+    const { runSynthesis } = await import("../lib/synthesis/index.js");
+    console.log(chalk.blue("Running memory synthesis..."));
+    const result = await runSynthesis({
+      projectId: opts.project,
+      dryRun: opts.dryRun ?? false,
+      maxProposals: opts.maxProposals ? parseInt(opts.maxProposals) : 20,
+      provider: opts.provider,
+    });
+    if (result.dryRun) {
+      console.log(chalk.yellow(`DRY RUN — ${result.proposals.length} proposals generated (not applied)`));
+    } else {
+      console.log(chalk.green(`✓ Synthesis complete`));
+      console.log(`  Corpus:    ${result.run.corpus_size} memories`);
+      console.log(`  Proposals: ${result.run.proposals_generated} generated, ${result.run.proposals_accepted} applied`);
+    }
+    if (result.metrics) {
+      console.log(`  Reduction: ${(result.metrics.corpusReduction * 100).toFixed(1)}%`);
+    }
+    console.log(`  Run ID: ${chalk.cyan(result.run.id)}`);
+  });
+
+synthesisCmd
+  .command("status")
+  .description("Show recent synthesis runs")
+  .option("--project <id>", "Filter by project")
+  .action(async (opts) => {
+    const { listSynthesisRuns } = await import("../db/synthesis.js");
+    const runs = listSynthesisRuns({ project_id: opts.project, limit: 10 });
+    if (runs.length === 0) {
+      console.log(chalk.gray("No synthesis runs found."));
+      return;
+    }
+    for (const run of runs) {
+      const statusColor = run.status === "completed" ? chalk.green : run.status === "failed" ? chalk.red : chalk.yellow;
+      console.log(`${chalk.cyan(run.id)} [${statusColor(run.status)}] corpus=${run.corpus_size} accepted=${run.proposals_accepted}/${run.proposals_generated} ${run.started_at.slice(0,10)}`);
+    }
+  });
+
+synthesisCmd
+  .command("rollback <runId>")
+  .description("Roll back a synthesis run")
+  .action(async (runId) => {
+    const { rollbackSynthesis } = await import("../lib/synthesis/index.js");
+    console.log(chalk.yellow(`Rolling back synthesis run ${runId}...`));
+    const result = await rollbackSynthesis(runId);
+    console.log(chalk.green(`✓ Rolled back ${result.rolled_back} proposals`));
+    if (result.errors.length > 0) {
+      console.log(chalk.red(`  Errors: ${result.errors.join(", ")}`));
+    }
+  });
+
+// ============================================================================
+// Session ingestion CLI commands
+// ============================================================================
+
+const sessionCmd = program
+  .command("session")
+  .description("Session auto-memory — ingest session transcripts for memory extraction");
+
+sessionCmd
+  .command("ingest <transcriptFile>")
+  .description("Ingest a session transcript file for memory extraction")
+  .option("--session-id <id>", "Session ID (default: auto-generated)")
+  .option("--agent <id>", "Agent ID")
+  .option("--project <id>", "Project ID")
+  .option("--source <source>", "Source (claude-code, codex, manual, open-sessions)", "manual")
+  .action(async (transcriptFile: string, opts: { sessionId?: string; agent?: string; project?: string; source: string }) => {
+    const { readFileSync } = await import("node:fs");
+    const { createSessionJob } = await import("../db/session-jobs.js");
+    const { enqueueSessionJob } = await import("../lib/session-queue.js");
+    const transcript = readFileSync(transcriptFile, "utf-8");
+    const sessionId = opts.sessionId ?? `cli-${Date.now()}`;
+    const job = createSessionJob({
+      session_id: sessionId,
+      transcript,
+      source: opts.source as "claude-code" | "codex" | "manual" | "open-sessions",
+      agent_id: opts.agent,
+      project_id: opts.project,
+    });
+    enqueueSessionJob(job.id);
+    console.log(chalk.green(`✓ Session queued: ${chalk.cyan(job.id)}`));
+    console.log(`  Session: ${sessionId}`);
+    console.log(`  Length:  ${transcript.length} chars`);
+  });
+
+sessionCmd
+  .command("status <jobId>")
+  .description("Check status of a session extraction job")
+  .action(async (jobId: string) => {
+    const { getSessionJob } = await import("../db/session-jobs.js");
+    const job = getSessionJob(jobId);
+    if (!job) {
+      console.error(chalk.red(`Job not found: ${jobId}`));
+      process.exit(1);
+    }
+    const statusColor = job.status === "completed" ? chalk.green : job.status === "failed" ? chalk.red : chalk.yellow;
+    console.log(`${chalk.cyan(job.id)} [${statusColor(job.status)}]`);
+    console.log(`  Session:   ${job.session_id}`);
+    console.log(`  Chunks:    ${job.chunk_count}`);
+    console.log(`  Extracted: ${job.memories_extracted} memories`);
+    if (job.error) console.log(chalk.red(`  Error: ${job.error}`));
+  });
+
+sessionCmd
+  .command("list")
+  .description("List session extraction jobs")
+  .option("--agent <id>", "Filter by agent")
+  .option("--project <id>", "Filter by project")
+  .option("--status <status>", "Filter by status")
+  .option("--limit <n>", "Max results", "20")
+  .action(async (opts: { agent?: string; project?: string; status?: string; limit: string }) => {
+    const { listSessionJobs } = await import("../db/session-jobs.js");
+    const jobs = listSessionJobs({
+      agent_id: opts.agent,
+      project_id: opts.project,
+      status: opts.status as "pending" | "processing" | "completed" | "failed" | undefined,
+      limit: parseInt(opts.limit),
+    });
+    if (jobs.length === 0) {
+      console.log(chalk.gray("No session jobs found."));
+      return;
+    }
+    for (const job of jobs) {
+      const statusColor = job.status === "completed" ? chalk.green : job.status === "failed" ? chalk.red : chalk.yellow;
+      console.log(`${chalk.cyan(job.id.slice(0, 8))} [${statusColor(job.status)}] ${job.memories_extracted} memories | ${job.created_at.slice(0, 10)}`);
+    }
+  });
+
+sessionCmd
+  .command("setup-hook")
+  .description("Install mementos session hook into Claude Code or Codex")
+  .option("--claude", "Install Claude Code stop hook")
+  .option("--codex", "Install Codex session hook")
+  .option("--show", "Print hook script instead of installing")
+  .action(async (opts: { claude?: boolean; codex?: boolean; show?: boolean }) => {
+    const { resolve } = await import("node:path");
+    const hookPath = resolve(import.meta.dirname, "../../scripts/hooks");
+
+    if (opts.claude) {
+      const script = `${hookPath}/claude-stop-hook.ts`;
+      if (opts.show) {
+        const { readFileSync } = await import("node:fs");
+        console.log(readFileSync(script, "utf-8"));
+        return;
+      }
+      console.log(chalk.bold("Claude Code stop hook installation:"));
+      console.log("");
+      console.log("Add to your .claude/settings.json:");
+      console.log(chalk.cyan(JSON.stringify({
+        hooks: {
+          Stop: [{ matcher: "", hooks: [{ type: "command", command: `bun ${script}` }] }],
+        },
+      }, null, 2)));
+      console.log("");
+      console.log(`Or run: ${chalk.cyan(`claude hooks add Stop "bun ${script}"`)}`);
+    } else if (opts.codex) {
+      const script = `${hookPath}/codex-stop-hook.ts`;
+      console.log(chalk.bold("Codex session hook installation:"));
+      console.log("");
+      console.log("Add to ~/.codex/config.toml:");
+      console.log(chalk.cyan(`[hooks]\nsession_end = "bun ${script}"`));
+    } else {
+      console.log("Usage: mementos session setup-hook --claude | --codex");
+    }
+  });
+
+// ============================================================================
 // Parse and run
 // ============================================================================
 

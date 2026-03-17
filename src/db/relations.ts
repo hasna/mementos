@@ -1,6 +1,7 @@
 import { Database, type SQLQueryBindings } from "bun:sqlite";
 import { getDatabase, now, shortUuid } from "./database.js";
 import type { Entity, Relation, CreateRelationInput, RelationType } from "../types/index.js";
+import { hookRegistry } from "../lib/hooks.js";
 
 // ============================================================================
 // Helpers
@@ -59,7 +60,17 @@ export function createRelation(input: CreateRelationInput, db?: Database): Relat
     )
     .get(input.source_entity_id, input.target_entity_id, input.relation_type) as Record<string, unknown>;
 
-  return parseRelationRow(row);
+  const relation = parseRelationRow(row);
+
+  void hookRegistry.runHooks("PostRelationCreate", {
+    relationId: relation.id,
+    sourceEntityId: relation.source_entity_id,
+    targetEntityId: relation.target_entity_id,
+    relationType: relation.relation_type,
+    timestamp: Date.now(),
+  });
+
+  return relation;
 }
 
 // ============================================================================

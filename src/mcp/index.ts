@@ -51,6 +51,19 @@ import type {
   EntityType,
 } from "../types/index.js";
 
+import { hookRegistry } from "../lib/hooks.js";
+import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
+import {
+  createWebhookHook,
+  listWebhookHooks,
+  updateWebhookHook,
+  deleteWebhookHook,
+} from "../db/webhook_hooks.js";
+import { runSynthesis, rollbackSynthesis, getSynthesisStatus } from "../lib/synthesis/index.js";
+import { listSynthesisRuns } from "../db/synthesis.js";
+import { createSessionJob, getSessionJob, listSessionJobs } from "../db/session-jobs.js";
+import { enqueueSessionJob } from "../lib/session-queue.js";
+
 // Read version from package.json — never hardcode
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
@@ -783,15 +796,29 @@ server.tool(
         return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
       });
 
+      // resolve format: new `format` param takes priority, legacy `raw` maps to compact
+      const fmt = args.format ?? (args.raw ? "compact" : "xml");
+
+      // PreMemoryInject: blocking hooks can filter/reorder the memories array
+      const preCtx = {
+        memories: unique,
+        format: fmt,
+        agentId: args.agent_id,
+        projectId: args.project_id,
+        sessionId: args.session_id,
+        timestamp: Date.now(),
+      };
+      const shouldProceed = await hookRegistry.runHooks("PreMemoryInject", preCtx);
+      if (!shouldProceed) {
+        return { content: [{ type: "text" as const, text: "Injection cancelled by hook." }] };
+      }
+
       // Build context within token budget (~4 chars per token estimate)
       const charBudget = maxTokens * 4;
       const lines: string[] = [];
       let totalChars = 0;
 
-      // resolve format: new `format` param takes priority, legacy `raw` maps to compact
-      const fmt = args.format ?? (args.raw ? "compact" : "xml");
-
-      for (const m of unique) {
+      for (const m of preCtx.memories) {
         let line: string;
         if (fmt === "compact") {
           line = `${m.key}: ${m.value}`;
@@ -820,7 +847,238 @@ server.tool(
       } else {
         context = `<agent-memories>\n${lines.join("\n")}\n</agent-memories>`;
       }
+      // PostMemoryInject: fire-and-forget
+      void hookRegistry.runHooks("PostMemoryInject", {
+        memoriesCount: lines.length,
+        format: fmt,
+        contextLength: context.length,
+        agentId: args.agent_id,
+        projectId: args.project_id,
+        sessionId: args.session_id,
+        timestamp: Date.now(),
+      });
+
       return { content: [{ type: "text" as const, text: context }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// Hook Management Tools
+// ============================================================================
+
+server.tool(
+  "hook_list",
+  "List all registered hooks in the in-memory registry (built-in + webhooks).",
+  { type: z.string().optional() },
+  async (args) => {
+    try {
+      const hooks = hookRegistry.list(args.type as Parameters<typeof hookRegistry.list>[0]);
+      const items = hooks.map((h) => ({
+        id: h.id,
+        type: h.type,
+        blocking: h.blocking,
+        priority: h.priority,
+        builtin: h.builtin ?? false,
+        agentId: h.agentId,
+        projectId: h.projectId,
+        description: h.description,
+      }));
+      return { content: [{ type: "text" as const, text: JSON.stringify(items, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "hook_stats",
+  "Get statistics about registered hooks: total, by type, blocking vs non-blocking.",
+  {},
+  async () => {
+    try {
+      const stats = hookRegistry.stats();
+      return { content: [{ type: "text" as const, text: JSON.stringify(stats, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "webhook_create",
+  "Create a persistent HTTP webhook hook. The URL will be POSTed with the hook context as JSON.",
+  {
+    type: z.enum([
+      "PreMemorySave", "PostMemorySave", "PreMemoryUpdate", "PostMemoryUpdate",
+      "PreMemoryDelete", "PostMemoryDelete", "PreEntityCreate", "PostEntityCreate",
+      "PreRelationCreate", "PostRelationCreate", "OnSessionStart", "OnSessionEnd",
+      "PreMemoryInject", "PostMemoryInject",
+    ]),
+    handler_url: z.string(),
+    priority: z.coerce.number().min(0).max(100).optional(),
+    blocking: z.boolean().optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    description: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const { reloadWebhooks } = await import("../lib/built-in-hooks.js");
+      const wh = createWebhookHook({
+        type: args.type,
+        handlerUrl: args.handler_url,
+        priority: args.priority,
+        blocking: args.blocking,
+        agentId: args.agent_id,
+        projectId: args.project_id,
+        description: args.description,
+      });
+      // Reload so the new webhook is immediately active
+      reloadWebhooks();
+      return { content: [{ type: "text" as const, text: JSON.stringify(wh, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "webhook_list",
+  "List all persisted webhook hooks.",
+  { type: z.string().optional(), enabled: z.boolean().optional() },
+  async (args) => {
+    try {
+      const webhooks = listWebhookHooks({
+        type: args.type as import("../types/hooks.js").HookType | undefined,
+        enabled: args.enabled,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(webhooks, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "webhook_delete",
+  "Delete a persisted webhook hook by ID.",
+  { id: z.string() },
+  async (args) => {
+    try {
+      const deleted = deleteWebhookHook(args.id);
+      if (!deleted) {
+        return { content: [{ type: "text" as const, text: `Webhook not found: ${args.id}` }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: `Deleted webhook ${args.id}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "webhook_update",
+  "Enable, disable, or update a persisted webhook hook.",
+  {
+    id: z.string(),
+    enabled: z.boolean().optional(),
+    priority: z.coerce.number().optional(),
+    description: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const updated = updateWebhookHook(args.id, {
+        enabled: args.enabled,
+        priority: args.priority,
+        description: args.description,
+      });
+      if (!updated) {
+        return { content: [{ type: "text" as const, text: `Webhook not found: ${args.id}` }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(updated, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// Synthesis Tools
+// ============================================================================
+
+server.tool(
+  "memory_synthesize",
+  "Run ALMA synthesis: analyze memory corpus, find redundancies, propose and apply consolidations.",
+  {
+    project_id: z.string().optional(),
+    agent_id: z.string().optional(),
+    dry_run: z.boolean().optional(),
+    max_proposals: z.coerce.number().optional(),
+    provider: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const result = await runSynthesis({
+        projectId: args.project_id,
+        agentId: args.agent_id,
+        dryRun: args.dry_run ?? false,
+        maxProposals: args.max_proposals,
+        provider: args.provider,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        run_id: result.run.id,
+        status: result.run.status,
+        corpus_size: result.run.corpus_size,
+        proposals_generated: result.run.proposals_generated,
+        proposals_accepted: result.run.proposals_accepted,
+        dry_run: result.dryRun,
+        metrics: result.metrics ? { corpus_reduction: result.metrics.corpusReduction, deduplication_rate: result.metrics.deduplicationRate } : null,
+      }, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_synthesis_status",
+  "Get the status of synthesis runs.",
+  { project_id: z.string().optional(), run_id: z.string().optional() },
+  async (args) => {
+    try {
+      const status = getSynthesisStatus(args.run_id, args.project_id);
+      return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_synthesis_history",
+  "List past synthesis runs.",
+  { project_id: z.string().optional(), limit: z.coerce.number().optional() },
+  async (args) => {
+    try {
+      const runs = listSynthesisRuns({ project_id: args.project_id, limit: args.limit ?? 20 });
+      return { content: [{ type: "text" as const, text: JSON.stringify(runs, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_synthesis_rollback",
+  "Roll back a synthesis run, reversing all applied proposals.",
+  { run_id: z.string() },
+  async (args) => {
+    try {
+      const result = await rollbackSynthesis(args.run_id);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -2503,10 +2761,78 @@ server.tool(
 );
 
 // ============================================================================
+// Session ingestion tools
+// ============================================================================
+
+server.tool(
+  "memory_ingest_session",
+  "Submit a session transcript for async memory extraction. Returns job_id to track progress.",
+  {
+    transcript: z.string(),
+    session_id: z.string(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    source: z.enum(["claude-code", "codex", "manual", "open-sessions"]).optional(),
+  },
+  async (args) => {
+    try {
+      const job = createSessionJob({
+        session_id: args.session_id,
+        transcript: args.transcript,
+        source: args.source ?? "manual",
+        agent_id: args.agent_id,
+        project_id: args.project_id,
+      });
+      enqueueSessionJob(job.id);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ job_id: job.id, status: "queued" }, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_session_status",
+  "Get the status of a session memory extraction job.",
+  { job_id: z.string() },
+  async (args) => {
+    try {
+      const job = getSessionJob(args.job_id);
+      if (!job) return { content: [{ type: "text" as const, text: `Job not found: ${args.job_id}` }], isError: true };
+      return { content: [{ type: "text" as const, text: JSON.stringify(job, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_session_list",
+  "List session memory extraction jobs.",
+  {
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    status: z.enum(["pending", "processing", "completed", "failed"]).optional(),
+    limit: z.coerce.number().optional(),
+  },
+  async (args) => {
+    try {
+      const jobs = listSessionJobs({ agent_id: args.agent_id, project_id: args.project_id, status: args.status, limit: args.limit ?? 20 });
+      return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
 // Start server
 // ============================================================================
 
 async function main(): Promise<void> {
+  // Load persisted webhooks into the in-memory registry
+  loadWebhooksFromDb();
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

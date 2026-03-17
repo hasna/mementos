@@ -310,6 +310,129 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_memories_recall_count ON memories(recall_count DESC);
   INSERT OR IGNORE INTO _migrations (id) VALUES (9);
   `,
+
+  // Migration 11: synthesis_events — analytics table for memory access patterns.
+  // Used by ALMA synthesizer to understand which memories are useful vs stale.
+  `
+  CREATE TABLE IF NOT EXISTS synthesis_events (
+    id TEXT PRIMARY KEY,
+    event_type TEXT NOT NULL CHECK(event_type IN ('recalled','searched','saved','updated','deleted','injected')),
+    memory_id TEXT,
+    agent_id TEXT,
+    project_id TEXT,
+    session_id TEXT,
+    query TEXT,
+    importance_at_time INTEGER,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_synthesis_events_memory ON synthesis_events(memory_id);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_events_project ON synthesis_events(project_id);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_events_type ON synthesis_events(event_type);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_events_created ON synthesis_events(created_at);
+  INSERT OR IGNORE INTO _migrations (id) VALUES (11);
+  `,
+
+  // Migration 12: synthesis_proposals, synthesis_history, synthesis_metrics.
+  // The full ALMA meta-agent persistence layer.
+  `
+  CREATE TABLE IF NOT EXISTS synthesis_runs (
+    id TEXT PRIMARY KEY,
+    triggered_by TEXT NOT NULL DEFAULT 'manual' CHECK(triggered_by IN ('scheduler','manual','threshold','hook')),
+    project_id TEXT,
+    agent_id TEXT,
+    corpus_size INTEGER NOT NULL DEFAULT 0,
+    proposals_generated INTEGER NOT NULL DEFAULT 0,
+    proposals_accepted INTEGER NOT NULL DEFAULT 0,
+    proposals_rejected INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed','rolled_back')),
+    error TEXT,
+    started_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_synthesis_runs_project ON synthesis_runs(project_id);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_runs_status ON synthesis_runs(status);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_runs_started ON synthesis_runs(started_at);
+
+  CREATE TABLE IF NOT EXISTS synthesis_proposals (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES synthesis_runs(id) ON DELETE CASCADE,
+    proposal_type TEXT NOT NULL CHECK(proposal_type IN ('merge','archive','promote','update_value','add_tag','remove_duplicate')),
+    memory_ids TEXT NOT NULL DEFAULT '[]',
+    target_memory_id TEXT,
+    proposed_changes TEXT NOT NULL DEFAULT '{}',
+    reasoning TEXT,
+    confidence REAL NOT NULL DEFAULT 0.5,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','accepted','rejected','rolled_back')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    executed_at TEXT,
+    rollback_data TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_synthesis_proposals_run ON synthesis_proposals(run_id);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_proposals_status ON synthesis_proposals(status);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_proposals_type ON synthesis_proposals(proposal_type);
+
+  CREATE TABLE IF NOT EXISTS synthesis_metrics (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES synthesis_runs(id) ON DELETE CASCADE,
+    metric_type TEXT NOT NULL,
+    value REAL NOT NULL,
+    baseline REAL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_synthesis_metrics_run ON synthesis_metrics(run_id);
+  CREATE INDEX IF NOT EXISTS idx_synthesis_metrics_type ON synthesis_metrics(metric_type);
+
+  INSERT OR IGNORE INTO _migrations (id) VALUES (12);
+  `,
+
+  // Migration 10: webhook_hooks — persist HTTP-based hook registrations across restarts.
+  // Loaded at server/MCP startup and registered in the in-memory HookRegistry.
+  `
+  CREATE TABLE IF NOT EXISTS webhook_hooks (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    handler_url TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 50,
+    blocking INTEGER NOT NULL DEFAULT 0,
+    agent_id TEXT,
+    project_id TEXT,
+    description TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    invocation_count INTEGER NOT NULL DEFAULT 0,
+    failure_count INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX IF NOT EXISTS idx_webhook_hooks_type ON webhook_hooks(type);
+  CREATE INDEX IF NOT EXISTS idx_webhook_hooks_enabled ON webhook_hooks(enabled);
+  INSERT OR IGNORE INTO _migrations (id) VALUES (10);
+  `,
+
+  // Migration 13: session_memory_jobs — async queue for session transcript ingestion.
+  // When a session ends, post the transcript here. Background processor extracts memories.
+  `
+CREATE TABLE IF NOT EXISTS session_memory_jobs (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  agent_id TEXT,
+  project_id TEXT,
+  source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('claude-code','codex','manual','open-sessions')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','processing','completed','failed')),
+  transcript TEXT NOT NULL,
+  chunk_count INTEGER NOT NULL DEFAULT 0,
+  memories_extracted INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  started_at TEXT,
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_session_memory_jobs_status ON session_memory_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_session_memory_jobs_agent ON session_memory_jobs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_session_memory_jobs_project ON session_memory_jobs(project_id);
+CREATE INDEX IF NOT EXISTS idx_session_memory_jobs_session ON session_memory_jobs(session_id);
+INSERT OR IGNORE INTO _migrations (id) VALUES (13);
+`,
 ];
 
 // ============================================================================

@@ -13,6 +13,7 @@ import {
 } from "../types/index.js";
 import { getDatabase, now, uuid } from "./database.js";
 import { redactSecrets } from "../lib/redact.js";
+import { hookRegistry } from "../lib/hooks.js";
 // Entity extraction is now handled by the LLM auto-memory pipeline (src/lib/auto-memory.ts).
 // The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
 // Keeping this comment so the migration intent is clear.
@@ -187,12 +188,18 @@ export function createMemory(
 
   const memory = getMemory(id, d)!;
 
-  // Auto-extract entities (non-blocking)
-  try {
-    runEntityExtraction(memory, input.project_id, d);
-  } catch {
-    // Don't block save if extraction fails
-  }
+  // Run entity extraction no-op (replaced by async LLM pipeline)
+  runEntityExtraction(memory, input.project_id, d);
+
+  // Fire PostMemorySave hook (non-blocking — never delays the caller)
+  void hookRegistry.runHooks("PostMemorySave", {
+    memory,
+    wasUpdated: false,
+    agentId: input.agent_id,
+    projectId: input.project_id,
+    sessionId: input.session_id,
+    timestamp: Date.now(),
+  });
 
   return memory;
 }
@@ -494,19 +501,27 @@ export function updateMemory(
 
   const updated = getMemory(id, d)!;
 
-  // Re-extract entities if value changed
-  try {
-    if (input.value !== undefined) {
-      // Remove old entity links
+  // Remove stale entity links if value changed (LLM pipeline re-links async)
+  if (input.value !== undefined) {
+    try {
       const oldLinks = getEntityMemoryLinks(undefined, updated.id, d);
       for (const link of oldLinks) {
         unlinkEntityFromMemory(link.entity_id, updated.id, d);
       }
-      runEntityExtraction(updated, existing.project_id || undefined, d);
+    } catch {
+      // Non-fatal
     }
-  } catch {
-    // Don't block update if extraction fails
   }
+
+  // Fire PostMemoryUpdate hook (non-blocking)
+  void hookRegistry.runHooks("PostMemoryUpdate", {
+    memory: updated,
+    previousValue: existing.value,
+    agentId: existing.agent_id ?? undefined,
+    projectId: existing.project_id ?? undefined,
+    sessionId: existing.session_id ?? undefined,
+    timestamp: Date.now(),
+  });
 
   return updated;
 }
@@ -517,7 +532,14 @@ export function updateMemory(
 
 export function deleteMemory(id: string, db?: Database): boolean {
   const d = db || getDatabase();
+  // Fire PostMemoryDelete hook (non-blocking)
   const result = d.run("DELETE FROM memories WHERE id = ?", [id]);
+  if (result.changes > 0) {
+    void hookRegistry.runHooks("PostMemoryDelete", {
+      memoryId: id,
+      timestamp: Date.now(),
+    });
+  }
   return result.changes > 0;
 }
 

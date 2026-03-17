@@ -7,6 +7,7 @@ import type {
   EntityType,
 } from "../types/index.js";
 import { EntityNotFoundError } from "../types/index.js";
+import { hookRegistry } from "../lib/hooks.js";
 
 // ============================================================================
 // Helpers
@@ -82,6 +83,14 @@ export function createEntity(input: CreateEntityInput, db?: Database): Entity {
       timestamp,
     ]
   );
+
+  void hookRegistry.runHooks("PostEntityCreate", {
+    entityId: id,
+    name: input.name,
+    entityType: input.type,
+    projectId: input.project_id,
+    timestamp: Date.now(),
+  });
 
   return getEntity(id, d);
 }

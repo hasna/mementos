@@ -717,6 +717,157 @@ export class MementosClient {
   ): Promise<{ provider: string; model: string; extracted: SdkExtractedMemory[]; count: number; note: string }> {
     return this.post("/api/auto-memory/test", { turn, ...options });
   }
+
+  // ─── Hook management ─────────────────────────────────────────────────────────
+
+  /** List in-memory registered hooks (built-in + webhooks). */
+  listHooks(type?: string): Promise<SdkHook[]> {
+    const params = type ? `?type=${encodeURIComponent(type)}` : "";
+    return this.get(`/api/hooks${params}`);
+  }
+
+  /** Get hook registry statistics. */
+  getHookStats(): Promise<{ total: number; byType: Record<string, number>; blocking: number; nonBlocking: number }> {
+    return this.get("/api/hooks/stats");
+  }
+
+  /** List persisted webhook hooks. */
+  listWebhooks(filter?: { type?: string; enabled?: boolean }): Promise<SdkWebhook[]> {
+    const params = new URLSearchParams();
+    if (filter?.type) params.set("type", filter.type);
+    if (filter?.enabled !== undefined) params.set("enabled", String(filter.enabled));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.get(`/api/webhooks${qs}`);
+  }
+
+  /** Create a persistent webhook hook. */
+  createWebhook(input: {
+    type: string;
+    handler_url: string;
+    priority?: number;
+    blocking?: boolean;
+    agent_id?: string;
+    project_id?: string;
+    description?: string;
+  }): Promise<SdkWebhook> {
+    return this.post("/api/webhooks", input as Record<string, unknown>);
+  }
+
+  /** Get a webhook by ID. */
+  getWebhook(id: string): Promise<SdkWebhook> {
+    return this.get(`/api/webhooks/${id}`);
+  }
+
+  /** Update a webhook (enable/disable, priority, description). */
+  updateWebhook(
+    id: string,
+    updates: { enabled?: boolean; priority?: number; description?: string }
+  ): Promise<SdkWebhook> {
+    return this.request("PATCH", `/api/webhooks/${id}`, updates as Record<string, unknown>);
+  }
+
+  /** Delete a webhook by ID. */
+  deleteWebhook(id: string): Promise<void> {
+    return this.request("DELETE", `/api/webhooks/${id}`);
+  }
+
+  /** Enable a webhook. */
+  enableWebhook(id: string): Promise<SdkWebhook> {
+    return this.updateWebhook(id, { enabled: true });
+  }
+
+  /** Disable a webhook without deleting it. */
+  disableWebhook(id: string): Promise<SdkWebhook> {
+    return this.updateWebhook(id, { enabled: false });
+  }
+
+  // ─── Synthesis ────────────────────────────────────────────────────────────────
+
+  /** Run ALMA synthesis on the memory corpus. */
+  runSynthesis(options?: {
+    project_id?: string;
+    agent_id?: string;
+    dry_run?: boolean;
+    max_proposals?: number;
+    provider?: string;
+  }): Promise<SynthesisResult> {
+    return this.post("/api/synthesis/run", (options ?? {}) as Record<string, unknown>);
+  }
+
+  /** List synthesis run history. */
+  listSynthesisRuns(filter?: { project_id?: string; limit?: number }): Promise<{ runs: SynthesisRun[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filter?.project_id) params.set("project_id", filter.project_id);
+    if (filter?.limit) params.set("limit", String(filter.limit));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.get(`/api/synthesis/runs${qs}`);
+  }
+
+  /** Get synthesis status. */
+  getSynthesisStatus(options?: { project_id?: string; run_id?: string }): Promise<{ lastRun: SynthesisRun | null; recentRuns: SynthesisRun[] }> {
+    const params = new URLSearchParams();
+    if (options?.project_id) params.set("project_id", options.project_id);
+    if (options?.run_id) params.set("run_id", options.run_id);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.get(`/api/synthesis/status${qs}`);
+  }
+
+  /** Roll back a synthesis run. */
+  rollbackSynthesis(runId: string): Promise<{ rolled_back: number; errors: string[] }> {
+    return this.post(`/api/synthesis/rollback/${runId}`, {});
+  }
+
+  // ─── Session ingestion ────────────────────────────────────────────────────────
+
+  /** Submit a session transcript for async memory extraction. */
+  ingestSession(input: {
+    transcript: string;
+    session_id: string;
+    agent_id?: string;
+    project_id?: string;
+    source?: "claude-code" | "codex" | "manual" | "open-sessions";
+    metadata?: Record<string, unknown>;
+  }): Promise<{ job_id: string; status: string; message: string }> {
+    return this.post("/api/sessions/ingest", input as Record<string, unknown>);
+  }
+
+  /** Get the status of a session extraction job. */
+  getSessionJob(jobId: string): Promise<SessionMemoryJob> {
+    return this.get(`/api/sessions/jobs/${jobId}`);
+  }
+
+  /** List session extraction jobs. */
+  listSessionJobs(filter?: { agent_id?: string; project_id?: string; status?: string; limit?: number }): Promise<{ jobs: SessionMemoryJob[]; count: number }> {
+    const params = new URLSearchParams();
+    if (filter?.agent_id) params.set("agent_id", filter.agent_id);
+    if (filter?.project_id) params.set("project_id", filter.project_id);
+    if (filter?.status) params.set("status", filter.status);
+    if (filter?.limit) params.set("limit", String(filter.limit));
+    const qs = params.toString() ? `?${params.toString()}` : "";
+    return this.get(`/api/sessions/jobs${qs}`);
+  }
+
+  /** Get session queue statistics. */
+  getSessionQueueStats(): Promise<{ pending: number; processing: number; completed: number; failed: number }> {
+    return this.get("/api/sessions/queue/stats");
+  }
+}
+
+export interface SessionMemoryJob {
+  id: string;
+  session_id: string;
+  agent_id: string | null;
+  project_id: string | null;
+  source: string;
+  status: "pending" | "processing" | "completed" | "failed";
+  transcript: string;
+  chunk_count: number;
+  memories_extracted: number;
+  error: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
 }
 
 // ─── Auto-memory types (exported for SDK consumers) ───────────────────────────
@@ -745,6 +896,55 @@ export interface SdkExtractedMemory {
   tags: string[];
   suggestedScope: "private" | "shared" | "global";
   reasoning?: string;
+}
+
+export interface SdkHook {
+  id: string;
+  type: string;
+  blocking: boolean;
+  priority: number;
+  builtin: boolean;
+  agentId?: string;
+  projectId?: string;
+  description?: string;
+}
+
+export interface SdkWebhook {
+  id: string;
+  type: string;
+  handlerUrl: string;
+  priority: number;
+  blocking: boolean;
+  agentId?: string;
+  projectId?: string;
+  description?: string;
+  enabled: boolean;
+  createdAt: string;
+  invocationCount: number;
+  failureCount: number;
+}
+
+export interface SynthesisRun {
+  id: string;
+  triggered_by: string;
+  project_id: string | null;
+  agent_id: string | null;
+  corpus_size: number;
+  proposals_generated: number;
+  proposals_accepted: number;
+  proposals_rejected: number;
+  status: "pending" | "running" | "completed" | "failed" | "rolled_back";
+  error: string | null;
+  started_at: string;
+  completed_at: string | null;
+}
+
+export interface SynthesisResult {
+  run: SynthesisRun;
+  proposals: unknown[];
+  executed: number;
+  metrics: { corpusReduction: number; deduplicationRate: number } | null;
+  dryRun: boolean;
 }
 
 export default MementosClient;

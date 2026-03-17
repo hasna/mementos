@@ -11,6 +11,7 @@
  */
 
 import { getAgent, updateAgent } from "../db/agents.js";
+import { hookRegistry } from "./hooks.js";
 
 // In-memory session focus: agent_id → project_id | null
 const sessionFocus = new Map<string, string | null>();
@@ -20,9 +21,31 @@ const sessionFocus = new Map<string, string | null>();
  * Pass project_id=null to unfocus.
  */
 export function setFocus(agentId: string, projectId: string | null): void {
+  const previous = getFocusCached(agentId);
   sessionFocus.set(agentId, projectId);
   // Persist to DB for durability across sessions
   updateAgent(agentId, { active_project_id: projectId });
+
+  if (projectId && projectId !== previous) {
+    // Focusing on a new project = session start
+    void hookRegistry.runHooks("OnSessionStart", {
+      agentId,
+      projectId,
+      timestamp: Date.now(),
+    });
+  } else if (!projectId && previous) {
+    // Clearing focus = session end
+    void hookRegistry.runHooks("OnSessionEnd", {
+      agentId,
+      projectId: previous,
+      timestamp: Date.now(),
+    });
+  }
+}
+
+/** Internal: get cached focus without DB fallback */
+function getFocusCached(agentId: string): string | null {
+  return sessionFocus.get(agentId) ?? null;
 }
 
 /**

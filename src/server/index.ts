@@ -48,6 +48,20 @@ import {
   configureAutoMemory,
 } from "../lib/auto-memory.js";
 import { providerRegistry } from "../lib/providers/registry.js";
+import { hookRegistry } from "../lib/hooks.js";
+import { loadWebhooksFromDb, reloadWebhooks } from "../lib/built-in-hooks.js";
+import { runSynthesis, rollbackSynthesis, getSynthesisStatus } from "../lib/synthesis/index.js";
+import { listSynthesisRuns } from "../db/synthesis.js";
+import { createSessionJob, getSessionJob, listSessionJobs } from "../db/session-jobs.js";
+import { enqueueSessionJob, getSessionQueueStats, startSessionQueueWorker } from "../lib/session-queue.js";
+import { autoResolveAgentProject } from "../lib/session-auto-resolve.js";
+import {
+  createWebhookHook,
+  listWebhookHooks,
+  getWebhookHook,
+  updateWebhookHook,
+  deleteWebhookHook,
+} from "../db/webhook_hooks.js";
 import type {
   Memory,
   MemoryCategory,
@@ -1367,7 +1381,182 @@ addRoute("POST", "/api/auto-memory/test", async (req) => {
   });
 });
 
+// ============================================================================
+// Hook / Webhook Routes
+// ============================================================================
+
+// GET /api/hooks — list in-memory registered hooks
+addRoute("GET", "/api/hooks", (_req, url) => {
+  const type = url.searchParams.get("type") ?? undefined;
+  const hooks = hookRegistry.list(type as Parameters<typeof hookRegistry.list>[0]);
+  return json(hooks.map((h) => ({
+    id: h.id,
+    type: h.type,
+    blocking: h.blocking,
+    priority: h.priority,
+    builtin: h.builtin ?? false,
+    agentId: h.agentId,
+    projectId: h.projectId,
+    description: h.description,
+  })));
+});
+
+// GET /api/hooks/stats — hook registry stats
+addRoute("GET", "/api/hooks/stats", () => json(hookRegistry.stats()));
+
+// GET /api/webhooks — list persisted webhook hooks
+addRoute("GET", "/api/webhooks", (_req, url) => {
+  const type = url.searchParams.get("type") ?? undefined;
+  const enabledParam = url.searchParams.get("enabled");
+  const enabled = enabledParam !== null ? enabledParam === "true" : undefined;
+  return json(listWebhookHooks({
+    type: type as import("../types/hooks.js").HookType | undefined,
+    enabled,
+  }));
+});
+
+// POST /api/webhooks — create a webhook
+addRoute("POST", "/api/webhooks", async (req) => {
+  const body = ((await readJson(req)) ?? {}) as Record<string, unknown>;
+  if (!body.type || !body.handler_url) {
+    return errorResponse("type and handler_url are required", 400);
+  }
+  const wh = createWebhookHook({
+    type: body.type as import("../types/hooks.js").HookType,
+    handlerUrl: body.handler_url as string,
+    priority: body.priority as number | undefined,
+    blocking: body.blocking as boolean | undefined,
+    agentId: body.agent_id as string | undefined,
+    projectId: body.project_id as string | undefined,
+    description: body.description as string | undefined,
+  });
+  reloadWebhooks();
+  return json(wh, 201);
+});
+
+// GET /api/webhooks/:id — get a webhook
+addRoute("GET", "/api/webhooks/:id", (_req, _url, params) => {
+  const wh = getWebhookHook(params["id"]!);
+  if (!wh) return errorResponse("Webhook not found", 404);
+  return json(wh);
+});
+
+// PATCH /api/webhooks/:id — update a webhook
+addRoute("PATCH", "/api/webhooks/:id", async (req, _url, params) => {
+  const body = ((await readJson(req)) ?? {}) as Record<string, unknown>;
+  const updated = updateWebhookHook(params["id"]!, {
+    enabled: body.enabled as boolean | undefined,
+    priority: body.priority as number | undefined,
+    description: body.description as string | undefined,
+  });
+  if (!updated) return errorResponse("Webhook not found", 404);
+  reloadWebhooks();
+  return json(updated);
+});
+
+// DELETE /api/webhooks/:id — delete a webhook
+addRoute("DELETE", "/api/webhooks/:id", (_req, _url, params) => {
+  const deleted = deleteWebhookHook(params["id"]!);
+  if (!deleted) return errorResponse("Webhook not found", 404);
+  return new Response(null, { status: 204 });
+});
+
+// ============================================================================
+// Synthesis Routes
+// ============================================================================
+
+// POST /api/synthesis/run — trigger a synthesis run
+addRoute("POST", "/api/synthesis/run", async (req) => {
+  const body = ((await readJson(req)) ?? {}) as Record<string, unknown>;
+  const result = await runSynthesis({
+    projectId: body.project_id as string | undefined,
+    agentId: body.agent_id as string | undefined,
+    dryRun: body.dry_run as boolean | undefined,
+    maxProposals: body.max_proposals as number | undefined,
+    provider: body.provider as string | undefined,
+  });
+  return json(result, result.dryRun ? 200 : 201);
+});
+
+// GET /api/synthesis/runs — list synthesis runs
+addRoute("GET", "/api/synthesis/runs", (_req, url) => {
+  const projectId = url.searchParams.get("project_id") ?? undefined;
+  const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 20;
+  const runs = listSynthesisRuns({ project_id: projectId, limit });
+  return json({ runs, count: runs.length });
+});
+
+// GET /api/synthesis/status — current synthesis status
+addRoute("GET", "/api/synthesis/status", (_req, url) => {
+  const projectId = url.searchParams.get("project_id") ?? undefined;
+  const runId = url.searchParams.get("run_id") ?? undefined;
+  return json(getSynthesisStatus(runId, projectId));
+});
+
+// POST /api/synthesis/rollback/:run_id — roll back a run
+addRoute("POST", "/api/synthesis/rollback/:run_id", async (_req, _url, params) => {
+  const result = await rollbackSynthesis(params["run_id"]!);
+  return json(result);
+});
+
+// ============================================================================
+// Session ingestion endpoints
+// ============================================================================
+
+// POST /api/sessions/ingest — submit a session transcript for async memory extraction
+addRoute("POST", "/api/sessions/ingest", async (req) => {
+  const body = ((await readJson(req)) ?? {}) as Record<string, unknown>;
+  const { transcript, session_id, agent_id, project_id, source, metadata } = body;
+  if (!transcript || typeof transcript !== "string") return errorResponse("transcript is required", 400);
+  if (!session_id || typeof session_id !== "string") return errorResponse("session_id is required", 400);
+
+  // Auto-resolve if no agent/project provided
+  let resolvedAgentId = agent_id as string | undefined;
+  let resolvedProjectId = project_id as string | undefined;
+  if (!resolvedAgentId || !resolvedProjectId) {
+    const resolved = autoResolveAgentProject((metadata ?? {}) as Record<string, string>);
+    if (!resolvedAgentId && resolved.agentId) resolvedAgentId = resolved.agentId;
+    if (!resolvedProjectId && resolved.projectId) resolvedProjectId = resolved.projectId;
+  }
+
+  const job = createSessionJob({
+    session_id: session_id as string,
+    transcript: transcript as string,
+    source: (source as "claude-code" | "codex" | "manual" | "open-sessions") ?? "manual",
+    agent_id: resolvedAgentId,
+    project_id: resolvedProjectId,
+    metadata: (metadata as Record<string, unknown>) ?? {},
+  });
+  enqueueSessionJob(job.id);
+  return json({ job_id: job.id, status: "queued", message: "Session queued for memory extraction" }, 202);
+});
+
+// GET /api/sessions/jobs — list session jobs
+addRoute("GET", "/api/sessions/jobs", (_req, url) => {
+  const agentId = url.searchParams.get("agent_id") ?? undefined;
+  const projectId = url.searchParams.get("project_id") ?? undefined;
+  const status = url.searchParams.get("status") ?? undefined;
+  const limit = url.searchParams.get("limit") ? parseInt(url.searchParams.get("limit")!) : 20;
+  const jobs = listSessionJobs({ agent_id: agentId, project_id: projectId, status: status as "pending" | "processing" | "completed" | "failed" | undefined, limit });
+  return json({ jobs, count: jobs.length });
+});
+
+// GET /api/sessions/jobs/:id — get a specific job
+addRoute("GET", "/api/sessions/jobs/:id", (_req, _url, params) => {
+  const job = getSessionJob(params["id"]!);
+  if (!job) return errorResponse("Session job not found", 404);
+  return json(job);
+});
+
+// GET /api/sessions/queue/stats — queue statistics
+addRoute("GET", "/api/sessions/queue/stats", () => json(getSessionQueueStats()));
+
 export function startServer(port: number): void {
+  // Load persisted webhooks into the in-memory hook registry
+  loadWebhooksFromDb();
+  // Start the session memory job background worker
+  startSessionQueueWorker();
+
   const hostname = process.env["MEMENTOS_HOST"] ?? "127.0.0.1";
   Bun.serve({
     port,
