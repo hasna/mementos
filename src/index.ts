@@ -94,6 +94,16 @@ export {
 } from "./db/locks.js";
 export type { ResourceLock, ResourceType, LockType } from "./db/locks.js";
 
+// Memory locking (concurrent write coordination)
+export {
+  acquireMemoryWriteLock,
+  releaseMemoryWriteLock,
+  checkMemoryWriteLock,
+  withMemoryLock,
+  MemoryLockConflictError,
+  memoryLockId,
+} from "./lib/memory-lock.js";
+
 // Projects
 export {
   registerProject,
