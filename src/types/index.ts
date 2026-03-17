@@ -138,17 +138,33 @@ export interface Agent {
 }
 
 export class AgentConflictError extends Error {
-  constructor(
-    public readonly agentName: string,
-    public readonly existingSessionId: string,
-    public readonly lastSeenAt: string
-  ) {
-    super(
-      `Agent "${agentName}" is already active (session ${existingSessionId}, last seen ${lastSeenAt}). ` +
-      `Wait 30 minutes or use a different name.`
-    );
+  public readonly conflict = true as const;
+  public readonly existing_id: string;
+  public readonly existing_name: string;
+  public readonly last_seen_at: string;
+  public readonly session_hint: string | null;
+  public readonly working_dir: string | null;
+
+  constructor(opts: {
+    existing_id: string;
+    existing_name: string;
+    last_seen_at: string;
+    session_hint: string | null;
+    working_dir?: string | null;
+  }) {
+    const msg = `Agent "${opts.existing_name}" is already active (session hint: ${opts.session_hint ?? "unknown"}, last seen ${opts.last_seen_at}). Wait 30 minutes or use a different name.`;
+    super(msg);
     this.name = "AgentConflictError";
+    this.existing_id = opts.existing_id;
+    this.existing_name = opts.existing_name;
+    this.last_seen_at = opts.last_seen_at;
+    this.session_hint = opts.session_hint;
+    this.working_dir = opts.working_dir ?? null;
   }
+}
+
+export function isAgentConflict(result: unknown): result is AgentConflictError {
+  return (result as AgentConflictError)?.conflict === true;
 }
 
 // ============================================================================

@@ -44,7 +44,13 @@ export function registerAgent(
       const lastSeenMs = new Date(existingLastSeen).getTime();
       const nowMs = Date.now();
       if (nowMs - lastSeenMs < CONFLICT_WINDOW_MS) {
-        throw new AgentConflictError(normalizedName, existingSessionId, existingLastSeen);
+        throw new AgentConflictError({
+          existing_id: existingId,
+          existing_name: normalizedName,
+          last_seen_at: existingLastSeen,
+          session_hint: existingSessionId.slice(0, 8),
+          working_dir: null,
+        });
       }
     }
 

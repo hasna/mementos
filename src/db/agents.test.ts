@@ -75,10 +75,20 @@ describe("registerAgent", () => {
   });
 
   test("different session_id within 30 min throws AgentConflictError", () => {
-    registerAgent("conflict-agent", "session-A");
-    expect(() => {
+    const first = registerAgent("conflict-agent", "session-A");
+    try {
       registerAgent("conflict-agent", "session-B");
-    }).toThrow("conflict-agent");
+      throw new Error("should have thrown");
+    } catch (e: unknown) {
+      const err = e as import("../types/index.js").AgentConflictError;
+      expect(err.conflict).toBe(true);
+      expect(err.existing_id).toBe(first.id);
+      expect(err.existing_name).toBe("conflict-agent");
+      expect(err.session_hint).toBe("session-");
+      expect(err.last_seen_at).toBeTruthy();
+      expect(err.working_dir).toBeNull();
+      expect(err.message).toContain("conflict-agent");
+    }
   });
 
   test("no session_id does not conflict", () => {
