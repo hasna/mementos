@@ -104,6 +104,16 @@ export {
   memoryLockId,
 } from "./lib/memory-lock.js";
 
+// Focus mode (agent project scoping)
+export {
+  setFocus,
+  getFocus,
+  unfocus,
+  resolveProjectId,
+  buildFocusFilter,
+  focusFilterSQL,
+} from "./lib/focus.js";
+
 // Projects
 export {
   registerProject,

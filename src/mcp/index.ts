@@ -15,6 +15,7 @@ import {
   getMemoryVersions,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../db/agents.js";
+import { setFocus, getFocus, unfocus, resolveProjectId } from "../lib/focus.js";
 import {
   acquireMemoryWriteLock,
   releaseMemoryWriteLock,
@@ -151,6 +152,11 @@ server.tool(
       if (args.ttl_ms !== undefined) {
         input.ttl_ms = parseDuration(args.ttl_ms);
       }
+      // Focus mode: auto-set project_id from agent focus if not provided
+      if (!input.project_id && input.agent_id) {
+        const focusedProject = resolveProjectId(input.agent_id as string, null);
+        if (focusedProject) input.project_id = focusedProject;
+      }
       const memory = createMemory(input as unknown as CreateMemoryInput);
       if (args.agent_id) touchAgent(args.agent_id);
       return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
@@ -173,7 +179,12 @@ server.tool(
   async (args) => {
     try {
       ensureAutoProject();
-      const memory = getMemoryByKey(args.key, args.scope, args.agent_id, args.project_id, args.session_id);
+      // Focus mode: auto-scope if agent is focused and no explicit scope/project_id
+      let effectiveProjectId = args.project_id;
+      if (!args.scope && !args.project_id && args.agent_id) {
+        effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
+      }
+      const memory = getMemoryByKey(args.key, args.scope, args.agent_id, effectiveProjectId, args.session_id);
       if (memory) {
         touchMemory(memory.id);
         if (args.agent_id) touchAgent(args.agent_id);
@@ -184,7 +195,7 @@ server.tool(
       const results = searchMemories(args.key, {
         scope: args.scope,
         agent_id: args.agent_id,
-        project_id: args.project_id,
+        project_id: effectiveProjectId,
         session_id: args.session_id,
         limit: 1,
       });
@@ -280,9 +291,15 @@ server.tool(
   async (args) => {
     try {
       const { full, fields, ...filterArgs } = args;
+      // Focus mode: if agent is focused and no explicit scope/project_id, auto-scope
+      let resolvedFilter = { ...filterArgs };
+      if (!resolvedFilter.scope && !resolvedFilter.project_id && resolvedFilter.agent_id) {
+        const focusedProject = resolveProjectId(resolvedFilter.agent_id, null);
+        if (focusedProject) resolvedFilter.project_id = focusedProject;
+      }
       const filter: MemoryFilter = {
-        ...filterArgs,
-        limit: filterArgs.limit || 10,
+        ...resolvedFilter,
+        limit: resolvedFilter.limit || 10,
       };
       const memories = listMemories(filter);
       if (memories.length === 0) {
@@ -479,12 +496,17 @@ server.tool(
   },
   async (args) => {
     try {
+      // Focus mode: auto-scope if agent is focused and no explicit scope/project_id
+      let effectiveProjectId = args.project_id;
+      if (!args.scope && !args.project_id && args.agent_id) {
+        effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
+      }
       const filter: MemoryFilter = {
         scope: args.scope,
         category: args.category,
         tags: args.tags,
         agent_id: args.agent_id,
-        project_id: args.project_id,
+        project_id: effectiveProjectId,
         session_id: args.session_id,
         search: args.query,
         limit: args.limit || 20,
@@ -2265,6 +2287,72 @@ server.tool(
   async () => {
     const count = cleanExpiredLocks();
     return { content: [{ type: "text" as const, text: `Cleaned ${count} expired lock(s).` }] };
+  }
+);
+
+// ============================================================================
+// Focus mode tools (OPE4-00113)
+// ============================================================================
+
+server.tool(
+  "set_focus",
+  "Set focus for an agent on a project. Memory ops will auto-scope to that project's shared + agent private + global memories.",
+  {
+    agent_id: z.string(),
+    project_id: z.string().nullable().optional(),
+  },
+  async (args) => {
+    try {
+      const projectId = args.project_id ?? null;
+      setFocus(args.agent_id, projectId);
+      return {
+        content: [{
+          type: "text" as const,
+          text: projectId
+            ? `Focus set: agent ${args.agent_id} is now focused on project ${projectId}. Memory ops will auto-scope.`
+            : `Focus cleared for agent ${args.agent_id}.`,
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "get_focus",
+  "Get the current focus project for an agent.",
+  { agent_id: z.string() },
+  async (args) => {
+    try {
+      const projectId = getFocus(args.agent_id);
+      return {
+        content: [{
+          type: "text" as const,
+          text: projectId
+            ? `Agent ${args.agent_id} is focused on project: ${projectId}`
+            : `Agent ${args.agent_id} has no active focus.`,
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "unfocus",
+  "Remove focus for an agent (clears project scoping).",
+  { agent_id: z.string() },
+  async (args) => {
+    try {
+      unfocus(args.agent_id);
+      return {
+        content: [{ type: "text" as const, text: `Focus cleared for agent ${args.agent_id}. Memory ops will no longer auto-scope.` }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
   }
 );
 
