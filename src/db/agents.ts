@@ -24,6 +24,7 @@ export function registerAgent(
   sessionId?: string,
   description?: string,
   role?: string,
+  projectId?: string,
   db?: Database
 ): Agent {
   const d = db || getDatabase();
@@ -66,13 +67,17 @@ export function registerAgent(
     if (role) {
       d.run("UPDATE agents SET role = ? WHERE id = ?", [role, existingId]);
     }
+    // Lock agent to project if provided
+    if (projectId !== undefined) {
+      d.run("UPDATE agents SET active_project_id = ? WHERE id = ?", [projectId, existingId]);
+    }
     return getAgent(existingId, d)!;
   }
 
   const id = shortUuid();
   d.run(
-    "INSERT INTO agents (id, name, session_id, description, role, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [id, normalizedName, sessionId ?? null, description || null, role || "agent", timestamp, timestamp]
+    "INSERT INTO agents (id, name, session_id, description, role, active_project_id, created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    [id, normalizedName, sessionId ?? null, description || null, role || "agent", projectId ?? null, timestamp, timestamp]
   );
 
   return getAgent(id, d)!;

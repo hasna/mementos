@@ -811,10 +811,11 @@ server.tool(
     session_id: z.string().optional(),
     description: z.string().optional(),
     role: z.string().optional(),
+    project_id: z.string().optional(),
   },
   async (args) => {
     try {
-      const agent = registerAgent(args.name, args.session_id, args.description, args.role);
+      const agent = registerAgent(args.name, args.session_id, args.description, args.role, args.project_id);
       return {
         content: [{
           type: "text" as const,

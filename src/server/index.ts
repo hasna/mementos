@@ -731,7 +731,8 @@ addRoute("POST", "/api/agents", async (req) => {
     body["name"] as string,
     body["session_id"] as string | undefined,
     body["description"] as string | undefined,
-    body["role"] as string | undefined
+    body["role"] as string | undefined,
+    body["project_id"] as string | undefined
   );
   return json(agent, 201);
 });
