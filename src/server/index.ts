@@ -18,6 +18,16 @@ import {
   getMemoryVersions,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../db/agents.js";
+import {
+  acquireLock,
+  releaseLock,
+  releaseAllAgentLocks,
+  checkLock,
+  listAgentLocks,
+  cleanExpiredLocks,
+  type ResourceType,
+  type LockType,
+} from "../db/locks.js";
 import { registerProject, listProjects, getProject } from "../db/projects.js";
 import { getActiveProfile, listProfiles, getDbPath } from "../lib/config.js";
 import { getDatabase } from "../db/database.js";
@@ -771,17 +781,6 @@ addRoute("PATCH", "/api/agents/:id", async (req, _url, params) => {
 // ============================================================================
 // Resource lock endpoints
 // ============================================================================
-
-import {
-  acquireLock,
-  releaseLock,
-  releaseAllAgentLocks,
-  checkLock,
-  listAgentLocks,
-  cleanExpiredLocks,
-  type ResourceType,
-  type LockType,
-} from "../db/locks.js";
 
 // POST /api/locks — acquire a lock
 addRoute("POST", "/api/locks", async (req) => {

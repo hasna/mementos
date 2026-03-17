@@ -16,6 +16,12 @@ import {
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../db/agents.js";
 import {
+  acquireMemoryWriteLock,
+  releaseMemoryWriteLock,
+  checkMemoryWriteLock,
+} from "../lib/memory-lock.js";
+import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocks } from "../db/locks.js";
+import {
   registerProject,
   listProjects,
   getProject,
@@ -2114,13 +2120,6 @@ server.resource(
 // ============================================================================
 // Memory locking tools (OPE4-00111)
 // ============================================================================
-
-import {
-  acquireMemoryWriteLock,
-  releaseMemoryWriteLock,
-  checkMemoryWriteLock,
-} from "../lib/memory-lock.js";
-import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocks } from "../db/locks.js";
 
 server.tool(
   "memory_lock",
