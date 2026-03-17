@@ -81,6 +81,19 @@ export {
   touchAgent,
 } from "./db/agents.js";
 
+// Resource locks
+export {
+  acquireLock,
+  releaseLock,
+  releaseResourceLocks,
+  releaseAllAgentLocks,
+  checkLock,
+  agentHoldsLock,
+  listAgentLocks,
+  cleanExpiredLocks,
+} from "./db/locks.js";
+export type { ResourceLock, ResourceType, LockType } from "./db/locks.js";
+
 // Projects
 export {
   registerProject,
