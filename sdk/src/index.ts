@@ -106,6 +106,27 @@ export interface Relation {
   created_at: string;
 }
 
+export type ResourceType = "project" | "memory" | "entity" | "agent" | "connector";
+export type LockType = "advisory" | "exclusive";
+
+export interface ResourceLock {
+  id: string;
+  resource_type: ResourceType;
+  resource_id: string;
+  agent_id: string;
+  lock_type: LockType;
+  locked_at: string;
+  expires_at: string;
+}
+
+export interface AcquireLockInput {
+  agent_id: string;
+  resource_type: ResourceType;
+  resource_id: string;
+  lock_type?: LockType;
+  ttl_seconds?: number;
+}
+
 export interface MemoryStats {
   total: number;
   by_scope: Record<MemoryScope, number>;
@@ -602,6 +623,47 @@ export class MementosClient {
   /** Get graph-wide stats. */
   getGraphStats(): Promise<{ entity_count: number; relation_count: number; by_type: Record<string, number> }> {
     return this.get("/api/graph/stats");
+  }
+
+  // --------------------------------------------------------------------------
+  // Resource locks
+  // --------------------------------------------------------------------------
+
+  /** Acquire a lock on a resource. Returns null on conflict (409). */
+  async acquireLock(input: AcquireLockInput): Promise<ResourceLock | null> {
+    try {
+      return await this.post("/api/locks", input);
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("409")) return null;
+      throw e;
+    }
+  }
+
+  /** Check active locks on a resource. */
+  checkLock(resourceType: ResourceType, resourceId: string, lockType?: LockType): Promise<ResourceLock[]> {
+    const params: Record<string, string> = { resource_type: resourceType, resource_id: resourceId };
+    if (lockType) params["lock_type"] = lockType;
+    return this.get("/api/locks", params);
+  }
+
+  /** Release a specific lock. Only the owning agent can release. */
+  releaseLock(lockId: string, agentId: string): Promise<{ released: boolean }> {
+    return this.request("DELETE", `/api/locks/${lockId}`, { agent_id: agentId });
+  }
+
+  /** List all active locks held by an agent. */
+  listAgentLocks(agentId: string): Promise<ResourceLock[]> {
+    return this.get(`/api/agents/${agentId}/locks`);
+  }
+
+  /** Release all locks held by an agent (call on session end). */
+  releaseAllAgentLocks(agentId: string): Promise<{ released: number }> {
+    return this.request("DELETE", `/api/agents/${agentId}/locks`);
+  }
+
+  /** Clean all expired locks. */
+  cleanExpiredLocks(): Promise<{ cleaned: number }> {
+    return this.post("/api/locks/clean", {});
   }
 
   // --------------------------------------------------------------------------

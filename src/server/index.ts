@@ -769,6 +769,81 @@ addRoute("PATCH", "/api/agents/:id", async (req, _url, params) => {
 });
 
 // ============================================================================
+// Resource lock endpoints
+// ============================================================================
+
+import {
+  acquireLock,
+  releaseLock,
+  releaseAllAgentLocks,
+  checkLock,
+  listAgentLocks,
+  cleanExpiredLocks,
+  type ResourceType,
+  type LockType,
+} from "../db/locks.js";
+
+// POST /api/locks — acquire a lock
+addRoute("POST", "/api/locks", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body?.agent_id || !body?.resource_type || !body?.resource_id) {
+    return errorResponse("Missing required fields: agent_id, resource_type, resource_id", 400);
+  }
+  const lock = acquireLock(
+    body["agent_id"] as string,
+    body["resource_type"] as ResourceType,
+    body["resource_id"] as string,
+    (body["lock_type"] as LockType) || "exclusive",
+    (body["ttl_seconds"] as number) || 300
+  );
+  if (!lock) {
+    const existing = checkLock(body["resource_type"] as ResourceType, body["resource_id"] as string, "exclusive");
+    return errorResponse(
+      `Lock conflict: resource ${body["resource_type"]}:${body["resource_id"]} is held by agent ${existing[0]?.agent_id ?? "unknown"}`,
+      409
+    );
+  }
+  return json(lock, 201);
+});
+
+// GET /api/locks — check locks on a resource
+addRoute("GET", "/api/locks", (_req, url) => {
+  const resourceType = url.searchParams.get("resource_type") as ResourceType | null;
+  const resourceId = url.searchParams.get("resource_id");
+  const lockType = url.searchParams.get("lock_type") as LockType | undefined;
+  if (!resourceType || !resourceId) {
+    return errorResponse("Missing required query params: resource_type, resource_id", 400);
+  }
+  return json(checkLock(resourceType, resourceId, lockType));
+});
+
+// DELETE /api/locks/:id — release a lock
+addRoute("DELETE", "/api/locks/:id", async (req, _url, params) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body?.agent_id) return errorResponse("Missing required field: agent_id", 400);
+  const released = releaseLock(params["id"]!, body["agent_id"] as string);
+  if (!released) return errorResponse("Lock not found or not owned by this agent", 404);
+  return json({ released: true });
+});
+
+// GET /api/agents/:id/locks — list all locks held by an agent
+addRoute("GET", "/api/agents/:id/locks", (_req, _url, params) => {
+  return json(listAgentLocks(params["id"]!));
+});
+
+// DELETE /api/agents/:id/locks — release all locks for an agent
+addRoute("DELETE", "/api/agents/:id/locks", (_req, _url, params) => {
+  const count = releaseAllAgentLocks(params["id"]!);
+  return json({ released: count });
+});
+
+// POST /api/locks/clean — clean expired locks
+addRoute("POST", "/api/locks/clean", () => {
+  const count = cleanExpiredLocks();
+  return json({ cleaned: count });
+});
+
+// ============================================================================
 // Project endpoints
 // ============================================================================
 
