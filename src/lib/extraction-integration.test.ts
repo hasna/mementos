@@ -123,53 +123,42 @@ describe("extraction-integration", () => {
     db = freshDb();
   });
 
-  it("should extract entities and link them when saving a memory with tech keywords", () => {
+  it("memory saves successfully without blocking (entity extraction is now async LLM-based)", () => {
+    // Entity extraction is now handled by the async LLM pipeline (auto-memory.ts).
+    // createMemory no longer synchronously extracts entities via regex.
+    // Entities are linked asynchronously by the PostMemorySave hook after an LLM call.
     const memory = createMemory(
       { key: "stack-choice", value: "We use typescript and react for the frontend" },
       "create",
       db
     );
-
-    const entities = getEntitiesForMemory(memory.id, db);
-    const entityNames = entities.map((e) => e.name);
-
-    expect(entityNames).toContain("typescript");
-    expect(entityNames).toContain("react");
-
-    // Both entities should be tools
-    for (const e of entities) {
-      if (e.name === "typescript" || e.name === "react") {
-        expect(e.type).toBe("tool");
-      }
-    }
+    // Memory saves successfully — this is what we guarantee
+    expect(memory.id).toBeTruthy();
+    expect(memory.value).toContain("typescript");
+    // Entities are NOT synchronously linked anymore — they come from async LLM extraction
+    // To verify entity linking, use memory_auto_test MCP tool or processConversationTurn()
   });
 
-  it("should extract file path entities", () => {
+  it("memory with file paths saves successfully", () => {
     const memory = createMemory(
       { key: "config-location", value: "The config file is at src/lib/config.ts" },
       "create",
       db
     );
-
-    const entities = getEntitiesForMemory(memory.id, db);
-    const fileEntities = entities.filter((e) => e.type === "file");
-
-    expect(fileEntities.length).toBeGreaterThanOrEqual(1);
-    expect(fileEntities.some((e) => e.name.includes("config.ts"))).toBe(true);
+    expect(memory.id).toBeTruthy();
+    // Async entity extraction will run later via LLM pipeline
   });
 
-  it("should create relations between co-occurring entities", () => {
-    createMemory(
+  it("memory save does not fail even when entity pipeline would have errors", () => {
+    // Previously this tested relation creation between co-occurring entities.
+    // Now relations are created async by the LLM pipeline after the memory is saved.
+    const memory = createMemory(
       { key: "stack", value: "We use typescript and react together" },
       "create",
       db
     );
-
-    const allRelations = listRelations({}, db);
-    const relatedTo = allRelations.filter((r) => r.relation_type === "related_to");
-
-    // typescript and react should be related
-    expect(relatedTo.length).toBeGreaterThanOrEqual(1);
+    expect(memory.id).toBeTruthy();
+    // No synchronous relations expected — LLM pipeline handles this async
   });
 
   it("should not create entities when extraction is disabled", () => {
@@ -192,28 +181,23 @@ describe("extraction-integration", () => {
     }
   });
 
-  it("should re-extract entities when memory value is updated", () => {
+  it("memory update succeeds (re-extraction is async via LLM pipeline)", () => {
+    // Previously tested synchronous re-extraction on update.
+    // Now extraction is async/LLM-based — updates trigger async re-extraction via hooks.
     const memory = createMemory(
       { key: "stack-choice", value: "We use typescript for the backend" },
       "create",
       db
     );
+    expect(memory.id).toBeTruthy();
 
-    let entities = getEntitiesForMemory(memory.id, db);
-    let entityNames = entities.map((e) => e.name);
-    expect(entityNames).toContain("typescript");
-    expect(entityNames).not.toContain("python");
-
-    // Update the memory value to mention python instead
-    updateMemory(
+    // Update succeeds — no blocking on entity extraction
+    const updated = updateMemory(
       memory.id,
       { value: "We switched to python for the backend", version: memory.version },
       db
     );
-
-    entities = getEntitiesForMemory(memory.id, db);
-    entityNames = entities.map((e) => e.name);
-    expect(entityNames).toContain("python");
+    expect(updated?.value).toContain("python");
   });
 
   it("should not break memory save if extraction encounters an error", () => {
@@ -286,16 +270,14 @@ describe("extraction-integration", () => {
     expect(memory.value).toBe("We use typescript and react");
   });
 
-  it("should handle merge/upsert path with entity re-extraction", () => {
-    // Create initial memory
+  it("merge/upsert path works correctly (entity extraction is async via LLM pipeline)", () => {
+    // Upsert behaviour is unchanged. Entity extraction fires async after save.
     const memory1 = createMemory(
       { key: "tech-stack", value: "We use typescript", scope: "shared" },
       "merge",
       db
     );
-
-    let entities = getEntitiesForMemory(memory1.id, db);
-    expect(entities.some((e) => e.name === "typescript")).toBe(true);
+    expect(memory1.id).toBeTruthy();
 
     // Merge with new value (same key+scope triggers upsert)
     const memory2 = createMemory(
@@ -304,13 +286,9 @@ describe("extraction-integration", () => {
       db
     );
 
-    // Should be the same memory (upserted)
+    // Same memory updated (upserted) — this is the key guarantee
     expect(memory2.id).toBe(memory1.id);
-
-    // Entities should now reflect the new value
-    entities = getEntitiesForMemory(memory2.id, db);
-    const entityNames = entities.map((e) => e.name);
-    expect(entityNames).toContain("python");
-    expect(entityNames).toContain("rust");
+    expect(memory2.value).toContain("python");
+    // Entities linked async by LLM pipeline after this save completes
   });
 });

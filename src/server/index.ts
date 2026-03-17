@@ -42,6 +42,12 @@ import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, merg
 import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../db/entity-memories.js";
 import { parseDuration } from "../lib/duration.js";
+import {
+  processConversationTurn,
+  getAutoMemoryStats,
+  configureAutoMemory,
+} from "../lib/auto-memory.js";
+import { providerRegistry } from "../lib/providers/registry.js";
 import type {
   Memory,
   MemoryCategory,
@@ -1297,6 +1303,69 @@ async function findFreePort(start: number): Promise<number> {
   }
   return start;
 }
+
+// ============================================================================
+// Auto-Memory Routes
+// ============================================================================
+
+// POST /api/auto-memory/process — enqueue turn for async extraction
+addRoute("POST", "/api/auto-memory/process", async (req) => {
+  const body = (await readJson(req)) as Record<string, string> | null;
+  const turn = body?.turn;
+  if (!turn) return errorResponse("turn is required", 400);
+  processConversationTurn(turn, { agentId: body?.agent_id, projectId: body?.project_id, sessionId: body?.session_id });
+  const stats = getAutoMemoryStats();
+  return json({ queued: true, queue: stats }, 202);
+});
+
+// GET /api/auto-memory/status — queue stats + provider health
+addRoute("GET", "/api/auto-memory/status", () => {
+  return json({
+    queue: getAutoMemoryStats(),
+    config: providerRegistry.getConfig(),
+    providers: providerRegistry.health(),
+  });
+});
+
+// GET /api/auto-memory/config — current provider config
+addRoute("GET", "/api/auto-memory/config", () => {
+  return json(providerRegistry.getConfig());
+});
+
+// PATCH /api/auto-memory/config — update provider/model/enabled at runtime
+addRoute("PATCH", "/api/auto-memory/config", async (req) => {
+  const body = ((await readJson(req)) ?? {}) as Record<string, unknown>;
+  const patch: Parameters<typeof configureAutoMemory>[0] = {};
+  if (body.provider) patch.provider = body.provider as "anthropic" | "openai" | "cerebras" | "grok";
+  if (body.model) patch.model = body.model as string;
+  if (body.enabled !== undefined) patch.enabled = Boolean(body.enabled);
+  if (body.min_importance !== undefined) patch.minImportance = Number(body.min_importance);
+  if (body.auto_entity_link !== undefined) patch.autoEntityLink = Boolean(body.auto_entity_link);
+  configureAutoMemory(patch);
+  return json({ updated: true, config: providerRegistry.getConfig() });
+});
+
+// POST /api/auto-memory/test — dry run extraction (nothing saved)
+addRoute("POST", "/api/auto-memory/test", async (req) => {
+  const body = ((await readJson(req)) ?? {}) as Record<string, string>;
+  const { turn, provider: providerName, agent_id, project_id } = body;
+  if (!turn) return errorResponse("turn is required", 400);
+
+  const provider = providerName
+    ? providerRegistry.getProvider(providerName as "anthropic" | "openai" | "cerebras" | "grok")
+    : providerRegistry.getAvailable();
+
+  if (!provider) return errorResponse("No LLM provider configured. Set an API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, CEREBRAS_API_KEY, or XAI_API_KEY).", 503);
+
+  const memories = await provider.extractMemories(turn, { agentId: agent_id, projectId: project_id });
+  return json({
+    provider: provider.name,
+    model: provider.config.model,
+    extracted: memories,
+    count: memories.length,
+    note: "DRY RUN — nothing was saved",
+  });
+});
 
 export function startServer(port: number): void {
   const hostname = process.env["MEMENTOS_HOST"] ?? "127.0.0.1";

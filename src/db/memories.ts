@@ -13,45 +13,21 @@ import {
 } from "../types/index.js";
 import { getDatabase, now, uuid } from "./database.js";
 import { redactSecrets } from "../lib/redact.js";
-import { extractEntities } from "../lib/extractor.js";
-import { createEntity } from "./entities.js";
-import { linkEntityToMemory, unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
-import { createRelation } from "./relations.js";
-import { loadConfig } from "../lib/config.js";
+// Entity extraction is now handled by the LLM auto-memory pipeline (src/lib/auto-memory.ts).
+// The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
+// Keeping this comment so the migration intent is clear.
+import { unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
 
 // ============================================================================
 // Entity extraction helper
 // ============================================================================
 
-function runEntityExtraction(memory: Memory, projectId: string | undefined, d: Database): void {
-  const config = loadConfig();
-  if (config.extraction?.enabled === false) return;
-
-  const extracted = extractEntities(memory, d);
-  const minConfidence = config.extraction?.min_confidence ?? 0.5;
-  const entityIds: string[] = [];
-
-  for (const ext of extracted) {
-    if (ext.confidence >= minConfidence) {
-      const entity = createEntity({ name: ext.name, type: ext.type, project_id: projectId }, d);
-      linkEntityToMemory(entity.id, memory.id, "context", d);
-      entityIds.push(entity.id);
-    }
-  }
-
-  // Auto-relate co-occurring entities
-  for (let i = 0; i < entityIds.length; i++) {
-    for (let j = i + 1; j < entityIds.length; j++) {
-      try {
-        createRelation(
-          { source_entity_id: entityIds[i]!, target_entity_id: entityIds[j]!, relation_type: "related_to" },
-          d
-        );
-      } catch {
-        // skip duplicates
-      }
-    }
-  }
+// runEntityExtraction previously used regex-based extraction (extractor.ts).
+// Now removed — LLM-based extraction fires async via auto-memory pipeline
+// (src/lib/auto-memory.ts) after every memory save, triggered by PostMemorySave hook.
+function runEntityExtraction(_memory: Memory, _projectId: string | undefined, _d: Database): void {
+  // No-op: async LLM extraction handled by PostMemorySave hook in auto-memory pipeline.
+  // See src/lib/auto-memory.ts → linkEntitiesToMemory()
 }
 
 // ============================================================================
@@ -576,6 +552,38 @@ export function touchMemory(id: string, db?: Database): void {
     "UPDATE memories SET access_count = access_count + 1, accessed_at = ? WHERE id = ?",
     [now(), id]
   );
+}
+
+/**
+ * Increment recall_count for a memory and auto-promote importance if threshold reached.
+ * Borrowed from nuggets: memories recalled frequently are more important.
+ * Default threshold: 3 recalls → importance +1 (capped at 10).
+ * Call this whenever a memory is returned to a user/agent.
+ */
+const RECALL_PROMOTE_THRESHOLD = 3;
+
+export function incrementRecallCount(id: string, db?: Database): void {
+  const d = db || getDatabase();
+  try {
+    // Increment recall_count and access_count atomically
+    d.run(
+      "UPDATE memories SET recall_count = recall_count + 1, access_count = access_count + 1, accessed_at = ? WHERE id = ?",
+      [now(), id]
+    );
+    // Check if we should promote importance
+    const row = d
+      .query("SELECT recall_count, importance FROM memories WHERE id = ?")
+      .get(id) as { recall_count: number; importance: number } | null;
+    if (!row) return;
+    // Auto-promote: every RECALL_PROMOTE_THRESHOLD recalls, importance goes up by 1
+    const promotions = Math.floor(row.recall_count / RECALL_PROMOTE_THRESHOLD);
+    if (promotions > 0 && row.importance < 10) {
+      const newImportance = Math.min(10, row.importance + 1);
+      d.run("UPDATE memories SET importance = ? WHERE id = ? AND importance < 10", [newImportance, id]);
+    }
+  } catch {
+    // Non-fatal — recall tracking should never break a memory read
+  }
 }
 
 // ============================================================================

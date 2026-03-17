@@ -119,6 +119,13 @@ export interface MemorySearchResult {
   score: number;
   match_type: "exact" | "fuzzy" | "tag";
   highlights?: { field: string; snippet: string }[];
+  /**
+   * Confidence margin 0.0–1.0 (borrowed from nuggets).
+   * High (>0.7) = top result clearly best. Low (<0.3) = several similar matches.
+   * Derived from FTS5 rank spread: (score_rank1 - score_rank2) / score_rank1.
+   * Only present on the first result.
+   */
+  confidence?: number;
 }
 
 // ============================================================================

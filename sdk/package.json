@@ -1,6 +1,6 @@
 {
   "name": "@hasna/mementos-sdk",
-  "version": "0.1.14",
+  "version": "0.2.0",
   "description": "Zero-dependency TypeScript client for @hasna/mementos REST API",
   "type": "module",
   "main": "dist/index.js",
@@ -35,7 +35,7 @@
   "author": "Andrei Hasna <andrei@hasna.com>",
   "license": "Apache-2.0",
   "publishConfig": {
-    "access": "public",
+    "access": "restricted",
     "registry": "https://registry.npmjs.org/"
   },
   "repository": {

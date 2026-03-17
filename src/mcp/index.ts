@@ -2357,6 +2357,152 @@ server.tool(
 );
 
 // ============================================================================
+// Auto-Memory Tools
+// ============================================================================
+
+import {
+  processConversationTurn,
+  getAutoMemoryStats,
+  configureAutoMemory,
+} from "../lib/auto-memory.js";
+import { providerRegistry } from "../lib/providers/registry.js";
+
+server.tool(
+  "memory_auto_process",
+  "Enqueue a conversation turn or text for async LLM memory extraction. Returns immediately (non-blocking). Set async=false to run synchronously and return extracted memories.",
+  {
+    turn: z.string().describe("The text / conversation turn to extract memories from"),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    session_id: z.string().optional(),
+    async: z.boolean().optional().default(true),
+  },
+  async (args) => {
+    try {
+      if (args.async !== false) {
+        processConversationTurn(args.turn, {
+          agentId: args.agent_id,
+          projectId: args.project_id,
+          sessionId: args.session_id,
+        });
+        const stats = getAutoMemoryStats();
+        return {
+          content: [{
+            type: "text" as const,
+            text: JSON.stringify({ queued: true, queue: stats }),
+          }],
+        };
+      }
+
+      // Synchronous mode — run extraction and return results
+      const provider = providerRegistry.getAvailable();
+      if (!provider) {
+        return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No LLM provider configured. Set ANTHROPIC_API_KEY, OPENAI_API_KEY, CEREBRAS_API_KEY, or XAI_API_KEY." }) }], isError: true };
+      }
+      const memories = await provider.extractMemories(args.turn, {
+        agentId: args.agent_id,
+        projectId: args.project_id,
+        sessionId: args.session_id,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify({ extracted: memories, count: memories.length }) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_auto_status",
+  "Get the current auto-memory extraction queue stats (pending, processing, processed, failed, dropped).",
+  {},
+  async () => {
+    try {
+      const stats = getAutoMemoryStats();
+      const config = providerRegistry.getConfig();
+      const health = providerRegistry.health();
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ queue: stats, config, providers: health }),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_auto_config",
+  "Update auto-memory configuration at runtime (no restart needed). Set provider, model, enabled, minImportance, autoEntityLink.",
+  {
+    provider: z.enum(["anthropic", "openai", "cerebras", "grok"]).optional(),
+    model: z.string().optional(),
+    enabled: z.boolean().optional(),
+    min_importance: z.number().min(0).max(10).optional(),
+    auto_entity_link: z.boolean().optional(),
+  },
+  async (args) => {
+    try {
+      configureAutoMemory({
+        ...(args.provider && { provider: args.provider }),
+        ...(args.model && { model: args.model }),
+        ...(args.enabled !== undefined && { enabled: args.enabled }),
+        ...(args.min_importance !== undefined && { minImportance: args.min_importance }),
+        ...(args.auto_entity_link !== undefined && { autoEntityLink: args.auto_entity_link }),
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ updated: true, config: providerRegistry.getConfig() }),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_auto_test",
+  "Test memory extraction on text WITHOUT saving anything. Returns what would be extracted. Useful for tuning prompts and checking provider output.",
+  {
+    turn: z.string().describe("Text to test extraction on"),
+    provider: z.enum(["anthropic", "openai", "cerebras", "grok"]).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      let provider;
+      if (args.provider) {
+        provider = providerRegistry.getProvider(args.provider);
+        if (!provider) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ error: `Provider '${args.provider}' not available — no API key configured.` }) }], isError: true };
+        }
+      } else {
+        provider = providerRegistry.getAvailable();
+        if (!provider) {
+          return { content: [{ type: "text" as const, text: JSON.stringify({ error: "No LLM provider configured." }) }], isError: true };
+        }
+      }
+      const memories = await provider.extractMemories(args.turn, {
+        agentId: args.agent_id,
+        projectId: args.project_id,
+      });
+      return {
+        content: [{
+          type: "text" as const,
+          text: JSON.stringify({ provider: provider.name, model: provider.config.model, extracted: memories, count: memories.length, note: "DRY RUN — nothing was saved" }),
+        }],
+      };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
 // Start server
 // ============================================================================
 

@@ -302,6 +302,14 @@ const MIGRATIONS = [
   CREATE INDEX IF NOT EXISTS idx_resource_locks_expires ON resource_locks(expires_at);
   INSERT OR IGNORE INTO _migrations (id) VALUES (8);
   `,
+
+  // Migration 9: recall_count — track how many times each memory is retrieved.
+  // Auto-promotes importance when a memory is recalled frequently (borrowed from nuggets).
+  `
+  ALTER TABLE memories ADD COLUMN recall_count INTEGER NOT NULL DEFAULT 0;
+  CREATE INDEX IF NOT EXISTS idx_memories_recall_count ON memories(recall_count DESC);
+  INSERT OR IGNORE INTO _migrations (id) VALUES (9);
+  `,
 ];
 
 // ============================================================================

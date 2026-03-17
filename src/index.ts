@@ -181,8 +181,27 @@ export {
   getEntityMemoryLinks,
 } from "./db/entity-memories.js";
 
-// Knowledge Graph - Entity Extraction
+// Auto-Memory Pipeline (LLM-based — replaces regex extractor)
 export {
-  extractEntities,
-  type ExtractedEntity,
-} from "./lib/extractor.js";
+  processConversationTurn,
+  getAutoMemoryStats,
+  configureAutoMemory,
+} from "./lib/auto-memory.js";
+
+// Provider abstraction (for advanced usage / custom providers)
+export type {
+  LLMProvider,
+  ExtractedMemory,
+  ExtractedEntity,
+  EntityExtractionResult,
+  AutoMemoryConfig,
+  ProviderName,
+  ProviderConfig,
+} from "./lib/providers/base.js";
+export { providerRegistry } from "./lib/providers/registry.js";
+
+// Deduplication utilities
+export { dedup, getDedupStats } from "./lib/dedup.js";
+
+// Recall tracking
+export { incrementRecallCount } from "./db/memories.js";

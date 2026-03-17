@@ -708,6 +708,19 @@ export function searchMemories(
 
   const finalResults = scored.slice(offset, offset + limit);
 
+  // Add confidence margin to first result (borrowed from nuggets).
+  // confidence = how far ahead the top result is vs second-best.
+  // High (>0.7) = clear winner. Low (<0.3) = several similar results.
+  if (finalResults.length > 0 && scored.length > 0) {
+    const topScore = scored[0]?.score ?? 0;
+    const secondScore = scored[1]?.score ?? 0;
+    const confidence =
+      topScore > 0
+        ? Math.max(0, Math.min(1, (topScore - secondScore) / topScore))
+        : 0;
+    finalResults[0] = { ...finalResults[0]!, confidence };
+  }
+
   // Log search (fire-and-forget)
   logSearchQuery(query, scored.length, filter?.agent_id, filter?.project_id, d);
 

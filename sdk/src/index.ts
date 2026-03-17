@@ -681,6 +681,70 @@ export class MementosClient {
   }): Promise<{ context: string; memories_count: number }> {
     return this.get("/api/inject", options as Record<string, string | number | boolean | undefined>);
   }
+
+  // --------------------------------------------------------------------------
+  // Auto-Memory (LLM-based extraction)
+  // --------------------------------------------------------------------------
+
+  /** Enqueue a conversation turn for async LLM memory extraction. Returns immediately (fire-and-forget). */
+  processConversationTurn(
+    turn: string,
+    context?: { agent_id?: string; project_id?: string; session_id?: string }
+  ): Promise<{ queued: boolean; queue: AutoMemoryQueueStats }> {
+    return this.post("/api/auto-memory/process", { turn, ...context });
+  }
+
+  /** Get auto-memory queue stats and provider health. */
+  getAutoMemoryStatus(): Promise<{
+    queue: AutoMemoryQueueStats;
+    config: AutoMemoryConfig;
+    providers: Record<string, { available: boolean; model: string }>;
+  }> {
+    return this.get("/api/auto-memory/status");
+  }
+
+  /** Update auto-memory config at runtime (no restart needed). */
+  configureAutoMemory(
+    config: Partial<AutoMemoryConfig> & { min_importance?: number; auto_entity_link?: boolean }
+  ): Promise<{ updated: boolean; config: AutoMemoryConfig }> {
+    return this.request("PATCH", "/api/auto-memory/config", config as Record<string, unknown>);
+  }
+
+  /** Test extraction without saving. Returns what would be extracted. */
+  testExtraction(
+    turn: string,
+    options?: { provider?: "anthropic" | "openai" | "cerebras" | "grok"; agent_id?: string; project_id?: string }
+  ): Promise<{ provider: string; model: string; extracted: SdkExtractedMemory[]; count: number; note: string }> {
+    return this.post("/api/auto-memory/test", { turn, ...options });
+  }
+}
+
+// ─── Auto-memory types (exported for SDK consumers) ───────────────────────────
+
+export interface AutoMemoryQueueStats {
+  pending: number;
+  processing: number;
+  processed: number;
+  failed: number;
+  dropped: number;
+}
+
+export interface AutoMemoryConfig {
+  provider: "anthropic" | "openai" | "cerebras" | "grok";
+  model?: string;
+  enabled: boolean;
+  minImportance: number;
+  autoEntityLink: boolean;
+  fallback?: Array<"anthropic" | "openai" | "cerebras" | "grok">;
+}
+
+export interface SdkExtractedMemory {
+  content: string;
+  category: "preference" | "fact" | "knowledge" | "history";
+  importance: number;
+  tags: string[];
+  suggestedScope: "private" | "shared" | "global";
+  reasoning?: string;
 }
 
 export default MementosClient;
