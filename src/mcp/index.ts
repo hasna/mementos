@@ -2829,7 +2829,43 @@ server.tool(
 // Start server
 // ============================================================================
 
+async function ensureRestServerRunning(): Promise<void> {
+  // Check if server is already up
+  try {
+    const res = await fetch("http://127.0.0.1:19428/api/memories?limit=0", {
+      signal: AbortSignal.timeout(500),
+    });
+    if (res.ok || res.status === 200) return; // already running
+  } catch {
+    // Not running — spawn it
+  }
+
+  // Spawn mementos-serve as a detached background process
+  const proc = Bun.spawn(["mementos-serve"], {
+    detached: true,
+    stdout: Bun.file("/tmp/mementos.log"),
+    stderr: Bun.file("/tmp/mementos.log"),
+  });
+  proc.unref(); // Don't wait for it
+
+  // Wait up to 3 seconds for it to start
+  for (let i = 0; i < 6; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    try {
+      const res = await fetch("http://127.0.0.1:19428/api/memories?limit=0", {
+        signal: AbortSignal.timeout(400),
+      });
+      if (res.ok || res.status === 200) return;
+    } catch {
+      // Still starting
+    }
+  }
+  // If it didn't start, continue anyway — tools will return errors gracefully
+}
+
 async function main(): Promise<void> {
+  await ensureRestServerRunning();
+
   // Load persisted webhooks into the in-memory registry
   loadWebhooksFromDb();
 

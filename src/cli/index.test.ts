@@ -125,8 +125,8 @@ describe("CLI", () => {
     expect(stdout.toLowerCase()).toContain("total");
   });
 
-  test("init registers agent", async () => {
-    const { stdout, exitCode } = await runCli("init", "cli-agent");
+  test("register-agent registers agent", async () => {
+    const { stdout, exitCode } = await runCli("register-agent", "cli-agent");
     expect(exitCode).toBe(0);
     expect(stdout).toContain("cli-agent");
   });
@@ -198,8 +198,8 @@ describe("CLI", () => {
     expect(Array.isArray(parsed)).toBe(true);
   });
 
-  test("init --json returns agent JSON", async () => {
-    const { stdout, exitCode } = await runCli("--json", "init", "json-agent");
+  test("register-agent --json returns agent JSON", async () => {
+    const { stdout, exitCode } = await runCli("--json", "register-agent", "json-agent");
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdout);
     expect(parsed.name).toBe("json-agent");

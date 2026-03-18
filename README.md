@@ -8,7 +8,10 @@ Agents save, recall, search, and share memories across sessions. Memories are sc
 
 ```bash
 bun add -g @hasna/mementos
+mementos init
 ```
+
+That's it. `init` registers the MCP with Claude Code, installs the session stop hook, and configures the server to start automatically on login.
 
 ## Quick Start
 
@@ -27,6 +30,9 @@ mementos inject --format compact --project-id <id>
 
 # Get stats
 mementos stats
+
+# Check everything is working
+mementos doctor
 ```
 
 ## MCP Server
@@ -34,6 +40,10 @@ mementos stats
 ### Install into Claude Code (recommended)
 
 ```bash
+# One-command setup (MCP + stop hook + auto-start):
+mementos init
+
+# Or just the MCP server:
 mementos mcp --claude
 # Or manually:
 claude mcp add --transport stdio --scope user mementos -- mementos-mcp
