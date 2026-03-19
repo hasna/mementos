@@ -98,6 +98,19 @@ describe("registerAgent", () => {
       registerAgent("no-sess-agent");
     }).not.toThrow();
   });
+
+  test("registers with partial project_id", () => {
+    const proj = registerProject("reg-proj", "/tmp/reg-proj");
+    const partialId = proj.id.slice(0, 8);
+    const agent = registerAgent("proj-reg-agent", undefined, undefined, undefined, partialId);
+    expect(agent.active_project_id).toBe(proj.id);
+  });
+
+  test("throws when project_id is invalid", () => {
+    expect(() => {
+      registerAgent("bad-proj-agent", undefined, undefined, undefined, "nonexistent");
+    }).toThrow("Project not found: nonexistent");
+  });
 });
 
 describe("getAgent", () => {
@@ -245,6 +258,21 @@ describe("updateAgent", () => {
     expect(updated!.active_project_id).toBe(proj.id);
   });
 
+  test("sets active_project_id with partial ID", () => {
+    const proj = registerProject("partial-proj", "/tmp/partial-proj");
+    const agent = registerAgent("partial-project-agent");
+    const partialId = proj.id.slice(0, 8);
+    const updated = updateAgent(agent.id, { active_project_id: partialId });
+    expect(updated!.active_project_id).toBe(proj.id);
+  });
+
+  test("throws when active_project_id is invalid", () => {
+    const agent = registerAgent("bad-project-agent");
+    expect(() => {
+      updateAgent(agent.id, { active_project_id: "nonexistent-proj" });
+    }).toThrow("Project not found: nonexistent-proj");
+  });
+
   test("clears active_project_id with null", () => {
     const proj = registerProject("clear-proj", "/tmp/clear-proj");
     const agent = registerAgent("clearable-agent");
@@ -291,5 +319,14 @@ describe("listAgentsByProject", () => {
     const proj = registerProject("empty-proj", "/tmp/empty-proj");
     const result = listAgentsByProject(proj.id);
     expect(result).toEqual([]);
+  });
+
+  test("finds agents by partial project ID", () => {
+    const proj = registerProject("partial-list-proj", "/tmp/partial-list-proj");
+    const a = registerAgent("agent-partial-list");
+    updateAgent(a.id, { active_project_id: proj.id });
+    const partialId = proj.id.slice(0, 8);
+    const result = listAgentsByProject(partialId);
+    expect(result.some(x => x.id === a.id)).toBe(true);
   });
 });

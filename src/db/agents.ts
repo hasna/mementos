@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import type { Agent } from "../types/index.js";
 import { AgentConflictError } from "../types/index.js";
-import { getDatabase, now, shortUuid } from "./database.js";
+import { getDatabase, now, shortUuid, resolvePartialId } from "./database.js";
 
 const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -30,6 +30,15 @@ export function registerAgent(
   const d = db || getDatabase();
   const timestamp = now();
   const normalizedName = name.trim().toLowerCase();
+
+  // Resolve partial project ID to full UUID for FK constraint
+  if (projectId) {
+    const resolvedProjectId = resolvePartialId(d, "projects", projectId);
+    if (!resolvedProjectId) {
+      throw new Error(`Project not found: ${projectId}`);
+    }
+    projectId = resolvedProjectId;
+  }
 
   const existing = d
     .query("SELECT * FROM agents WHERE LOWER(name) = ?")
@@ -127,9 +136,11 @@ export function touchAgent(idOrName: string, db?: Database): void {
 
 export function listAgentsByProject(projectId: string, db?: Database): Agent[] {
   const d = db || getDatabase();
+  // Resolve partial project ID to full UUID
+  const resolvedId = resolvePartialId(d, "projects", projectId) || projectId;
   const rows = d
     .query("SELECT * FROM agents WHERE active_project_id = ? ORDER BY last_seen_at DESC")
-    .all(projectId) as Record<string, unknown>[];
+    .all(resolvedId) as Record<string, unknown>[];
   return rows.map(parseAgentRow);
 }
 
@@ -171,7 +182,15 @@ export function updateAgent(
   }
 
   if ("active_project_id" in updates) {
-    d.run("UPDATE agents SET active_project_id = ? WHERE id = ?", [updates.active_project_id ?? null, agent.id]);
+    let resolvedProjectId = updates.active_project_id ?? null;
+    if (resolvedProjectId) {
+      const fullId = resolvePartialId(d, "projects", resolvedProjectId);
+      if (!fullId) {
+        throw new Error(`Project not found: ${resolvedProjectId}`);
+      }
+      resolvedProjectId = fullId;
+    }
+    d.run("UPDATE agents SET active_project_id = ? WHERE id = ?", [resolvedProjectId, agent.id]);
   }
 
   // Always update last_seen_at
