@@ -206,6 +206,28 @@ export function listAgentLocks(agentId: string, db?: Database): ResourceLock[] {
 /**
  * Delete all expired locks. Called automatically by other lock functions.
  */
+export interface ExpiredLockInfo {
+  id: string;
+  resource_type: string;
+  resource_id: string;
+  agent_id: string;
+  lock_type: string;
+}
+
+/**
+ * Clean expired locks and return info about what was cleaned for notification purposes.
+ */
+export function cleanExpiredLocksWithInfo(db?: Database): ExpiredLockInfo[] {
+  const d = db || getDatabase();
+  const expired = d.query(
+    "SELECT id, resource_type, resource_id, agent_id, lock_type FROM resource_locks WHERE expires_at <= datetime('now')"
+  ).all() as ExpiredLockInfo[];
+  if (expired.length > 0) {
+    d.run("DELETE FROM resource_locks WHERE expires_at <= datetime('now')");
+  }
+  return expired;
+}
+
 export function cleanExpiredLocks(db?: Database): number {
   const d = db || getDatabase();
   const result = d.run("DELETE FROM resource_locks WHERE expires_at <= datetime('now')");

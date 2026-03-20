@@ -21,7 +21,7 @@ import {
   releaseMemoryWriteLock,
   checkMemoryWriteLock,
 } from "../lib/memory-lock.js";
-import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocks } from "../db/locks.js";
+import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocks, cleanExpiredLocksWithInfo } from "../db/locks.js";
 import {
   registerProject,
   listProjects,
@@ -2577,11 +2577,27 @@ server.tool(
 
 server.tool(
   "clean_expired_locks",
-  "Delete all expired resource locks.",
+  "Delete all expired resource locks. Notifies holding agents via conversations DM.",
   {},
   async () => {
-    const count = cleanExpiredLocks();
-    return { content: [{ type: "text" as const, text: `Cleaned ${count} expired lock(s).` }] };
+    const expired = cleanExpiredLocksWithInfo();
+    const count = expired.length;
+
+    // Notify agents whose locks expired via conversations API (non-blocking)
+    if (count > 0) {
+      const conversationsUrl = process.env.CONVERSATIONS_API_URL || 'http://localhost:7020';
+      for (const lock of expired) {
+        const msg = `Your ${lock.lock_type} lock on ${lock.resource_type}/${lock.resource_id} has expired. Another agent may now acquire it.`;
+        fetch(`${conversationsUrl}/api/v1/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ from: 'system', to: lock.agent_id, content: msg }),
+          signal: AbortSignal.timeout(2000),
+        }).catch(() => {/* non-blocking */});
+      }
+    }
+
+    return { content: [{ type: "text" as const, text: `Cleaned ${count} expired lock(s)${count > 0 ? ` and notified ${count} agent(s)` : ''}.` }] };
   }
 );
 
