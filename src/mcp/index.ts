@@ -1537,6 +1537,90 @@ server.tool(
 );
 
 server.tool(
+  "memory_briefing",
+  "Lightweight delta briefing: what memories changed since an agent's last session. Use at session start instead of memory_context to avoid re-reading everything.",
+  {
+    agent_id: z.string().optional().describe("Agent ID or name. If provided, defaults since to agent's last_seen_at."),
+    since: z.string().optional().describe("ISO 8601 timestamp. Defaults to agent's last_seen_at if agent_id provided, otherwise 24h ago."),
+    project_id: z.string().optional(),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    limit: z.coerce.number().optional().describe("Max memories per category (default: 20)"),
+  },
+  async (args) => {
+    try {
+      const db = getDatabase();
+      const limit = args.limit || 20;
+
+      // Resolve 'since': agent's last_seen_at → explicit param → 24h ago
+      let since = args.since;
+      if (!since && args.agent_id) {
+        const ag = getAgent(args.agent_id);
+        if (ag?.last_seen_at) since = ag.last_seen_at;
+      }
+      if (!since) {
+        since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      }
+
+      const scopeClause = args.scope ? `AND scope = ?` : "";
+      const projectClause = args.project_id ? `AND project_id = ?` : "";
+      const extraParams = [
+        ...(args.scope ? [args.scope] : []),
+        ...(args.project_id ? [args.project_id] : []),
+      ];
+
+      // New memories
+      const newMems = db.prepare(
+        `SELECT id, key, value, summary, importance, scope, category, agent_id, created_at
+         FROM memories WHERE status = 'active' AND created_at > ? ${scopeClause} ${projectClause}
+         ORDER BY importance DESC, created_at DESC LIMIT ?`
+      ).all(since, ...extraParams, limit) as Array<{id: string; key: string; value: string; summary: string|null; importance: number; scope: string; category: string; agent_id: string|null; created_at: string}>;
+
+      // Updated memories (updated_at > since but created before since)
+      const updatedMems = db.prepare(
+        `SELECT id, key, value, summary, importance, scope, category, agent_id, updated_at
+         FROM memories WHERE status = 'active' AND updated_at > ? AND created_at <= ? ${scopeClause} ${projectClause}
+         ORDER BY importance DESC, updated_at DESC LIMIT ?`
+      ).all(since, since, ...extraParams, limit) as Array<{id: string; key: string; summary: string|null; importance: number; scope: string; value: string; agent_id: string|null; updated_at: string}>;
+
+      // Expired/archived memories
+      const expiredMems = db.prepare(
+        `SELECT id, key, scope, category, updated_at, status
+         FROM memories WHERE status != 'active' AND updated_at > ? ${scopeClause} ${projectClause}
+         ORDER BY updated_at DESC LIMIT ?`
+      ).all(since, ...extraParams, Math.min(limit, 10)) as Array<{id: string; key: string; scope: string; category: string; updated_at: string; status: string}>;
+
+      const parts: string[] = [`Memory briefing since ${since}`];
+      if (newMems.length > 0) {
+        parts.push(`\n**New (${newMems.length}):**`);
+        for (const m of newMems) {
+          parts.push(`• [${m.scope}/${m.category}] ${m.key} (importance:${m.importance}${m.agent_id ? `, by:${m.agent_id}` : ""}): ${(m.summary || m.value).slice(0, 100)}`);
+        }
+      }
+      if (updatedMems.length > 0) {
+        parts.push(`\n**Updated (${updatedMems.length}):**`);
+        for (const m of updatedMems) {
+          parts.push(`• [${m.scope}] ${m.key}: ${(m.summary || m.value).slice(0, 80)}`);
+        }
+      }
+      if (expiredMems.length > 0) {
+        parts.push(`\n**Expired/archived (${expiredMems.length}):**`);
+        for (const m of expiredMems) {
+          parts.push(`• [${m.scope}] ${m.key} — ${m.status}`);
+        }
+      }
+      if (newMems.length === 0 && updatedMems.length === 0 && expiredMems.length === 0) {
+        parts.push("\nNo memory changes since last session.");
+      }
+      parts.push(`\nSummary: ${newMems.length} new, ${updatedMems.length} updated, ${expiredMems.length} expired.`);
+
+      return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_context",
   "Get memories relevant to current context, filtered by scope/importance/recency.",
   {
