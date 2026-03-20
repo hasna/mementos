@@ -2605,6 +2605,22 @@ server.tool(
 );
 
 server.tool(
+  "heartbeat",
+  "Update agent last_seen_at to signal active session. Call periodically during long tasks to prevent being marked stale.",
+  { agent_id: z.string().describe("Agent ID or name") },
+  async (args) => {
+    try {
+      const agent = getAgent(args.agent_id);
+      if (!agent) return { content: [{ type: "text" as const, text: `Agent not found: ${args.agent_id}` }], isError: true };
+      touchAgent(agent.id);
+      return { content: [{ type: "text" as const, text: `♥ ${agent.name} (${agent.id}) — last_seen_at updated` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "get_focus",
   "Get the current focus project for an agent.",
   { agent_id: z.string() },

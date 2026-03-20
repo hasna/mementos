@@ -19,7 +19,8 @@ import {
   parseMemoryRow,
   getMemoryVersions,
 } from "../db/memories.js";
-import { registerAgent, getAgent, listAgents, updateAgent } from "../db/agents.js";
+import { registerAgent, getAgent, listAgents, updateAgent, touchAgent } from "../db/agents.js";
+import { setFocus, getFocus } from "../lib/focus.js";
 import {
   registerProject,
   getProject,
@@ -5009,6 +5010,49 @@ sessionCmd
     } else {
       console.log("Usage: mementos session setup-hook --claude | --codex");
     }
+  });
+
+// heartbeat
+program
+  .command("heartbeat [agent-id]")
+  .description("Update last_seen_at to signal this agent is active")
+  .action((agentId?: string) => {
+    const globalOpts = program.opts() as { agent?: string; json?: boolean };
+    const id = agentId || globalOpts.agent;
+    if (!id) { process.stderr.write("Agent ID required. Use --agent or pass as argument.\n"); process.exit(1); }
+    const agent = getAgent(id);
+    if (!agent) { process.stderr.write(`Agent not found: ${id}\n`); process.exit(1); }
+    touchAgent(agent.id);
+    if (globalOpts.json) console.log(JSON.stringify({ agent_id: agent.id, name: agent.name, last_seen_at: new Date().toISOString() }));
+    else console.log(chalk.green(`♥ ${agent.name} (${agent.id}) — heartbeat sent`));
+  });
+
+// set-focus
+program
+  .command("set-focus [project]")
+  .description("Focus this agent on a project (or clear focus if no project given)")
+  .option("--agent <id>", "Agent ID")
+  .action((project?: string, opts?: { agent?: string }) => {
+    const globalOpts = program.opts() as { agent?: string };
+    const agentId = opts?.agent || globalOpts.agent;
+    if (!agentId) { process.stderr.write("Agent ID required. Use --agent.\n"); process.exit(1); }
+    setFocus(agentId, project ?? null);
+    if (project) console.log(chalk.green(`Focused: ${agentId} → project ${project}`));
+    else console.log(chalk.dim(`Focus cleared for ${agentId}`));
+  });
+
+// get-focus
+program
+  .command("get-focus")
+  .description("Show the current project focus for an agent")
+  .option("--agent <id>", "Agent ID")
+  .action((opts?: { agent?: string }) => {
+    const globalOpts = program.opts() as { agent?: string };
+    const agentId = opts?.agent || globalOpts.agent;
+    if (!agentId) { process.stderr.write("Agent ID required. Use --agent.\n"); process.exit(1); }
+    const focus = getFocus(agentId);
+    if (focus) console.log(chalk.cyan(`Focus: ${focus}`));
+    else console.log(chalk.dim("No focus set."));
   });
 
 // ============================================================================
