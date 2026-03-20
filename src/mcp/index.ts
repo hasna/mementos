@@ -173,6 +173,16 @@ server.tool(
       }
       const memory = createMemory(input as unknown as CreateMemoryInput);
       if (args.agent_id) touchAgent(args.agent_id);
+
+      // Auto-broadcast shared memories to active agents via conversations MCP
+      // This allows agent B and C to learn immediately when agent A saves critical shared knowledge
+      if (memory.scope === 'shared' && memory.project_id && args.agent_id) {
+        try {
+          const { broadcastSharedMemory } = await import('./memory-broadcast.js');
+          broadcastSharedMemory(memory, args.agent_id as string).catch(() => {/* non-blocking */});
+        } catch { /* conversations MCP not available */ }
+      }
+
       return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
