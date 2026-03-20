@@ -251,6 +251,10 @@ function matchRoute(
 // ============================================================================
 
 // GET /api/memories — list memories
+addRoute("GET", "/api/health", () => {
+  return json({ ok: true, version: "1", db: getDbPath() });
+});
+
 addRoute("GET", "/api/memories", (_req: Request, url: URL) => {
   const q = getSearchParams(url);
   const filter: MemoryFilter = {};
