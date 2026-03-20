@@ -1558,6 +1558,10 @@ server.tool(
       if (memories.length === 0) {
         return { content: [{ type: "text" as const, text: "No memories in current context." }] };
       }
+      // Increment access_count and update accessed_at for all returned memories
+      for (const m of memories) {
+        touchMemory(m.id);
+      }
       const lines = memories.map((m) =>
         `[${m.scope}/${m.category}] ${m.key}: ${m.value} (importance: ${m.importance})`
       );
