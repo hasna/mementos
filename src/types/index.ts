@@ -235,7 +235,12 @@ export interface MementosConfig {
 // Dedupe mode for upsert
 // ============================================================================
 
-export type DedupeMode = "merge" | "create";
+export type DedupeMode =
+  | "merge"       // upsert: update existing if same key+scope+agent+project match
+  | "create"      // always insert a new row (no deduplication)
+  | "overwrite"   // alias for merge (backward-compat, same behaviour)
+  | "error"       // fail with MemoryConflictError if key already exists for this scope
+  | "version-fork"; // keep both — create a new record alongside existing (same as create)
 
 // ============================================================================
 // Sync
@@ -396,5 +401,21 @@ export class VersionConflictError extends Error {
     this.name = "VersionConflictError";
     this.expected = expected;
     this.actual = actual;
+  }
+}
+
+export class MemoryConflictError extends Error {
+  public existingId: string;
+  public existingAgentId: string | null;
+  public existingUpdatedAt: string;
+
+  constructor(key: string, existing: { id: string; agent_id: string | null; updated_at: string }) {
+    super(
+      `Memory conflict: key "${key}" already exists (last written by ${existing.agent_id ?? "unknown"} at ${existing.updated_at}). Use conflict:"overwrite" to replace it.`
+    );
+    this.name = "MemoryConflictError";
+    this.existingId = existing.id;
+    this.existingAgentId = existing.agent_id;
+    this.existingUpdatedAt = existing.updated_at;
   }
 }

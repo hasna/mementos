@@ -143,7 +143,7 @@ function formatMemory(m: Memory): string {
 
 server.tool(
   "memory_save",
-  "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent.",
+  "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent. conflict controls what happens when key already exists.",
   {
     key: z.string(),
     value: z.string(),
@@ -158,24 +158,27 @@ server.tool(
     ttl_ms: z.union([z.string(), z.number()]).optional(),
     source: z.enum(["user", "agent", "system", "auto", "imported"]).optional(),
     metadata: z.record(z.unknown()).optional(),
+    conflict: z.enum(["merge", "overwrite", "error", "version-fork"]).optional()
+      .describe("Conflict strategy: merge=upsert(default), overwrite=same as merge, error=fail if key exists, version-fork=always create new"),
   },
   async (args) => {
     try {
       ensureAutoProject();
-      const input = { ...args } as Record<string, unknown>;
-      if (args.ttl_ms !== undefined) {
-        input.ttl_ms = parseDuration(args.ttl_ms);
+      const { conflict, ...restArgs } = args as typeof args & { conflict?: string };
+      const input = { ...restArgs } as Record<string, unknown>;
+      if ((restArgs as Record<string, unknown>).ttl_ms !== undefined) {
+        input.ttl_ms = parseDuration((restArgs as Record<string, unknown>).ttl_ms as string | number);
       }
       // Focus mode: auto-set project_id from agent focus if not provided
       if (!input.project_id && input.agent_id) {
         const focusedProject = resolveProjectId(input.agent_id as string, null);
         if (focusedProject) input.project_id = focusedProject;
       }
-      const memory = createMemory(input as unknown as CreateMemoryInput);
+      const dedupeMode = (conflict as import("../types/index.js").DedupeMode | undefined) ?? "merge";
+      const memory = createMemory(input as unknown as CreateMemoryInput, dedupeMode);
       if (args.agent_id) touchAgent(args.agent_id);
 
       // Auto-broadcast shared memories to active agents via conversations MCP
-      // This allows agent B and C to learn immediately when agent A saves critical shared knowledge
       if (memory.scope === 'shared' && memory.project_id && args.agent_id) {
         try {
           const { broadcastSharedMemory } = await import('./memory-broadcast.js');
@@ -183,7 +186,12 @@ server.tool(
         } catch { /* conversations MCP not available */ }
       }
 
-      return { content: [{ type: "text" as const, text: `Saved: ${memory.key} (${memory.id.slice(0, 8)})` }] };
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        saved: memory.key,
+        id: memory.id.slice(0, 8),
+        version: memory.version,
+        conflict_mode: dedupeMode,
+      }) }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }

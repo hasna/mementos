@@ -10,6 +10,7 @@ import type {
 import {
   MemoryNotFoundError,
   VersionConflictError,
+  MemoryConflictError,
 } from "../types/index.js";
 import { getDatabase, now, uuid, resolvePartialId } from "./database.js";
 import { redactSecrets } from "../lib/redact.js";
@@ -97,7 +98,30 @@ export function createMemory(
   const safeValue = redactSecrets(input.value);
   const safeSummary = input.summary ? redactSecrets(input.summary) : null;
 
-  if (dedupeMode === "merge") {
+  // "overwrite" is an alias for "merge"; "version-fork" is an alias for "create"
+  const effectiveMode = dedupeMode === "overwrite" ? "merge"
+    : dedupeMode === "version-fork" ? "create"
+    : dedupeMode;
+
+  if (effectiveMode === "error") {
+    // Fail if any memory with the same key exists in this scope (regardless of agent)
+    const existing = d.query(
+      `SELECT id, agent_id, updated_at FROM memories
+       WHERE key = ? AND scope = ? AND COALESCE(project_id, '') = ? AND status = 'active'
+       LIMIT 1`
+    ).get(
+      input.key,
+      input.scope || "private",
+      input.project_id || ""
+    ) as { id: string; agent_id: string | null; updated_at: string } | null;
+
+    if (existing) {
+      throw new MemoryConflictError(input.key, existing);
+    }
+    // No conflict — fall through to insert below
+  }
+
+  if (effectiveMode === "merge") {
     // Try upsert: if key+scope+agent+project+session already exists, update value
     const existing = d
       .query(
