@@ -433,6 +433,29 @@ CREATE INDEX IF NOT EXISTS idx_session_memory_jobs_project ON session_memory_job
 CREATE INDEX IF NOT EXISTS idx_session_memory_jobs_session ON session_memory_jobs(session_id);
 INSERT OR IGNORE INTO _migrations (id) VALUES (13);
 `,
+
+  // Migration 14: add 'file' as first-class resource_type for resource_locks
+  // SQLite can't ALTER CHECK constraints; rebuild the table.
+  `
+ALTER TABLE resource_locks RENAME TO resource_locks_old;
+CREATE TABLE resource_locks (
+  id TEXT PRIMARY KEY,
+  resource_type TEXT NOT NULL CHECK(resource_type IN ('project', 'memory', 'entity', 'agent', 'connector', 'file')),
+  resource_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+  lock_type TEXT NOT NULL DEFAULT 'exclusive' CHECK(lock_type IN ('advisory', 'exclusive')),
+  locked_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at TEXT NOT NULL
+);
+INSERT INTO resource_locks SELECT * FROM resource_locks_old;
+DROP TABLE resource_locks_old;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_locks_exclusive
+  ON resource_locks(resource_type, resource_id)
+  WHERE lock_type = 'exclusive';
+CREATE INDEX IF NOT EXISTS idx_resource_locks_agent ON resource_locks(agent_id);
+CREATE INDEX IF NOT EXISTS idx_resource_locks_expires ON resource_locks(expires_at);
+INSERT OR IGNORE INTO _migrations (id) VALUES (14);
+`,
 ];
 
 // ============================================================================

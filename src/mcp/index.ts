@@ -2476,7 +2476,7 @@ server.tool(
   "Acquire a lock on any resource (project, memory, entity, agent, connector).",
   {
     agent_id: z.string(),
-    resource_type: z.enum(["project", "memory", "entity", "agent", "connector"]),
+    resource_type: z.enum(["project", "memory", "entity", "agent", "connector", "file"]),
     resource_id: z.string(),
     lock_type: z.enum(["advisory", "exclusive"]).optional().default("exclusive"),
     ttl_seconds: z.number().optional().default(300),
@@ -2514,7 +2514,7 @@ server.tool(
   "resource_check_lock",
   "Check active locks on a resource.",
   {
-    resource_type: z.enum(["project", "memory", "entity", "agent", "connector"]),
+    resource_type: z.enum(["project", "memory", "entity", "agent", "connector", "file"]),
     resource_id: z.string(),
     lock_type: z.enum(["advisory", "exclusive"]).optional(),
   },

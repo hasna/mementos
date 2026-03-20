@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { getDatabase, now, shortUuid } from "./database.js";
 
-export type ResourceType = "project" | "memory" | "entity" | "agent" | "connector";
+export type ResourceType = "project" | "memory" | "entity" | "agent" | "connector" | "file";
 export type LockType = "advisory" | "exclusive";
 
 export interface ResourceLock {
