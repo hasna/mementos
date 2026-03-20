@@ -52,6 +52,7 @@ import type {
 } from "../types/index.js";
 
 import { hookRegistry } from "../lib/hooks.js";
+import { buildFileDependencyGraph } from "../lib/file-deps.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import {
   createWebhookHook,
@@ -1784,6 +1785,32 @@ server.tool(
       }
       lines.push(`Entity-memory links: ${linkTotal}`);
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "build_file_dep_graph",
+  "Scan a codebase directory and build a file dependency graph: creates 'file' entities and 'depends_on' relations based on import/require statements. Use graph_query to find blast radius of a file change.",
+  {
+    root_dir: z.string().describe("Root directory to scan"),
+    project_id: z.string().optional().describe("Project to associate file entities with"),
+    extensions: z.array(z.string()).optional().describe("File extensions to scan (default: .ts .tsx .js .jsx .py .go .rs)"),
+    exclude_patterns: z.array(z.string()).optional().describe("Directory/file patterns to skip (default: node_modules, dist, .git, etc.)"),
+    incremental: z.boolean().optional().describe("Skip files that already have entities (default: true)"),
+  },
+  async (args) => {
+    try {
+      const result = await buildFileDependencyGraph({
+        root_dir: args.root_dir,
+        project_id: args.project_id ? resolvePartialId(getDatabase(), "projects", args.project_id) ?? args.project_id : undefined,
+        extensions: args.extensions,
+        exclude_patterns: args.exclude_patterns,
+        incremental: args.incremental ?? true,
+      });
+      return { content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
