@@ -21,7 +21,7 @@ import {
   releaseMemoryWriteLock,
   checkMemoryWriteLock,
 } from "../lib/memory-lock.js";
-import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocks, cleanExpiredLocksWithInfo } from "../db/locks.js";
+import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocksWithInfo } from "../db/locks.js";
 import {
   registerProject,
   listProjects,
