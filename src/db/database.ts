@@ -456,6 +456,19 @@ CREATE INDEX IF NOT EXISTS idx_resource_locks_agent ON resource_locks(agent_id);
 CREATE INDEX IF NOT EXISTS idx_resource_locks_expires ON resource_locks(expires_at);
 INSERT OR IGNORE INTO _migrations (id) VALUES (14);
 `,
+
+  // Migration 15: memory_embeddings table for semantic search
+  `
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+  memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+  embedding TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT 'tfidf-512',
+  dimensions INTEGER NOT NULL DEFAULT 512,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model);
+INSERT OR IGNORE INTO _migrations (id) VALUES (15);
+`,
 ];
 
 // ============================================================================

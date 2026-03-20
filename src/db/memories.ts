@@ -13,6 +13,7 @@ import {
   MemoryConflictError,
 } from "../types/index.js";
 import { getDatabase, now, uuid, resolvePartialId } from "./database.js";
+import { generateEmbedding, cosineSimilarity, serializeEmbedding, deserializeEmbedding } from "../lib/embeddings.js";
 import { redactSecrets } from "../lib/redact.js";
 import { hookRegistry } from "../lib/hooks.js";
 // Entity extraction is now handled by the LLM auto-memory pipeline (src/lib/auto-memory.ts).
@@ -692,4 +693,88 @@ export function getMemoryVersions(memoryId: string, db?: Database): MemoryVersio
     // memory_versions table may not exist yet
     return [];
   }
+}
+
+// ============================================================================
+// Semantic search via vector embeddings
+// ============================================================================
+
+export interface SemanticSearchResult {
+  memory: Memory;
+  score: number;
+}
+
+/**
+ * Store or update the embedding for a memory. Called asynchronously after saves.
+ * Non-blocking: failures are silently ignored.
+ */
+export async function indexMemoryEmbedding(memoryId: string, text: string, db?: Database): Promise<void> {
+  try {
+    const d = db || getDatabase();
+    const { embedding, model, dimensions } = await generateEmbedding(text);
+    const serialized = serializeEmbedding(embedding);
+    d.run(
+      `INSERT INTO memory_embeddings (memory_id, embedding, model, dimensions)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(memory_id) DO UPDATE SET embedding=excluded.embedding, model=excluded.model, dimensions=excluded.dimensions, created_at=datetime('now')`,
+      [memoryId, serialized, model, dimensions]
+    );
+  } catch {
+    // Non-critical: silently ignore embedding failures
+  }
+}
+
+/**
+ * Semantic search across memories using cosine similarity.
+ * Falls back gracefully if no embeddings exist yet.
+ */
+export async function semanticSearch(
+  queryText: string,
+  options: {
+    threshold?: number;
+    limit?: number;
+    scope?: string;
+    agent_id?: string;
+    project_id?: string;
+  } = {},
+  db?: Database
+): Promise<SemanticSearchResult[]> {
+  const d = db || getDatabase();
+  const { threshold = 0.5, limit = 10, scope, agent_id, project_id } = options;
+
+  // Generate query embedding
+  const { embedding: queryEmbedding } = await generateEmbedding(queryText);
+
+  // Load all embeddings with basic filters
+  const conditions: string[] = ["m.status = 'active'", "e.embedding IS NOT NULL"];
+  const params: (string | number)[] = [];
+  if (scope) { conditions.push("m.scope = ?"); params.push(scope); }
+  if (agent_id) { conditions.push("m.agent_id = ?"); params.push(agent_id); }
+  if (project_id) { conditions.push("m.project_id = ?"); params.push(project_id); }
+
+  const where = conditions.join(" AND ");
+  const rows = d.prepare(
+    `SELECT m.*, e.embedding FROM memories m
+     JOIN memory_embeddings e ON e.memory_id = m.id
+     WHERE ${where}`
+  ).all(...params) as Array<Record<string, unknown> & { embedding: string }>;
+
+  // Compute cosine similarity and rank
+  const scored: SemanticSearchResult[] = [];
+  for (const row of rows) {
+    try {
+      const docEmbedding = deserializeEmbedding(row.embedding as string);
+      const score = cosineSimilarity(queryEmbedding, docEmbedding);
+      if (score >= threshold) {
+        const { embedding: _, ...memRow } = row;
+        scored.push({ memory: parseMemoryRow(memRow), score: Math.round(score * 1000) / 1000 });
+      }
+    } catch {
+      // Skip malformed embeddings
+    }
+  }
+
+  // Sort by score desc, return top N
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, limit);
 }

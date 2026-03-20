@@ -13,6 +13,8 @@ import {
   touchMemory,
   cleanExpiredMemories,
   getMemoryVersions,
+  semanticSearch,
+  indexMemoryEmbedding,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../db/agents.js";
 import { setFocus, getFocus, unfocus, resolveProjectId } from "../lib/focus.js";
@@ -551,6 +553,64 @@ server.tool(
         `${i + 1}. [${m.scope}/${m.category}] ${m.key} = ${m.value.slice(0, 100)}${m.value.length > 100 ? "..." : ""} (importance: ${m.importance})`
       );
       return { content: [{ type: "text" as const, text: `${memories.length} result(s) for "${args.query}":\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_search_semantic",
+  "Semantic (meaning-based) memory search using vector embeddings. Finds memories by conceptual similarity, not keyword match. Uses OpenAI embeddings if OPENAI_API_KEY is set, otherwise TF-IDF.",
+  {
+    query: z.string().describe("Natural language query"),
+    threshold: z.coerce.number().min(0).max(1).optional().describe("Minimum cosine similarity score (default: 0.5)"),
+    limit: z.coerce.number().optional().describe("Max results (default: 10)"),
+    scope: z.enum(["global", "shared", "private"]).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    index_missing: z.coerce.boolean().optional().describe("If true, index any memories that lack embeddings before searching"),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+
+      // Optionally index all unembedded memories first
+      if (args.index_missing) {
+        const db = getDatabase();
+        const unindexed = db.prepare(
+          `SELECT id, value, summary FROM memories
+           WHERE status = 'active' AND id NOT IN (SELECT memory_id FROM memory_embeddings)
+           LIMIT 100`
+        ).all() as Array<{ id: string; value: string; summary: string | null }>;
+        await Promise.all(
+          unindexed.map((m) =>
+            indexMemoryEmbedding(m.id, [m.value, m.summary].filter(Boolean).join(" "))
+          )
+        );
+      }
+
+      let effectiveProjectId = args.project_id;
+      if (!args.project_id && args.agent_id) {
+        effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
+      }
+
+      const results = await semanticSearch(args.query, {
+        threshold: args.threshold,
+        limit: args.limit,
+        scope: args.scope,
+        agent_id: args.agent_id,
+        project_id: effectiveProjectId,
+      });
+
+      if (results.length === 0) {
+        return { content: [{ type: "text" as const, text: `No semantically similar memories found for: "${args.query}". Try a lower threshold or call with index_missing:true to generate embeddings first.` }] };
+      }
+
+      const lines = results.map((r, i) =>
+        `${i + 1}. [score:${r.score}] [${r.memory.scope}/${r.memory.category}] ${r.memory.key} = ${r.memory.value.slice(0, 120)}${r.memory.value.length > 120 ? "..." : ""}`
+      );
+      return { content: [{ type: "text" as const, text: `${results.length} semantic result(s) for "${args.query}":\n${lines.join("\n")}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }

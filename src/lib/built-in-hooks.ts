@@ -104,6 +104,23 @@ hookRegistry.register({
 });
 
 // ============================================================================
+// Built-in: PostMemorySave → async embedding generation for semantic search
+// ============================================================================
+
+hookRegistry.register({
+  type: "PostMemorySave",
+  blocking: false,
+  builtin: true,
+  priority: 300,
+  description: "Generate and store vector embedding for semantic memory search",
+  handler: async (ctx) => {
+    const { indexMemoryEmbedding } = await import("../db/memories.js");
+    const text = [ctx.memory.value, ctx.memory.summary].filter(Boolean).join(" ");
+    void indexMemoryEmbedding(ctx.memory.id, text);
+  },
+});
+
+// ============================================================================
 // Built-in: PostMemoryInject analytics → record injection event for synthesis
 // ============================================================================
 
