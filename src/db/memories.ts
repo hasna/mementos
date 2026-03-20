@@ -11,7 +11,7 @@ import {
   MemoryNotFoundError,
   VersionConflictError,
 } from "../types/index.js";
-import { getDatabase, now, uuid } from "./database.js";
+import { getDatabase, now, uuid, resolvePartialId } from "./database.js";
 import { redactSecrets } from "../lib/redact.js";
 import { hookRegistry } from "../lib/hooks.js";
 // Entity extraction is now handled by the LLM auto-memory pipeline (src/lib/auto-memory.ts).
@@ -72,6 +72,15 @@ export function createMemory(
 ): Memory {
   const d = db || getDatabase();
   const timestamp = now();
+
+  // Resolve partial project_id to full UUID to avoid FK constraint failures.
+  // Agents often pass short IDs (first 8 chars) from list_projects output.
+  if (input.project_id) {
+    const resolved = resolvePartialId(d, "projects", input.project_id);
+    if (resolved) {
+      input = { ...input, project_id: resolved };
+    }
+  }
 
   // Handle TTL
   let expiresAt = input.expires_at || null;
