@@ -5055,6 +5055,28 @@ program
     else console.log(chalk.dim("No focus set."));
   });
 
+// remove — alias for memory delete (consistent with open-* CLI conventions)
+program
+  .command("remove <nameOrId>")
+  .description("Remove/delete a memory by name or ID (alias for memory delete)")
+  .option("--agent <id>", "Agent ID")
+  .action((nameOrId: string, opts: { agent?: string }) => {
+    const globalOpts = program.opts() as { agent?: string; json?: boolean };
+    const agentId = opts.agent || globalOpts.agent;
+    const { deleteMemory, getMemoryByKey, resolvePartialMemoryId } = require("../db/memories.js") as any;
+    // Try by partial ID first, then by key
+    let id: string | null = null;
+    try { id = resolvePartialMemoryId?.(nameOrId) || null; } catch {}
+    if (!id) {
+      const mem = getMemoryByKey?.(nameOrId, agentId);
+      if (mem) id = mem.id;
+    }
+    if (!id) { console.error(chalk.red(`Memory not found: ${nameOrId}`)); process.exit(1); }
+    const deleted = deleteMemory(id);
+    if (deleted) console.log(chalk.green(`✓ Memory ${id.slice(0, 8)} removed`));
+    else { console.error(chalk.red(`Memory not found: ${nameOrId}`)); process.exit(1); }
+  });
+
 // ============================================================================
 // Parse and run
 // ============================================================================
