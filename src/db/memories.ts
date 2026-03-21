@@ -54,6 +54,7 @@ export function parseMemoryRow(row: Record<string, unknown>): Memory {
     project_id: (row["project_id"] as string) || null,
     session_id: (row["session_id"] as string) || null,
   machine_id: (row["machine_id"] as string) || null,
+  flag: (row["flag"] as string) || null,
     metadata: JSON.parse((row["metadata"] as string) || "{}") as Record<string, unknown>,
     access_count: row["access_count"] as number,
     version: row["version"] as number,
@@ -400,6 +401,12 @@ export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
       conditions.push("pinned = ?");
       params.push(filter.pinned ? 1 : 0);
     }
+    if ((filter as Record<string, unknown>).flagged === true) {
+      conditions.push("flag IS NOT NULL");
+    } else if ((filter as Record<string, unknown>).flag) {
+      conditions.push("flag = ?");
+      params.push((filter as Record<string, unknown>).flag as string);
+    }
     if (filter.tags && filter.tags.length > 0) {
       // AND match: memory must have ALL specified tags
       for (const tag of filter.tags) {
@@ -518,6 +525,10 @@ export function updateMemory(
   if (input.expires_at !== undefined) {
     sets.push("expires_at = ?");
     params.push(input.expires_at);
+  }
+  if (input.flag !== undefined) {
+    sets.push("flag = ?");
+    params.push(input.flag ?? null);
   }
   if (input.tags !== undefined) {
     sets.push("tags = ?");

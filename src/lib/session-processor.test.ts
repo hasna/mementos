@@ -52,6 +52,7 @@ function freshDb(): Database {
       active_project_id TEXT,
       session_id TEXT,
       machine_id TEXT,
+      flag TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
@@ -72,6 +73,7 @@ function freshDb(): Database {
       project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
       session_id TEXT,
       machine_id TEXT,
+      flag TEXT,
       metadata TEXT DEFAULT '{}',
       access_count INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,

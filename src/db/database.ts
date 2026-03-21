@@ -473,7 +473,14 @@ CREATE INDEX IF NOT EXISTS idx_memories_machine ON memories(machine_id);
 INSERT OR IGNORE INTO _migrations (id) VALUES (15);
 `,
 
-  // Migration 16: memory_embeddings table for semantic search
+  // Migration 16: memory flag column for needs-review/outdated/verify annotations
+  `
+ALTER TABLE memories ADD COLUMN flag TEXT;
+CREATE INDEX IF NOT EXISTS idx_memories_flag ON memories(flag);
+INSERT OR IGNORE INTO _migrations (id) VALUES (16);
+`,
+
+  // Migration 17: memory_embeddings table for semantic search
   `
 CREATE TABLE IF NOT EXISTS memory_embeddings (
   memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
@@ -483,7 +490,7 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model);
-INSERT OR IGNORE INTO _migrations (id) VALUES (16);
+INSERT OR IGNORE INTO _migrations (id) VALUES (17);
 `,
 ];
 

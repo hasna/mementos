@@ -522,6 +522,38 @@ server.tool(
 );
 
 server.tool(
+  "memory_flag",
+  "Flag a memory for attention: needs-review, outdated, verify, or any custom flag. Flagged memories surface at the top of memory_context. Pass flag=null to clear.",
+  {
+    id: z.string().optional().describe("Memory ID or partial ID"),
+    key: z.string().optional().describe("Memory key"),
+    flag: z.string().nullable().optional().describe("Flag value: needs-review | outdated | verify | important | null (to clear)"),
+    agent_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const db = getDatabase();
+      let memId: string | null = null;
+      if (args.id) {
+        memId = resolvePartialId(db, "memories", args.id) ?? args.id;
+      } else if (args.key) {
+        const row = db.query("SELECT id FROM memories WHERE key = ? AND status = 'active' LIMIT 1").get(args.key) as { id: string } | null;
+        memId = row?.id ?? null;
+      }
+      if (!memId) return { content: [{ type: "text" as const, text: `Memory not found: ${args.id || args.key}` }], isError: true };
+      const memory = getMemory(memId);
+      if (!memory) return { content: [{ type: "text" as const, text: `Memory not found: ${memId}` }], isError: true };
+      const flagVal = args.flag ?? null;
+      db.run("UPDATE memories SET flag = ?, updated_at = ? WHERE id = ?", [flagVal, new Date().toISOString(), memId]);
+      const flagStr = args.flag ?? null;
+      return { content: [{ type: "text" as const, text: flagStr ? `Flagged "${memory.key}" as: ${flagStr}` : `Cleared flag on "${memory.key}"` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_health",
   "Comprehensive health check for memories. Detects: stale (old + 0 access), high-importance-forgotten (importance>=7 + not accessed in 60d), and possibly-superseded (newer memory with similar key). Returns actionable summary.",
   {
@@ -1790,6 +1822,7 @@ server.tool(
       const now = Date.now();
 
       // Compute effective score with optional time-decay
+      // Flagged memories get a bonus to always surface near top
       const scored = memories.map((m) => {
         let effectiveScore = m.importance;
         if (!args.no_decay && !m.pinned) {
@@ -1798,6 +1831,8 @@ server.tool(
           const decayFactor = Math.pow(0.5, ageDays / halflifeDays);
           effectiveScore = m.importance * decayFactor;
         }
+        // Flagged memories always surface (boost to 11 equivalent — above max importance 10)
+        if (m.flag) effectiveScore = Math.max(effectiveScore, 11);
         return { ...m, effective_score: Math.round(effectiveScore * 100) / 100 };
       });
 
@@ -1812,7 +1847,7 @@ server.tool(
       }
 
       const lines = top.map((m) =>
-        `[${m.scope}/${m.category}] ${m.key}: ${m.value} (score: ${m.effective_score}, raw: ${m.importance}${m.pinned ? ", pinned" : ""})`
+        `[${m.scope}/${m.category}] ${m.key}: ${m.value} (score: ${m.effective_score}, raw: ${m.importance}${m.pinned ? ", pinned" : ""}${m.flag ? `, flag: ${m.flag}` : ""})`
       );
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (e) {

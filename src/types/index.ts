@@ -42,6 +42,7 @@ export interface Memory {
   project_id: string | null;
   session_id: string | null;
   machine_id?: string | null;
+  flag?: string | null;
   metadata: Record<string, unknown>;
   access_count: number;
   version: number;
@@ -80,6 +81,7 @@ export interface CreateMemoryInput {
   expires_at?: string;
   ttl_ms?: number;
   machine_id?: string;
+  flag?: string;
 }
 
 export interface UpdateMemoryInput {
@@ -93,6 +95,7 @@ export interface UpdateMemoryInput {
   status?: MemoryStatus;
   metadata?: Record<string, unknown>;
   expires_at?: string | null;
+  flag?: string | null;
   version: number; // required for optimistic locking
 }
 
