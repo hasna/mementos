@@ -1763,12 +1763,14 @@ server.tool(
 
 server.tool(
   "memory_context",
-  "Get memories relevant to current context, filtered by scope/importance/recency.",
+  "Get memories relevant to current context. Uses time-weighted scoring: score = importance × decay(age). Pinned memories are exempt. Returns effective_score on each memory.",
   {
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     scope: z.enum(["global", "shared", "private"]).optional(),
     limit: z.coerce.number().optional(),
+    decay_halflife_days: z.coerce.number().optional().describe("Importance half-life in days (default: 90). Lower = more weight on recent memories."),
+    no_decay: z.coerce.boolean().optional().describe("Set true to disable decay and sort purely by importance."),
   },
   async (args) => {
     try {
@@ -1777,18 +1779,40 @@ server.tool(
         agent_id: args.agent_id,
         project_id: args.project_id,
         status: "active",
-        limit: args.limit || 30,
+        limit: (args.limit || 30) * 2, // fetch 2x, then rerank by effective score
       };
       const memories = listMemories(filter);
       if (memories.length === 0) {
         return { content: [{ type: "text" as const, text: "No memories in current context." }] };
       }
-      // Increment access_count and update accessed_at for all returned memories
-      for (const m of memories) {
+
+      const halflifeDays = args.decay_halflife_days ?? 90;
+      const now = Date.now();
+
+      // Compute effective score with optional time-decay
+      const scored = memories.map((m) => {
+        let effectiveScore = m.importance;
+        if (!args.no_decay && !m.pinned) {
+          const ageMs = now - new Date(m.updated_at).getTime();
+          const ageDays = ageMs / (1000 * 60 * 60 * 24);
+          const decayFactor = Math.pow(0.5, ageDays / halflifeDays);
+          effectiveScore = m.importance * decayFactor;
+        }
+        return { ...m, effective_score: Math.round(effectiveScore * 100) / 100 };
+      });
+
+      // Sort by effective_score descending, take top N
+      const limit = args.limit || 30;
+      scored.sort((a, b) => b.effective_score - a.effective_score);
+      const top = scored.slice(0, limit);
+
+      // Increment access_count for returned memories
+      for (const m of top) {
         touchMemory(m.id);
       }
-      const lines = memories.map((m) =>
-        `[${m.scope}/${m.category}] ${m.key}: ${m.value} (importance: ${m.importance})`
+
+      const lines = top.map((m) =>
+        `[${m.scope}/${m.category}] ${m.key}: ${m.value} (score: ${m.effective_score}, raw: ${m.importance}${m.pinned ? ", pinned" : ""})`
       );
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (e) {
