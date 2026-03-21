@@ -787,6 +787,59 @@ CREATE INDEX IF NOT EXISTS idx_memory_subs_agent ON memory_subscriptions(agent_i
 CREATE INDEX IF NOT EXISTS idx_memory_subs_key ON memory_subscriptions(key_pattern);
 INSERT OR IGNORE INTO _migrations (id) VALUES (28);
 `,
+
+  // Migration 29: fix FK references broken by table rename in migrations 19/20.
+  // When memories was renamed to memories_old and back, SQLite rewrote FKs in
+  // memory_tags, entity_memories, and memory_embeddings to point to memories_old.
+  `
+PRAGMA foreign_keys = OFF;
+
+-- Fix memory_tags FK if broken
+CREATE TABLE IF NOT EXISTS _mt_fix AS SELECT * FROM memory_tags;
+DROP TABLE IF EXISTS memory_tags;
+CREATE TABLE memory_tags (
+  memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  PRIMARY KEY (memory_id, tag)
+);
+INSERT OR IGNORE INTO memory_tags SELECT * FROM _mt_fix;
+DROP TABLE _mt_fix;
+CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_memory_tags_memory ON memory_tags(memory_id);
+
+-- Fix entity_memories FK if broken
+CREATE TABLE IF NOT EXISTS _em_fix AS SELECT * FROM entity_memories;
+DROP TABLE IF EXISTS entity_memories;
+CREATE TABLE entity_memories (
+  entity_id TEXT NOT NULL,
+  memory_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'context' CHECK (role IN ('subject','object','context')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (entity_id, memory_id),
+  FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+  FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+);
+INSERT OR IGNORE INTO entity_memories SELECT * FROM _em_fix;
+DROP TABLE _em_fix;
+CREATE INDEX IF NOT EXISTS idx_entity_memories_memory ON entity_memories(memory_id);
+
+-- Fix memory_embeddings FK if broken
+CREATE TABLE IF NOT EXISTS _me_fix AS SELECT * FROM memory_embeddings;
+DROP TABLE IF EXISTS memory_embeddings;
+CREATE TABLE memory_embeddings (
+  memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
+  embedding TEXT NOT NULL,
+  model TEXT NOT NULL DEFAULT 'tfidf-512',
+  dimensions INTEGER NOT NULL DEFAULT 512,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+INSERT OR IGNORE INTO memory_embeddings SELECT * FROM _me_fix;
+DROP TABLE _me_fix;
+CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model);
+
+PRAGMA foreign_keys = ON;
+INSERT OR IGNORE INTO _migrations (id) VALUES (29);
+`,
 ];
 
 // ============================================================================
