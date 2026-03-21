@@ -54,6 +54,7 @@ function freshDb(): Database {
       agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
       project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
       session_id TEXT,
+      machine_id TEXT,
       metadata TEXT DEFAULT '{}',
       access_count INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,

@@ -41,6 +41,7 @@ export interface Memory {
   agent_id: string | null;
   project_id: string | null;
   session_id: string | null;
+  machine_id?: string | null;
   metadata: Record<string, unknown>;
   access_count: number;
   version: number;
@@ -78,6 +79,7 @@ export interface CreateMemoryInput {
   metadata?: Record<string, unknown>;
   expires_at?: string;
   ttl_ms?: number;
+  machine_id?: string;
 }
 
 export interface UpdateMemoryInput {

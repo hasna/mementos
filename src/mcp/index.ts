@@ -29,6 +29,7 @@ import {
   listProjects,
   getProject,
 } from "../db/projects.js";
+import { registerMachine, listMachines, getMachine, renameMachine, getCurrentMachineId } from "../db/machines.js";
 import { createEntity, getEntity, getEntityByName, listEntities, updateEntity, deleteEntity, mergeEntities } from "../db/entities.js";
 import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../db/entity-memories.js";
@@ -162,6 +163,7 @@ server.tool(
     metadata: z.record(z.unknown()).optional(),
     conflict: z.enum(["merge", "overwrite", "error", "version-fork"]).optional()
       .describe("Conflict strategy: merge=upsert(default), overwrite=same as merge, error=fail if key exists, version-fork=always create new"),
+    machine_id: z.string().optional().describe("Machine ID (from register_machine). If omitted, auto-detected from current hostname."),
   },
   async (args) => {
     try {
@@ -175,6 +177,10 @@ server.tool(
       if (!input.project_id && input.agent_id) {
         const focusedProject = resolveProjectId(input.agent_id as string, null);
         if (focusedProject) input.project_id = focusedProject;
+      }
+      // Auto-detect machine_id if not provided
+      if (!input.machine_id) {
+        try { input.machine_id = getCurrentMachineId(); } catch { /* ignore — machine registry optional */ }
       }
       const dedupeMode = (conflict as import("../types/index.js").DedupeMode | undefined) ?? "merge";
       const memory = createMemory(input as unknown as CreateMemoryInput, dedupeMode);
@@ -1409,6 +1415,52 @@ server.tool(
           text: `Project:\nID: ${project.id}\nName: ${project.name}\nPath: ${project.path}\nDescription: ${project.description || "-"}\nCreated: ${project.created_at}`,
         }],
       };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ── Machine registry ──────────────────────────────────────────────────────────
+
+server.tool(
+  "register_machine",
+  "Register the current machine in the mementos machine registry. Auto-detects hostname. Idempotent by hostname.",
+  { name: z.string().optional().describe("Human-readable name (e.g. 'apple01'). Defaults to hostname.") },
+  async (args) => {
+    try {
+      const machine = registerMachine(args.name);
+      return { content: [{ type: "text" as const, text: `Machine: ${machine.name} | ${machine.id.slice(0, 8)} | hostname:${machine.hostname} | platform:${machine.platform}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "list_machines",
+  "List all registered machines with their hostname, platform, and last seen time.",
+  {},
+  async () => {
+    try {
+      const machines = listMachines();
+      return { content: [{ type: "text" as const, text: JSON.stringify(machines) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "rename_machine",
+  "Rename a machine by its ID or current name.",
+  { id: z.string().describe("Machine ID or name"), new_name: z.string() },
+  async (args) => {
+    try {
+      const machine = getMachine(args.id);
+      if (!machine) return { content: [{ type: "text" as const, text: `Machine not found: ${args.id}` }], isError: true };
+      const updated = renameMachine(machine.id, args.new_name);
+      return { content: [{ type: "text" as const, text: `Renamed: ${machine.name} → ${updated.name}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }

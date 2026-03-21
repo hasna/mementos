@@ -457,7 +457,23 @@ CREATE INDEX IF NOT EXISTS idx_resource_locks_expires ON resource_locks(expires_
 INSERT OR IGNORE INTO _migrations (id) VALUES (14);
 `,
 
-  // Migration 15: memory_embeddings table for semantic search
+  // Migration 15: machine registry
+  `
+CREATE TABLE IF NOT EXISTS machines (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  hostname TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'unknown',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_machines_hostname ON machines(hostname);
+ALTER TABLE memories ADD COLUMN machine_id TEXT REFERENCES machines(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_machine ON memories(machine_id);
+INSERT OR IGNORE INTO _migrations (id) VALUES (15);
+`,
+
+  // Migration 16: memory_embeddings table for semantic search
   `
 CREATE TABLE IF NOT EXISTS memory_embeddings (
   memory_id TEXT PRIMARY KEY REFERENCES memories(id) ON DELETE CASCADE,
@@ -467,7 +483,7 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model);
-INSERT OR IGNORE INTO _migrations (id) VALUES (15);
+INSERT OR IGNORE INTO _migrations (id) VALUES (16);
 `,
 ];
 

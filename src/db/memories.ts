@@ -53,6 +53,7 @@ export function parseMemoryRow(row: Record<string, unknown>): Memory {
     agent_id: (row["agent_id"] as string) || null,
     project_id: (row["project_id"] as string) || null,
     session_id: (row["session_id"] as string) || null,
+  machine_id: (row["machine_id"] as string) || null,
     metadata: JSON.parse((row["metadata"] as string) || "{}") as Record<string, unknown>,
     access_count: row["access_count"] as number,
     version: row["version"] as number,
@@ -190,8 +191,8 @@ export function createMemory(
 
   // Insert new
   d.run(
-    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, metadata, access_count, version, expires_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
+    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, metadata, access_count, version, expires_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
     [
       id,
       input.key,
@@ -205,6 +206,7 @@ export function createMemory(
       input.agent_id || null,
       input.project_id || null,
       input.session_id || null,
+      input.machine_id || null,
       metadataJson,
       expiresAt,
       timestamp,
