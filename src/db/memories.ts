@@ -16,6 +16,7 @@ import { getDatabase, now, uuid, resolvePartialId } from "./database.js";
 import { generateEmbedding, cosineSimilarity, serializeEmbedding, deserializeEmbedding } from "../lib/embeddings.js";
 import { redactSecrets } from "../lib/redact.js";
 import { hookRegistry } from "../lib/hooks.js";
+import { computeTrustScore } from "../lib/poisoning.js";
 // Entity extraction is now handled by the LLM auto-memory pipeline (src/lib/auto-memory.ts).
 // The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
 // Keeping this comment so the migration intent is clear.
@@ -55,10 +56,18 @@ export function parseMemoryRow(row: Record<string, unknown>): Memory {
     session_id: (row["session_id"] as string) || null,
   machine_id: (row["machine_id"] as string) || null,
   flag: (row["flag"] as string) || null,
+    content_type: (row["content_type"] as string as Memory["content_type"]) || "text",
+    namespace: (row["namespace"] as string) || null,
+    created_by_agent: (row["created_by_agent"] as string) || null,
+    updated_by_agent: (row["updated_by_agent"] as string) || null,
+    trust_score: row["trust_score"] != null ? (row["trust_score"] as number) : null,
     metadata: JSON.parse((row["metadata"] as string) || "{}") as Record<string, unknown>,
     access_count: row["access_count"] as number,
     version: row["version"] as number,
     expires_at: (row["expires_at"] as string) || null,
+    valid_from: (row["valid_from"] as string) || null,
+    valid_until: (row["valid_until"] as string) || null,
+    ingested_at: (row["ingested_at"] as string) || null,
     created_at: row["created_at"] as string,
     updated_at: row["updated_at"] as string,
     accessed_at: (row["accessed_at"] as string) || null,
@@ -90,6 +99,11 @@ export function createMemory(
   let expiresAt = input.expires_at || null;
   if (input.ttl_ms && !expiresAt) {
     expiresAt = new Date(Date.now() + input.ttl_ms).toISOString();
+  }
+
+  // Working scope: auto-set expires_at to 1 hour from now if not explicitly provided
+  if (input.scope === "working" && !expiresAt) {
+    expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   }
 
   const id = uuid();
@@ -174,6 +188,15 @@ export function createMemory(
 
       const merged = getMemory(existing.id, d)!;
 
+      // Compute and store trust_score for poisoning detection
+      try {
+        const existingMemories = listMemoriesByKey(input.key, d);
+        const trustScore = computeTrustScore(safeValue, input.key, existingMemories, input.importance);
+        d.run("UPDATE memories SET trust_score = ? WHERE id = ?", [trustScore, existing.id]);
+      } catch {
+        // trust_score column may not exist in test schemas — ignore
+      }
+
       // Re-extract entities on merge (value changed)
       try {
         // Remove old entity links
@@ -192,8 +215,8 @@ export function createMemory(
 
   // Insert new
   d.run(
-    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, metadata, access_count, version, expires_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?)`,
+    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.key,
@@ -208,8 +231,13 @@ export function createMemory(
       input.project_id || null,
       input.session_id || null,
       input.machine_id || null,
+      input.namespace || null,
+      input.agent_id || null, // created_by_agent
       metadataJson,
       expiresAt,
+      (input.metadata as Record<string, unknown>)?.valid_from as string ?? timestamp,
+      (input.metadata as Record<string, unknown>)?.valid_until as string ?? null,
+      timestamp,
       timestamp,
       timestamp,
     ]
@@ -225,6 +253,15 @@ export function createMemory(
 
   const memory = getMemory(id, d)!;
 
+  // Compute and store trust_score for poisoning detection
+  try {
+    const existingMemories = listMemoriesByKey(input.key, d);
+    const trustScore = computeTrustScore(safeValue, input.key, existingMemories, input.importance);
+    d.run("UPDATE memories SET trust_score = ? WHERE id = ?", [trustScore, id]);
+  } catch {
+    // trust_score column may not exist in test schemas — ignore
+  }
+
   // Run entity extraction no-op (replaced by async LLM pipeline)
   runEntityExtraction(memory, input.project_id, d);
 
@@ -239,6 +276,18 @@ export function createMemory(
   });
 
   return memory;
+}
+
+// ============================================================================
+// Internal helpers
+// ============================================================================
+
+/** List active memories with the same key (for trust_score contradiction check). */
+function listMemoriesByKey(key: string, db: Database): Memory[] {
+  const rows = db
+    .query("SELECT * FROM memories WHERE key = ? AND status = 'active' ORDER BY importance DESC LIMIT 10")
+    .all(key) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
 }
 
 // ============================================================================
@@ -260,7 +309,8 @@ export function getMemoryByKey(
   agentId?: string,
   projectId?: string,
   sessionId?: string,
-  db?: Database
+  db?: Database,
+  as_of?: string
 ): Memory | null {
   const d = db || getDatabase();
 
@@ -282,6 +332,12 @@ export function getMemoryByKey(
   if (sessionId) {
     sql += " AND session_id = ?";
     params.push(sessionId);
+  }
+  if (as_of) {
+    sql += " AND (valid_from IS NULL OR valid_from <= ?)";
+    params.push(as_of);
+    sql += " AND (valid_until IS NULL OR valid_until > ?)";
+    params.push(as_of);
   }
 
   sql += " AND status = 'active' ORDER BY importance DESC LIMIT 1";
@@ -416,12 +472,24 @@ export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
         params.push(tag);
       }
     }
+    if (filter.namespace) {
+      conditions.push("namespace = ?");
+      params.push(filter.namespace);
+    }
     if (filter.search) {
       conditions.push(
         "(key LIKE ? OR value LIKE ? OR summary LIKE ?)"
       );
       const term = `%${filter.search}%`;
       params.push(term, term, term);
+    }
+    if (filter.as_of) {
+      // Bi-temporal query: return memories that were valid at the given point in time
+      // valid_from <= as_of AND (valid_until IS NULL OR valid_until > as_of)
+      conditions.push("(valid_from IS NULL OR valid_from <= ?)");
+      params.push(filter.as_of);
+      conditions.push("(valid_until IS NULL OR valid_until > ?)");
+      params.push(filter.as_of);
     }
   } else {
     conditions.push("status = 'active'");

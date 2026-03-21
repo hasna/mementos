@@ -290,3 +290,264 @@ export function mergeEntities(
 
   return getEntity(targetId, d);
 }
+
+// ============================================================================
+// Entity disambiguation — find duplicate entities by name similarity
+// ============================================================================
+
+/**
+ * Compute trigram similarity between two strings (0–1).
+ * Uses character trigrams with Jaccard similarity coefficient.
+ */
+function trigramSimilarity(a: string, b: string): number {
+  const trigramsOf = (s: string): Set<string> => {
+    const padded = `  ${s.toLowerCase()}  `;
+    const set = new Set<string>();
+    for (let i = 0; i < padded.length - 2; i++) {
+      set.add(padded.slice(i, i + 3));
+    }
+    return set;
+  };
+
+  const triA = trigramsOf(a);
+  const triB = trigramsOf(b);
+
+  let intersection = 0;
+  for (const t of triA) {
+    if (triB.has(t)) intersection++;
+  }
+
+  const union = triA.size + triB.size - intersection;
+  return union === 0 ? 0 : intersection / union;
+}
+
+export interface DuplicateEntityPair {
+  entity_a: Entity;
+  entity_b: Entity;
+  similarity: number;
+}
+
+/**
+ * Find potential duplicate entities by name similarity within same type+project.
+ * Returns pairs above the threshold (default 0.8) sorted by similarity descending.
+ */
+export function findDuplicateEntities(
+  threshold: number = 0.8,
+  db?: Database
+): DuplicateEntityPair[] {
+  const d = db || getDatabase();
+
+  // Group entities by type+project for comparison
+  const entities = d
+    .query("SELECT * FROM entities ORDER BY type, project_id, name")
+    .all() as Record<string, unknown>[];
+
+  const parsed = entities.map(parseEntityRow);
+
+  // Group by type+project_id
+  const groups = new Map<string, Entity[]>();
+  for (const e of parsed) {
+    const groupKey = `${e.type}:${e.project_id || ""}`;
+    const group = groups.get(groupKey);
+    if (group) {
+      group.push(e);
+    } else {
+      groups.set(groupKey, [e]);
+    }
+  }
+
+  const duplicates: DuplicateEntityPair[] = [];
+
+  for (const group of groups.values()) {
+    for (let i = 0; i < group.length; i++) {
+      for (let j = i + 1; j < group.length; j++) {
+        const sim = trigramSimilarity(group[i]!.name, group[j]!.name);
+        if (sim >= threshold) {
+          duplicates.push({
+            entity_a: group[i]!,
+            entity_b: group[j]!,
+            similarity: sim,
+          });
+        }
+      }
+    }
+  }
+
+  // Sort by similarity descending
+  duplicates.sort((a, b) => b.similarity - a.similarity);
+
+  return duplicates;
+}
+
+// ============================================================================
+// Graph Traversal (multi-hop recursive CTE)
+// ============================================================================
+
+export interface GraphTraversalPath {
+  entities: Array<{ id: string; name: string; type: string }>;
+  relations: Array<{ id: string; relation_type: string; weight: number }>;
+  depth: number;
+}
+
+export interface GraphTraversalResult {
+  paths: GraphTraversalPath[];
+  visited_entities: Array<{ id: string; name: string; type: string }>;
+  total_paths: number;
+}
+
+/**
+ * Multi-hop graph traversal using a recursive CTE.
+ *
+ * Starts from `startEntityId` and follows relations up to `max_depth` hops,
+ * returning all discovered paths. Handles cycles by tracking visited entities
+ * in each path. Supports direction filtering and relation-type filtering.
+ */
+export function graphTraverse(
+  startEntityId: string,
+  options: {
+    max_depth?: number;
+    relation_types?: string[];
+    direction?: "outgoing" | "incoming" | "both";
+    limit?: number;
+  } = {},
+  db?: Database,
+): GraphTraversalResult {
+  const d = db || getDatabase();
+  const maxDepth = options.max_depth ?? 2;
+  const direction = options.direction ?? "both";
+  const limit = options.limit ?? 50;
+
+  // Verify start entity exists
+  getEntity(startEntityId, d);
+
+  // Build the direction-aware join condition
+  let joinCondition: string;
+  let nextEntityExpr: string;
+
+  if (direction === "outgoing") {
+    joinCondition = "r.source_entity_id = t.entity_id";
+    nextEntityExpr = "r.target_entity_id";
+  } else if (direction === "incoming") {
+    joinCondition = "r.target_entity_id = t.entity_id";
+    nextEntityExpr = "r.source_entity_id";
+  } else {
+    // both
+    joinCondition = "(r.source_entity_id = t.entity_id OR r.target_entity_id = t.entity_id)";
+    nextEntityExpr = "CASE WHEN r.source_entity_id = t.entity_id THEN r.target_entity_id ELSE r.source_entity_id END";
+  }
+
+  // Build optional relation_type filter
+  let relationTypeFilter = "";
+  const params: SQLQueryBindings[] = [startEntityId, startEntityId];
+
+  if (options.relation_types && options.relation_types.length > 0) {
+    const placeholders = options.relation_types.map(() => "?").join(",");
+    relationTypeFilter = `AND r.relation_type IN (${placeholders})`;
+  }
+
+  // Build the recursive CTE query
+  // path_entities stores comma-separated entity IDs
+  // path_relations stores a JSON array of {id, relation_type, weight} objects
+  const sql = `
+    WITH RECURSIVE traverse(entity_id, depth, path_entities, path_relations) AS (
+      -- Base case: start entity
+      SELECT ?, 0, ?, '[]'
+      UNION ALL
+      -- Recursive step: follow relations
+      SELECT
+        ${nextEntityExpr},
+        t.depth + 1,
+        t.path_entities || ',' || ${nextEntityExpr},
+        t.path_relations || '|' || r.id || ':' || r.relation_type || ':' || r.weight
+      FROM traverse t
+      JOIN relations r ON ${joinCondition}
+      WHERE t.depth < ?
+        AND INSTR(t.path_entities, ${nextEntityExpr}) = 0
+        ${relationTypeFilter}
+    )
+    SELECT entity_id, depth, path_entities, path_relations
+    FROM traverse
+    WHERE depth > 0
+    ORDER BY depth ASC
+    LIMIT ?
+  `;
+
+  // Bind params: startEntityId (base), startEntityId (trail seed), maxDepth, [relation_types...], limit
+  params.push(maxDepth);
+  if (options.relation_types && options.relation_types.length > 0) {
+    params.push(...options.relation_types);
+  }
+  params.push(limit);
+
+  const rows = d.query(sql).all(...params) as Array<{
+    entity_id: string;
+    depth: number;
+    path_entities: string;
+    path_relations: string;
+  }>;
+
+  // Collect all unique visited entity IDs
+  const visitedIds = new Set<string>();
+  visitedIds.add(startEntityId);
+
+  const paths: GraphTraversalPath[] = [];
+
+  for (const row of rows) {
+    const entityIds = row.path_entities.split(",");
+    for (const eid of entityIds) {
+      visitedIds.add(eid);
+    }
+
+    // Parse relation data from the compact format: id:type:weight|id:type:weight
+    const relationEntries: Array<{ id: string; relation_type: string; weight: number }> = [];
+    if (row.path_relations && row.path_relations !== "[]") {
+      // The first element is always "[]" from the base case, followed by "|id:type:weight" segments
+      const segments = row.path_relations.split("|").filter((s) => s !== "[]" && s !== "");
+      for (const seg of segments) {
+        const parts = seg.split(":");
+        if (parts.length >= 3) {
+          relationEntries.push({
+            id: parts[0]!,
+            relation_type: parts[1]!,
+            weight: parseFloat(parts[2]!),
+          });
+        }
+      }
+    }
+
+    // Fetch entity details for each entity in the path
+    const pathEntities: Array<{ id: string; name: string; type: string }> = [];
+    for (const eid of entityIds) {
+      try {
+        const e = getEntity(eid, d);
+        pathEntities.push({ id: e.id, name: e.name, type: e.type });
+      } catch {
+        // Entity may have been deleted — skip
+        pathEntities.push({ id: eid, name: "(unknown)", type: "concept" });
+      }
+    }
+
+    paths.push({
+      entities: pathEntities,
+      relations: relationEntries,
+      depth: row.depth,
+    });
+  }
+
+  // Build visited entities list with details
+  const visitedEntities: Array<{ id: string; name: string; type: string }> = [];
+  for (const eid of visitedIds) {
+    try {
+      const e = getEntity(eid, d);
+      visitedEntities.push({ id: e.id, name: e.name, type: e.type });
+    } catch {
+      visitedEntities.push({ id: eid, name: "(unknown)", type: "concept" });
+    }
+  }
+
+  return {
+    paths,
+    visited_entities: visitedEntities,
+    total_paths: paths.length,
+  };
+}

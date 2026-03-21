@@ -10,7 +10,9 @@ import {
   updateEntity,
   deleteEntity,
   mergeEntities,
+  graphTraverse,
 } from "./entities.js";
+import { createRelation } from "./relations.js";
 import { EntityNotFoundError } from "../types/index.js";
 
 /** Helper: insert a real project row so FK constraints pass */
@@ -462,5 +464,207 @@ describe("mergeEntities", () => {
   test("throws EntityNotFoundError if target does not exist", () => {
     const source = createEntity({ name: "S3", type: "tool" });
     expect(() => mergeEntities(source.id, "nonexistent")).toThrow(EntityNotFoundError);
+  });
+});
+
+// ============================================================================
+// graphTraverse
+// ============================================================================
+
+describe("graphTraverse", () => {
+  test("single hop traversal returns direct neighbors", () => {
+    const a = createEntity({ name: "A", type: "tool" });
+    const b = createEntity({ name: "B", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+
+    const result = graphTraverse(a.id, { max_depth: 1 });
+    expect(result.total_paths).toBe(1);
+    expect(result.paths[0]!.depth).toBe(1);
+    expect(result.paths[0]!.entities).toHaveLength(2); // A, B
+    expect(result.paths[0]!.entities[1]!.name).toBe("B");
+    expect(result.paths[0]!.relations).toHaveLength(1);
+    expect(result.paths[0]!.relations[0]!.relation_type).toBe("uses");
+    expect(result.visited_entities).toHaveLength(2);
+  });
+
+  test("multi-hop traversal (depth 2) follows two edges", () => {
+    const a = createEntity({ name: "A", type: "tool" });
+    const b = createEntity({ name: "B", type: "tool" });
+    const c = createEntity({ name: "C", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+    createRelation({ source_entity_id: b.id, target_entity_id: c.id, relation_type: "depends_on" });
+
+    const result = graphTraverse(a.id, { max_depth: 2 });
+    // Should find paths: A->B (depth 1) and A->B->C (depth 2)
+    expect(result.total_paths).toBeGreaterThanOrEqual(2);
+    // C should be in visited entities
+    const visitedNames = result.visited_entities.map(e => e.name);
+    expect(visitedNames).toContain("A");
+    expect(visitedNames).toContain("B");
+    expect(visitedNames).toContain("C");
+  });
+
+  test("multi-hop traversal (depth 3) follows three edges", () => {
+    const a = createEntity({ name: "A", type: "tool" });
+    const b = createEntity({ name: "B", type: "tool" });
+    const c = createEntity({ name: "C", type: "concept" });
+    const d = createEntity({ name: "D", type: "person" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+    createRelation({ source_entity_id: b.id, target_entity_id: c.id, relation_type: "depends_on" });
+    createRelation({ source_entity_id: c.id, target_entity_id: d.id, relation_type: "created_by" });
+
+    const result = graphTraverse(a.id, { max_depth: 3 });
+    const visitedNames = result.visited_entities.map(e => e.name);
+    expect(visitedNames).toContain("D");
+    // Should have paths at depth 1, 2, and 3
+    const depths = result.paths.map(p => p.depth);
+    expect(depths).toContain(1);
+    expect(depths).toContain(2);
+    expect(depths).toContain(3);
+  });
+
+  test("direction filtering — outgoing only", () => {
+    const a = createEntity({ name: "Center", type: "tool" });
+    const out = createEntity({ name: "Outgoing", type: "tool" });
+    const inc = createEntity({ name: "Incoming", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: out.id, relation_type: "uses" });
+    createRelation({ source_entity_id: inc.id, target_entity_id: a.id, relation_type: "depends_on" });
+
+    const result = graphTraverse(a.id, { max_depth: 1, direction: "outgoing" });
+    const visitedNames = result.visited_entities.map(e => e.name);
+    expect(visitedNames).toContain("Outgoing");
+    expect(visitedNames).not.toContain("Incoming");
+  });
+
+  test("direction filtering — incoming only", () => {
+    const a = createEntity({ name: "Center", type: "tool" });
+    const out = createEntity({ name: "Outgoing", type: "tool" });
+    const inc = createEntity({ name: "Incoming", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: out.id, relation_type: "uses" });
+    createRelation({ source_entity_id: inc.id, target_entity_id: a.id, relation_type: "depends_on" });
+
+    const result = graphTraverse(a.id, { max_depth: 1, direction: "incoming" });
+    const visitedNames = result.visited_entities.map(e => e.name);
+    expect(visitedNames).toContain("Incoming");
+    expect(visitedNames).not.toContain("Outgoing");
+  });
+
+  test("direction filtering — both includes all neighbors", () => {
+    const a = createEntity({ name: "Center", type: "tool" });
+    const out = createEntity({ name: "Outgoing", type: "tool" });
+    const inc = createEntity({ name: "Incoming", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: out.id, relation_type: "uses" });
+    createRelation({ source_entity_id: inc.id, target_entity_id: a.id, relation_type: "depends_on" });
+
+    const result = graphTraverse(a.id, { max_depth: 1, direction: "both" });
+    const visitedNames = result.visited_entities.map(e => e.name);
+    expect(visitedNames).toContain("Outgoing");
+    expect(visitedNames).toContain("Incoming");
+  });
+
+  test("relation type filtering", () => {
+    const a = createEntity({ name: "A", type: "tool" });
+    const b = createEntity({ name: "B-uses", type: "tool" });
+    const c = createEntity({ name: "C-depends", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+    createRelation({ source_entity_id: a.id, target_entity_id: c.id, relation_type: "depends_on" });
+
+    const result = graphTraverse(a.id, { max_depth: 1, relation_types: ["uses"] });
+    const visitedNames = result.visited_entities.map(e => e.name);
+    expect(visitedNames).toContain("B-uses");
+    expect(visitedNames).not.toContain("C-depends");
+  });
+
+  test("cycle handling — A->B->A does not loop", () => {
+    const a = createEntity({ name: "CycleA", type: "tool" });
+    const b = createEntity({ name: "CycleB", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+    createRelation({ source_entity_id: b.id, target_entity_id: a.id, relation_type: "uses" });
+
+    // Should terminate without infinite loop
+    const result = graphTraverse(a.id, { max_depth: 5 });
+    expect(result.visited_entities).toHaveLength(2); // only A and B
+    // No path should revisit A
+    for (const path of result.paths) {
+      const ids = path.entities.map(e => e.id);
+      const uniqueIds = new Set(ids);
+      expect(ids.length).toBe(uniqueIds.size);
+    }
+  });
+
+  test("cycle handling — triangle A->B->C->A", () => {
+    const a = createEntity({ name: "TriA", type: "tool" });
+    const b = createEntity({ name: "TriB", type: "tool" });
+    const c = createEntity({ name: "TriC", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+    createRelation({ source_entity_id: b.id, target_entity_id: c.id, relation_type: "uses" });
+    createRelation({ source_entity_id: c.id, target_entity_id: a.id, relation_type: "uses" });
+
+    const result = graphTraverse(a.id, { max_depth: 10 });
+    // Should visit all three but not loop forever
+    expect(result.visited_entities).toHaveLength(3);
+    // Verify no duplicate entities in any single path
+    for (const path of result.paths) {
+      const ids = path.entities.map(e => e.id);
+      const uniqueIds = new Set(ids);
+      expect(ids.length).toBe(uniqueIds.size);
+    }
+  });
+
+  test("empty results for isolated entity", () => {
+    const isolated = createEntity({ name: "Lonely", type: "concept" });
+
+    const result = graphTraverse(isolated.id, { max_depth: 3 });
+    expect(result.total_paths).toBe(0);
+    expect(result.paths).toHaveLength(0);
+    expect(result.visited_entities).toHaveLength(1); // just the start entity
+    expect(result.visited_entities[0]!.name).toBe("Lonely");
+  });
+
+  test("limit parameter restricts number of paths returned", () => {
+    // Create a star graph: center -> 5 nodes
+    const center = createEntity({ name: "Hub", type: "tool" });
+    for (let i = 0; i < 5; i++) {
+      const spoke = createEntity({ name: `Spoke${i}`, type: "tool" });
+      createRelation({ source_entity_id: center.id, target_entity_id: spoke.id, relation_type: "uses" });
+    }
+
+    const result = graphTraverse(center.id, { max_depth: 1, limit: 3 });
+    expect(result.total_paths).toBe(3);
+    expect(result.paths).toHaveLength(3);
+  });
+
+  test("throws EntityNotFoundError for non-existent start entity", () => {
+    expect(() => graphTraverse("nonexistent")).toThrow(EntityNotFoundError);
+  });
+
+  test("default options work correctly", () => {
+    const a = createEntity({ name: "DefA", type: "tool" });
+    const b = createEntity({ name: "DefB", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+
+    // Call with no options — defaults: max_depth=2, direction=both, limit=50
+    const result = graphTraverse(a.id);
+    expect(result.total_paths).toBeGreaterThanOrEqual(1);
+  });
+
+  test("path entities include start entity", () => {
+    const a = createEntity({ name: "Start", type: "tool" });
+    const b = createEntity({ name: "End", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses" });
+
+    const result = graphTraverse(a.id, { max_depth: 1 });
+    // Each path should include the start entity as first element
+    expect(result.paths[0]!.entities[0]!.name).toBe("Start");
+    expect(result.paths[0]!.entities[1]!.name).toBe("End");
+  });
+
+  test("relation weight is preserved in results", () => {
+    const a = createEntity({ name: "WA", type: "tool" });
+    const b = createEntity({ name: "WB", type: "tool" });
+    createRelation({ source_entity_id: a.id, target_entity_id: b.id, relation_type: "uses", weight: 0.75 });
+
+    const result = graphTraverse(a.id, { max_depth: 1 });
+    expect(result.paths[0]!.relations[0]!.weight).toBe(0.75);
   });
 });

@@ -2,7 +2,7 @@ process.env.MEMENTOS_DB_PATH = ":memory:";
 
 import { describe, test, expect, beforeEach } from "bun:test";
 import { resetDatabase, getDatabase } from "../db/database.js";
-import { createMemory, getMemory } from "../db/memories.js";
+import { createMemory, getMemory, indexMemoryEmbedding } from "../db/memories.js";
 import { MemoryInjector } from "./injector.js";
 import { DEFAULT_CONFIG } from "./config.js";
 import type { MementosConfig } from "../types/index.js";
@@ -589,5 +589,298 @@ describe("MemoryInjector", () => {
 
     // Only 1 memory, already in Key — no Recent Context section
     expect(result).not.toContain("## Recent Context");
+  });
+});
+
+// ============================================================================
+// Smart Injection Tests
+// ============================================================================
+
+describe("MemoryInjector — smart strategy", () => {
+  test("smart injection with query returns relevant results ranked by similarity", async () => {
+    // Create memories with different topics
+    const dbMem = createMemory({
+      key: "database-patterns",
+      value: "always use migrations for schema changes in PostgreSQL",
+      scope: "global",
+      category: "knowledge",
+      importance: 7,
+    });
+    const uiMem = createMemory({
+      key: "ui-patterns",
+      value: "prefer Tailwind CSS utility classes over custom CSS",
+      scope: "global",
+      category: "knowledge",
+      importance: 7,
+    });
+    const testMem = createMemory({
+      key: "testing-patterns",
+      value: "write tests before implementing features using vitest",
+      scope: "global",
+      category: "knowledge",
+      importance: 7,
+    });
+
+    // Index embeddings for all memories (uses TF-IDF fallback in test env)
+    await indexMemoryEmbedding(dbMem.id, `${dbMem.key} ${dbMem.value}`, db);
+    await indexMemoryEmbedding(uiMem.id, `${uiMem.key} ${uiMem.value}`, db);
+    await indexMemoryEmbedding(testMem.id, `${testMem.key} ${testMem.value}`, db);
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    const result = await injector.getSmartInjectionContext({
+      query: "database schema migrations PostgreSQL",
+      db,
+    });
+
+    expect(result).toContain("<agent-memories>");
+    expect(result).toContain("## Relevant Memories");
+    expect(result).toContain("database-patterns");
+    // The DB-related memory should appear first (highest similarity to query)
+    const dbIdx = result.indexOf("database-patterns");
+    const uiIdx = result.indexOf("ui-patterns");
+    expect(dbIdx).toBeLessThan(uiIdx);
+  });
+
+  test("smart injection falls back to default when no embeddings exist", async () => {
+    createMemory({
+      key: "no-embed-mem",
+      value: "a memory without embedding",
+      scope: "global",
+      category: "knowledge",
+      importance: 8,
+    });
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    // No embeddings indexed — should fall back to default strategy
+    const result = await injector.getSmartInjectionContext({
+      query: "anything here",
+      db,
+    });
+
+    // Falls back to default which uses <agent-memories> + ## Key Memories
+    expect(result).toContain("<agent-memories>");
+    expect(result).toContain("## Key Memories");
+    expect(result).toContain("no-embed-mem");
+  });
+
+  test("smart injection falls back to default when no query provided", async () => {
+    createMemory({
+      key: "fallback-mem",
+      value: "should use default strategy",
+      scope: "global",
+      category: "fact",
+      importance: 7,
+    });
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    // No query — should fall back to default strategy
+    const result = await injector.getSmartInjectionContext({ db });
+
+    expect(result).toContain("## Key Memories");
+    expect(result).toContain("fallback-mem");
+  });
+
+  test("smart injection respects token budget", async () => {
+    // Create many memories that together exceed a small token budget
+    for (let i = 0; i < 20; i++) {
+      const mem = createMemory({
+        key: `smart-budget-${i}`,
+        value: "X".repeat(100),
+        scope: "global",
+        category: "knowledge",
+        importance: 7,
+      });
+      await indexMemoryEmbedding(mem.id, `smart-budget-${i} ${"X".repeat(100)}`, db);
+    }
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 150,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    const result = await injector.getSmartInjectionContext({
+      query: "smart budget test",
+      db,
+    });
+
+    // Should have some memories but not all 20
+    const lineCount = result
+      .split("\n")
+      .filter((l) => l.startsWith("- [")).length;
+    expect(lineCount).toBeGreaterThan(0);
+    expect(lineCount).toBeLessThan(20);
+  });
+
+  test("smart injection returns empty string when no memories exist", async () => {
+    const injector = new MemoryInjector(DEFAULT_CONFIG);
+    const result = await injector.getSmartInjectionContext({
+      query: "anything",
+      db,
+    });
+    expect(result).toBe("");
+  });
+
+  test("default strategy still works unchanged after adding smart", () => {
+    createMemory({
+      key: "default-still-works",
+      value: "verifying no regression",
+      scope: "global",
+      category: "preference",
+      importance: 7,
+    });
+
+    const injector = new MemoryInjector(DEFAULT_CONFIG);
+    const result = injector.getInjectionContext({ db });
+    expect(result).toContain("default-still-works");
+    expect(result).toContain("<agent-memories>");
+    expect(result).toContain("## Key Memories");
+  });
+
+  test("smart injection deduplicates across calls", async () => {
+    const mem = createMemory({
+      key: "smart-dedup",
+      value: "should appear once",
+      scope: "global",
+      category: "knowledge",
+      importance: 7,
+    });
+    await indexMemoryEmbedding(mem.id, `${mem.key} ${mem.value}`, db);
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    const first = await injector.getSmartInjectionContext({
+      query: "smart dedup test",
+      db,
+    });
+    expect(first).toContain("smart-dedup");
+
+    // Second call should not include the same memory
+    const second = await injector.getSmartInjectionContext({
+      query: "smart dedup test",
+      db,
+    });
+    expect(second).toBe("");
+  });
+
+  test("smart injection gives pinned memories a boost", async () => {
+    const unpinnedMem = createMemory({
+      key: "unpinned-smart",
+      value: "testing patterns for TypeScript applications",
+      scope: "global",
+      category: "knowledge",
+      importance: 5,
+    });
+    await indexMemoryEmbedding(unpinnedMem.id, `${unpinnedMem.key} ${unpinnedMem.value}`, db);
+
+    const pinnedMem = createMemory({
+      key: "pinned-smart",
+      value: "some unrelated topic about cooking recipes",
+      scope: "global",
+      category: "knowledge",
+      importance: 3,
+    });
+    await indexMemoryEmbedding(pinnedMem.id, `${pinnedMem.key} ${pinnedMem.value}`, db);
+    db.run("UPDATE memories SET pinned = 1 WHERE id = ?", [pinnedMem.id]);
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    const result = await injector.getSmartInjectionContext({
+      query: "cooking recipes",
+      db,
+    });
+
+    // Pinned memory should appear first due to pin bonus + similarity to query
+    const pinnedIdx = result.indexOf("pinned-smart");
+    const unpinnedIdx = result.indexOf("unpinned-smart");
+    expect(pinnedIdx).toBeGreaterThan(-1);
+    expect(unpinnedIdx).toBeGreaterThan(-1);
+    expect(pinnedIdx).toBeLessThan(unpinnedIdx);
+  });
+
+  test("smart injection updates access count on injected memories", async () => {
+    const mem = createMemory({
+      key: "smart-access-test",
+      value: "track access in smart mode",
+      scope: "global",
+      category: "knowledge",
+      importance: 7,
+    });
+    await indexMemoryEmbedding(mem.id, `${mem.key} ${mem.value}`, db);
+
+    expect(mem.access_count).toBe(0);
+
+    const injector = new MemoryInjector(
+      makeConfig({
+        injection: {
+          max_tokens: 2000,
+          min_importance: 1,
+          categories: ["preference", "fact", "knowledge"],
+          refresh_interval: 5,
+        },
+      })
+    );
+
+    await injector.getSmartInjectionContext({
+      query: "track access",
+      db,
+    });
+
+    const updated = getMemory(mem.id, db);
+    expect(updated).not.toBeNull();
+    expect(updated!.access_count).toBe(1);
   });
 });

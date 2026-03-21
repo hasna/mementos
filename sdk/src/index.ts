@@ -18,7 +18,7 @@
 // Types
 // ============================================================================
 
-export type MemoryScope = "global" | "shared" | "private";
+export type MemoryScope = "global" | "shared" | "private" | "working";
 export type MemoryCategory = "preference" | "fact" | "knowledge" | "history";
 export type MemorySource = "user" | "agent" | "system" | "auto" | "imported";
 export type MemoryStatus = "active" | "archived" | "expired";

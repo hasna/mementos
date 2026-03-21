@@ -85,7 +85,13 @@ export interface ExtractedRelation {
     | "related_to"
     | "contradicts"
     | "part_of"
-    | "implements";
+    | "implements"
+    | "happened_before"
+    | "happened_after"
+    | "caused_by"
+    | "resulted_in"
+    | "supersedes"
+    | "version_of";
 }
 
 export interface EntityExtractionResult {
@@ -244,6 +250,6 @@ Return JSON with this exact shape:
     { "name": string, "type": "person"|"project"|"tool"|"concept"|"file"|"api"|"pattern"|"organization", "confidence": 0-1 }
   ],
   "relations": [
-    { "from": string, "to": string, "type": "uses"|"knows"|"depends_on"|"created_by"|"related_to"|"contradicts"|"part_of"|"implements" }
+    { "from": string, "to": string, "type": "uses"|"knows"|"depends_on"|"created_by"|"related_to"|"contradicts"|"part_of"|"implements"|"happened_before"|"happened_after"|"caused_by"|"resulted_in"|"supersedes"|"version_of" }
   ]
 }`;

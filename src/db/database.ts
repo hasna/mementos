@@ -492,6 +492,301 @@ CREATE TABLE IF NOT EXISTS memory_embeddings (
 CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(model);
 INSERT OR IGNORE INTO _migrations (id) VALUES (17);
 `,
+
+  // Migration 18: bi-temporal columns for fact evolution tracking
+  // valid_from: when this fact became true in reality
+  // valid_until: when this fact stopped being true (null = still valid)
+  // ingested_at: when this fact was recorded in the system
+  `
+ALTER TABLE memories ADD COLUMN valid_from TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN valid_until TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN ingested_at TEXT DEFAULT NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_valid_from ON memories(valid_from);
+CREATE INDEX IF NOT EXISTS idx_memories_valid_until ON memories(valid_until);
+UPDATE memories SET valid_from = created_at, ingested_at = created_at WHERE valid_from IS NULL;
+INSERT OR IGNORE INTO _migrations (id) VALUES (18);
+`,
+
+  // Migration 19: add 'working' scope for transient session-scoped memories.
+  // SQLite can't ALTER CHECK constraints; rebuild the table.
+  // Must disable FKs during table rebuild to avoid constraint violations.
+  `
+PRAGMA foreign_keys = OFF;
+ALTER TABLE memories RENAME TO memories_old;
+CREATE TABLE memories (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'knowledge' CHECK(category IN ('preference', 'fact', 'knowledge', 'history')),
+  scope TEXT NOT NULL DEFAULT 'private' CHECK(scope IN ('global', 'shared', 'private', 'working')),
+  summary TEXT,
+  tags TEXT DEFAULT '[]',
+  importance INTEGER NOT NULL DEFAULT 5 CHECK(importance >= 1 AND importance <= 10),
+  source TEXT NOT NULL DEFAULT 'agent' CHECK(source IN ('user', 'agent', 'system', 'auto', 'imported')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'expired')),
+  pinned INTEGER NOT NULL DEFAULT 0,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  session_id TEXT,
+  machine_id TEXT REFERENCES machines(id) ON DELETE SET NULL,
+  flag TEXT,
+  metadata TEXT DEFAULT '{}',
+  access_count INTEGER NOT NULL DEFAULT 0,
+  recall_count INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
+  expires_at TEXT,
+  valid_from TEXT DEFAULT NULL,
+  valid_until TEXT DEFAULT NULL,
+  ingested_at TEXT DEFAULT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  accessed_at TEXT
+);
+INSERT INTO memories SELECT * FROM memories_old;
+DROP TABLE memories_old;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_key
+  ON memories(key, scope, COALESCE(agent_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''));
+CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
+CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
+CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
+CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned);
+CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
+CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_memories_machine ON memories(machine_id);
+CREATE INDEX IF NOT EXISTS idx_memories_flag ON memories(flag);
+CREATE INDEX IF NOT EXISTS idx_memories_recall_count ON memories(recall_count DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_valid_from ON memories(valid_from);
+CREATE INDEX IF NOT EXISTS idx_memories_valid_until ON memories(valid_until);
+
+INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, key, value, summary) VALUES (new.rowid, new.key, new.value, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, key, value, summary) VALUES('delete', old.rowid, old.key, old.value, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, key, value, summary) VALUES('delete', old.rowid, old.key, old.value, old.summary);
+  INSERT INTO memories_fts(rowid, key, value, summary) VALUES (new.rowid, new.key, new.value, new.summary);
+END;
+
+PRAGMA foreign_keys = ON;
+INSERT OR IGNORE INTO _migrations (id) VALUES (19);
+`,
+
+  // Migration 20: add 'procedural' and 'resource' categories + 'code' content_type column.
+  // Rebuild table again (only way to change CHECK constraints in SQLite).
+  `
+PRAGMA foreign_keys = OFF;
+ALTER TABLE memories RENAME TO memories_old;
+CREATE TABLE memories (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'knowledge' CHECK(category IN ('preference', 'fact', 'knowledge', 'history', 'procedural', 'resource')),
+  scope TEXT NOT NULL DEFAULT 'private' CHECK(scope IN ('global', 'shared', 'private', 'working')),
+  summary TEXT,
+  tags TEXT DEFAULT '[]',
+  importance INTEGER NOT NULL DEFAULT 5 CHECK(importance >= 1 AND importance <= 10),
+  source TEXT NOT NULL DEFAULT 'agent' CHECK(source IN ('user', 'agent', 'system', 'auto', 'imported')),
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived', 'expired')),
+  pinned INTEGER NOT NULL DEFAULT 0,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  session_id TEXT,
+  machine_id TEXT REFERENCES machines(id) ON DELETE SET NULL,
+  flag TEXT,
+  content_type TEXT NOT NULL DEFAULT 'text' CHECK(content_type IN ('text', 'code', 'image', 'resource')),
+  metadata TEXT DEFAULT '{}',
+  access_count INTEGER NOT NULL DEFAULT 0,
+  recall_count INTEGER NOT NULL DEFAULT 0,
+  version INTEGER NOT NULL DEFAULT 1,
+  expires_at TEXT,
+  valid_from TEXT DEFAULT NULL,
+  valid_until TEXT DEFAULT NULL,
+  ingested_at TEXT DEFAULT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  accessed_at TEXT
+);
+INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, flag, metadata, access_count, recall_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at, accessed_at)
+  SELECT id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, flag, metadata, access_count, recall_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at, accessed_at FROM memories_old;
+DROP TABLE memories_old;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_unique_key
+  ON memories(key, scope, COALESCE(agent_id, ''), COALESCE(project_id, ''), COALESCE(session_id, ''));
+CREATE INDEX IF NOT EXISTS idx_memories_key ON memories(key);
+CREATE INDEX IF NOT EXISTS idx_memories_scope ON memories(scope);
+CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+CREATE INDEX IF NOT EXISTS idx_memories_status ON memories(status);
+CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance);
+CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id);
+CREATE INDEX IF NOT EXISTS idx_memories_project ON memories(project_id);
+CREATE INDEX IF NOT EXISTS idx_memories_session ON memories(session_id);
+CREATE INDEX IF NOT EXISTS idx_memories_pinned ON memories(pinned);
+CREATE INDEX IF NOT EXISTS idx_memories_expires ON memories(expires_at);
+CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at);
+CREATE INDEX IF NOT EXISTS idx_memories_machine ON memories(machine_id);
+CREATE INDEX IF NOT EXISTS idx_memories_flag ON memories(flag);
+CREATE INDEX IF NOT EXISTS idx_memories_recall_count ON memories(recall_count DESC);
+CREATE INDEX IF NOT EXISTS idx_memories_valid_from ON memories(valid_from);
+CREATE INDEX IF NOT EXISTS idx_memories_valid_until ON memories(valid_until);
+CREATE INDEX IF NOT EXISTS idx_memories_content_type ON memories(content_type);
+
+INSERT INTO memories_fts(memories_fts) VALUES('rebuild');
+
+CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+  INSERT INTO memories_fts(rowid, key, value, summary) VALUES (new.rowid, new.key, new.value, new.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, key, value, summary) VALUES('delete', old.rowid, old.key, old.value, old.summary);
+END;
+CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+  INSERT INTO memories_fts(memories_fts, rowid, key, value, summary) VALUES('delete', old.rowid, old.key, old.value, old.summary);
+  INSERT INTO memories_fts(rowid, key, value, summary) VALUES (new.rowid, new.key, new.value, new.summary);
+END;
+
+PRAGMA foreign_keys = ON;
+INSERT OR IGNORE INTO _migrations (id) VALUES (20);
+`,
+
+  // Migration 21: extend relation_type CHECK with temporal and causal types
+  `
+PRAGMA foreign_keys = OFF;
+ALTER TABLE relations RENAME TO relations_old;
+CREATE TABLE relations (
+  id TEXT PRIMARY KEY,
+  source_entity_id TEXT NOT NULL,
+  target_entity_id TEXT NOT NULL,
+  relation_type TEXT NOT NULL CHECK (relation_type IN ('uses','knows','depends_on','created_by','related_to','contradicts','part_of','implements','happened_before','happened_after','caused_by','resulted_in','supersedes','version_of')),
+  weight REAL NOT NULL DEFAULT 1.0,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(source_entity_id, target_entity_id, relation_type),
+  FOREIGN KEY (source_entity_id) REFERENCES entities(id) ON DELETE CASCADE,
+  FOREIGN KEY (target_entity_id) REFERENCES entities(id) ON DELETE CASCADE
+);
+INSERT INTO relations SELECT * FROM relations_old;
+DROP TABLE relations_old;
+CREATE INDEX IF NOT EXISTS idx_relations_source ON relations(source_entity_id);
+CREATE INDEX IF NOT EXISTS idx_relations_target ON relations(target_entity_id);
+CREATE INDEX IF NOT EXISTS idx_relations_type ON relations(relation_type);
+PRAGMA foreign_keys = ON;
+INSERT OR IGNORE INTO _migrations (id) VALUES (21);
+`,
+
+  // Migration 22: immutable audit log for all memory operations
+  `
+CREATE TABLE IF NOT EXISTS memory_audit_log (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL,
+  memory_key TEXT,
+  operation TEXT NOT NULL CHECK(operation IN ('create','update','delete','archive','restore','read')),
+  agent_id TEXT,
+  old_value_hash TEXT,
+  new_value_hash TEXT,
+  changes TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_memory ON memory_audit_log(memory_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_operation ON memory_audit_log(operation);
+CREATE INDEX IF NOT EXISTS idx_audit_log_agent ON memory_audit_log(agent_id);
+CREATE INDEX IF NOT EXISTS idx_audit_log_created ON memory_audit_log(created_at);
+
+CREATE TRIGGER IF NOT EXISTS audit_memory_insert AFTER INSERT ON memories BEGIN
+  INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, new_value_hash, created_at)
+  VALUES (hex(randomblob(4)), new.id, new.key, 'create', new.agent_id, hex(randomblob(16)), datetime('now'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_memory_update AFTER UPDATE ON memories BEGIN
+  INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, old_value_hash, new_value_hash, changes, created_at)
+  VALUES (hex(randomblob(4)), new.id, new.key, 'update', new.agent_id, hex(randomblob(16)), hex(randomblob(16)),
+    json_object('version_from', old.version, 'version_to', new.version, 'importance_from', old.importance, 'importance_to', new.importance),
+    datetime('now'));
+END;
+
+CREATE TRIGGER IF NOT EXISTS audit_memory_delete AFTER DELETE ON memories BEGIN
+  INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, old_value_hash, created_at)
+  VALUES (hex(randomblob(4)), old.id, old.key, 'delete', old.agent_id, hex(randomblob(16)), datetime('now'));
+END;
+
+INSERT OR IGNORE INTO _migrations (id) VALUES (22);
+`,
+
+  // Migration 23: namespace column for fine-grained scoping + provenance columns
+  `
+ALTER TABLE memories ADD COLUMN namespace TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN created_by_agent TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN updated_by_agent TEXT DEFAULT NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_namespace ON memories(namespace);
+CREATE INDEX IF NOT EXISTS idx_memories_created_by ON memories(created_by_agent);
+INSERT OR IGNORE INTO _migrations (id) VALUES (23);
+`,
+
+  // Migration 24: trust_score column for memory poisoning detection
+  `
+ALTER TABLE memories ADD COLUMN trust_score REAL NOT NULL DEFAULT 1.0;
+CREATE INDEX IF NOT EXISTS idx_memories_trust_score ON memories(trust_score);
+INSERT OR IGNORE INTO _migrations (id) VALUES (24);
+`,
+
+  // Migration 25: memory_ratings table for usefulness feedback
+  `
+CREATE TABLE IF NOT EXISTS memory_ratings (
+  id TEXT PRIMARY KEY,
+  memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  agent_id TEXT,
+  useful INTEGER NOT NULL DEFAULT 1,
+  context TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_ratings_memory ON memory_ratings(memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_ratings_agent ON memory_ratings(agent_id);
+INSERT OR IGNORE INTO _migrations (id) VALUES (25);
+`,
+
+  // Migration 26: memory ACLs for fine-grained access control
+  `
+CREATE TABLE IF NOT EXISTS memory_acl (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  key_pattern TEXT NOT NULL,
+  permission TEXT NOT NULL DEFAULT 'readwrite' CHECK(permission IN ('read', 'readwrite', 'admin')),
+  project_id TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_acl_agent ON memory_acl(agent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_acl_project ON memory_acl(project_id);
+INSERT OR IGNORE INTO _migrations (id) VALUES (26);
+`,
+
+  // Migration 27: vector_clock column for multi-agent consistency (version vectors)
+  `
+ALTER TABLE memories ADD COLUMN vector_clock TEXT DEFAULT '{}';
+INSERT OR IGNORE INTO _migrations (id) VALUES (27);
+`,
+
+  // Migration 28: memory_subscriptions table for agent notifications
+  `
+CREATE TABLE IF NOT EXISTS memory_subscriptions (
+  id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  key_pattern TEXT,
+  tag_pattern TEXT,
+  scope TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_subs_agent ON memory_subscriptions(agent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_subs_key ON memory_subscriptions(key_pattern);
+INSERT OR IGNORE INTO _migrations (id) VALUES (28);
+`,
 ];
 
 // ============================================================================

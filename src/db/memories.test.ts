@@ -60,8 +60,8 @@ function freshDb(): Database {
       id TEXT PRIMARY KEY,
       key TEXT NOT NULL,
       value TEXT NOT NULL,
-      category TEXT NOT NULL DEFAULT 'knowledge' CHECK(category IN ('preference', 'fact', 'knowledge', 'history')),
-      scope TEXT NOT NULL DEFAULT 'private' CHECK(scope IN ('global', 'shared', 'private')),
+      category TEXT NOT NULL DEFAULT 'knowledge' CHECK(category IN ('preference', 'fact', 'knowledge', 'history', 'procedural', 'resource')),
+      scope TEXT NOT NULL DEFAULT 'private' CHECK(scope IN ('global', 'shared', 'private', 'working')),
       summary TEXT,
       tags TEXT DEFAULT '[]',
       importance INTEGER NOT NULL DEFAULT 5 CHECK(importance >= 1 AND importance <= 10),
@@ -77,6 +77,9 @@ function freshDb(): Database {
       access_count INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,
       expires_at TEXT,
+      valid_from TEXT DEFAULT NULL,
+      valid_until TEXT DEFAULT NULL,
+      ingested_at TEXT DEFAULT NULL, namespace TEXT DEFAULT NULL, created_by_agent TEXT DEFAULT NULL, updated_by_agent TEXT DEFAULT NULL,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at TEXT NOT NULL DEFAULT (datetime('now')),
       accessed_at TEXT
@@ -1136,5 +1139,221 @@ describe("listMemories additional filters", () => {
     const found = getMemoryByKey("sess-k", undefined, undefined, undefined, "s1", db);
     expect(found).not.toBeNull();
     expect(found!.session_id).toBe("s1");
+  });
+});
+
+// ============================================================================
+// Bi-temporal queries
+// ============================================================================
+
+describe("bi-temporal columns", () => {
+  let db: Database;
+
+  beforeEach(() => {
+    db = freshDb();
+  });
+
+  it("new memories get valid_from and ingested_at set", () => {
+    const mem = createMemory({ key: "temporal-test", value: "v1" }, "merge", db);
+    expect(mem.valid_from).not.toBeNull();
+    expect(mem.ingested_at).not.toBeNull();
+    expect(mem.valid_until).toBeNull();
+  });
+
+  it("listMemories with as_of filters by valid_from/valid_until", () => {
+    const past = "2025-01-01T00:00:00.000Z";
+    const mid = "2025-06-01T00:00:00.000Z";
+
+    // Use different session_ids to avoid unique constraint on (key, scope, agent, project, session)
+    db.run(
+      `INSERT INTO memories (id, key, value, category, scope, tags, importance, source, status, pinned, session_id, access_count, version, valid_from, valid_until, ingested_at, created_at, updated_at)
+       VALUES ('old-fact', 'stack', 'Python', 'fact', 'shared', '[]', 8, 'agent', 'active', 0, 'sess-old', 0, 1, ?, ?, ?, ?, ?)`,
+      [past, mid, past, past, past]
+    );
+    db.run(
+      `INSERT INTO memories (id, key, value, category, scope, tags, importance, source, status, pinned, session_id, access_count, version, valid_from, valid_until, ingested_at, created_at, updated_at)
+       VALUES ('new-fact', 'stack', 'TypeScript', 'fact', 'shared', '[]', 9, 'agent', 'active', 0, 'sess-new', 0, 1, ?, NULL, ?, ?, ?)`,
+      [mid, mid, mid, mid]
+    );
+
+    // Query as of 2025-03-01 → should get Python (old fact still valid)
+    const marchResults = listMemories({ as_of: "2025-03-01T00:00:00.000Z" }, db);
+    const marchStack = marchResults.filter(m => m.key === "stack");
+    expect(marchStack.length).toBe(1);
+    expect(marchStack[0]!.value).toBe("Python");
+
+    // Query as of 2025-09-01 → should get TypeScript (new fact, old expired)
+    const septResults = listMemories({ as_of: "2025-09-01T00:00:00.000Z" }, db);
+    const septStack = septResults.filter(m => m.key === "stack");
+    expect(septStack.length).toBe(1);
+    expect(septStack[0]!.value).toBe("TypeScript");
+
+    // Query without as_of → should get both (no temporal filter)
+    const allResults = listMemories({}, db);
+    const allStack = allResults.filter(m => m.key === "stack");
+    expect(allStack.length).toBe(2);
+  });
+
+  it("getMemoryByKey with as_of returns temporally correct memory", () => {
+    db.run(
+      `INSERT INTO memories (id, key, value, category, scope, tags, importance, source, status, pinned, session_id, access_count, version, valid_from, valid_until, ingested_at, created_at, updated_at)
+       VALUES ('v1', 'db-engine', 'MySQL', 'fact', 'shared', '[]', 8, 'agent', 'active', 0, 'sess-v1', 0, 1, '2024-01-01', '2025-06-01', '2024-01-01', '2024-01-01', '2024-01-01')`,
+    );
+    db.run(
+      `INSERT INTO memories (id, key, value, category, scope, tags, importance, source, status, pinned, session_id, access_count, version, valid_from, valid_until, ingested_at, created_at, updated_at)
+       VALUES ('v2', 'db-engine', 'PostgreSQL', 'fact', 'shared', '[]', 9, 'agent', 'active', 0, 'sess-v2', 0, 1, '2025-06-01', NULL, '2025-06-01', '2025-06-01', '2025-06-01')`,
+    );
+
+    // Before migration: should get MySQL
+    const old = getMemoryByKey("db-engine", undefined, undefined, undefined, undefined, db, "2025-01-01");
+    expect(old).not.toBeNull();
+    expect(old!.value).toBe("MySQL");
+
+    // After migration: should get PostgreSQL
+    const current = getMemoryByKey("db-engine", undefined, undefined, undefined, undefined, db, "2026-01-01");
+    expect(current).not.toBeNull();
+    expect(current!.value).toBe("PostgreSQL");
+
+    // At migration boundary: exactly at valid_until, old should NOT match
+    const boundary = getMemoryByKey("db-engine", undefined, undefined, undefined, undefined, db, "2025-06-01");
+    expect(boundary).not.toBeNull();
+    expect(boundary!.value).toBe("PostgreSQL");
+  });
+});
+
+// ============================================================================
+// Working scope (OPE4-00138)
+// ============================================================================
+
+describe("working scope", () => {
+  it("creates a working scope memory with auto-set expires_at (1h)", () => {
+    const db = freshDb();
+    const before = Date.now();
+    const mem = createMemory(
+      { key: "scratch-notes", value: "temp data", scope: "working" },
+      "merge",
+      db
+    );
+
+    expect(mem.scope).toBe("working");
+    expect(mem.expires_at).not.toBeNull();
+
+    // expires_at should be ~1 hour from now (within a 10-second tolerance)
+    const expiresMs = new Date(mem.expires_at!).getTime();
+    const expectedMs = before + 60 * 60 * 1000;
+    expect(Math.abs(expiresMs - expectedMs)).toBeLessThan(10_000);
+  });
+
+  it("respects explicit expires_at when scope is working", () => {
+    const db = freshDb();
+    const customExpiry = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
+    const mem = createMemory(
+      { key: "scratch-custom", value: "custom ttl", scope: "working", expires_at: customExpiry },
+      "merge",
+      db
+    );
+
+    expect(mem.scope).toBe("working");
+    expect(mem.expires_at).toBe(customExpiry);
+  });
+
+  it("respects ttl_ms when scope is working (ttl_ms takes precedence over auto-1h)", () => {
+    const db = freshDb();
+    const before = Date.now();
+    const mem = createMemory(
+      { key: "scratch-ttl", value: "short ttl", scope: "working", ttl_ms: 15 * 60 * 1000 },
+      "merge",
+      db
+    );
+
+    expect(mem.scope).toBe("working");
+    expect(mem.expires_at).not.toBeNull();
+
+    // Should be ~15 min from now, not 1h
+    const expiresMs = new Date(mem.expires_at!).getTime();
+    const expectedMs = before + 15 * 60 * 1000;
+    expect(Math.abs(expiresMs - expectedMs)).toBeLessThan(10_000);
+  });
+
+  it("working memories appear in listMemories queries", () => {
+    const db = freshDb();
+    createMemory({ key: "work-item-1", value: "transient", scope: "working" }, "merge", db);
+    createMemory({ key: "regular-item", value: "persistent", scope: "shared" }, "merge", db);
+
+    // Query all active — should include working scope
+    const all = listMemories({ status: "active" }, db);
+    expect(all.length).toBe(2);
+
+    // Query working scope specifically
+    const working = listMemories({ scope: "working", status: "active" }, db);
+    expect(working.length).toBe(1);
+    expect(working[0]!.key).toBe("work-item-1");
+  });
+
+  it("working memories are cleaned up by cleanExpiredMemories", () => {
+    const db = freshDb();
+
+    // Create a working memory with already-expired timestamp
+    const pastExpiry = new Date(Date.now() - 1000).toISOString();
+    createMemory(
+      { key: "expired-scratch", value: "gone", scope: "working", expires_at: pastExpiry },
+      "merge",
+      db
+    );
+
+    // Verify it exists
+    const before = listMemories({ scope: "working" }, db);
+    expect(before.length).toBe(1);
+
+    // Clean up
+    const cleaned = cleanExpiredMemories(db);
+    expect(cleaned).toBe(1);
+
+    // Verify it's gone
+    const after = listMemories({ scope: "working" }, db);
+    expect(after.length).toBe(0);
+  });
+
+  it("working memories can be queried by key like any other scope", () => {
+    const db = freshDb();
+    createMemory(
+      { key: "current-task", value: "implementing OPE4-00138", scope: "working" },
+      "merge",
+      db
+    );
+
+    const found = getMemoryByKey("current-task", "working", undefined, undefined, undefined, db);
+    expect(found).not.toBeNull();
+    expect(found!.value).toBe("implementing OPE4-00138");
+    expect(found!.scope).toBe("working");
+  });
+
+  it("working scope memories can be updated normally", () => {
+    const db = freshDb();
+    const mem = createMemory(
+      { key: "wip-notes", value: "draft 1", scope: "working" },
+      "merge",
+      db
+    );
+
+    const updated = updateMemory(mem.id, { value: "draft 2", version: mem.version }, db);
+    expect(updated.value).toBe("draft 2");
+    expect(updated.scope).toBe("working");
+    expect(updated.version).toBe(2);
+  });
+
+  it("working scope memories can be deleted", () => {
+    const db = freshDb();
+    const mem = createMemory(
+      { key: "temp-data", value: "delete me", scope: "working" },
+      "merge",
+      db
+    );
+
+    const deleted = deleteMemory(mem.id, db);
+    expect(deleted).toBe(true);
+
+    const after = getMemory(mem.id, db);
+    expect(after).toBeNull();
   });
 });

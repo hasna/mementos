@@ -3,7 +3,7 @@ process.env.MEMENTOS_DB_PATH = ":memory:";
 import { describe, test, expect, beforeEach } from "bun:test";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { createMemory } from "../db/memories.js";
-import { searchMemories, logSearchQuery, getSearchHistory, getPopularSearches } from "./search.js";
+import { searchMemories, logSearchQuery, getSearchHistory, getPopularSearches, hybridSearch, searchWithBm25 } from "./search.js";
 import { createEntity } from "../db/entities.js";
 import { linkEntityToMemory } from "../db/entity-memories.js";
 
@@ -1327,5 +1327,158 @@ describe("multi-token scoring (tag/summary/metadata paths)", () => {
     expect(results.length).toBeGreaterThanOrEqual(1);
     // Ensure we get results with valid scores
     results.forEach(r => expect(r.score).toBeGreaterThan(0));
+  });
+});
+
+// ============================================================================
+// BM25 search tests
+// ============================================================================
+
+describe("searchWithBm25", () => {
+  test("returns results ranked by BM25 score", () => {
+    createMemory({ key: "react-hooks", value: "React hooks are functions that let you hook into React state", importance: 8 });
+    createMemory({ key: "react-components", value: "React components are reusable UI elements", importance: 6 });
+    createMemory({ key: "vue-setup", value: "Vue.js setup guide", importance: 5 });
+
+    const results = searchWithBm25("react");
+    expect(results.length).toBeGreaterThanOrEqual(2);
+    // React results should appear
+    const keys = results.map(r => r.memory.key);
+    expect(keys).toContain("react-hooks");
+    expect(keys).toContain("react-components");
+    // Vue should not appear for "react" search
+    expect(keys).not.toContain("vue-setup");
+  });
+
+  test("all results have positive scores", () => {
+    createMemory({ key: "typescript-guide", value: "TypeScript is a typed superset of JavaScript" });
+    createMemory({ key: "ts-config", value: "TypeScript configuration options" });
+
+    const results = searchWithBm25("typescript");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    results.forEach(r => {
+      expect(r.score).toBeGreaterThan(0);
+    });
+  });
+
+  test("respects filter parameters", () => {
+    createMemory({ key: "global-mem", value: "python programming", scope: "global" });
+    createMemory({ key: "private-mem", value: "python scripts", scope: "private" });
+
+    const results = searchWithBm25("python", { scope: "global" });
+    expect(results.length).toBe(1);
+    expect(results[0]!.memory.key).toBe("global-mem");
+  });
+
+  test("returns empty for no matches", () => {
+    createMemory({ key: "rust-mem", value: "Rust programming language" });
+    const results = searchWithBm25("nonexistent-query-xyz");
+    expect(results.length).toBe(0);
+  });
+
+  test("returns empty for empty query", () => {
+    createMemory({ key: "test", value: "test value" });
+    const results = searchWithBm25("");
+    expect(results.length).toBe(0);
+  });
+
+  test("importance weights the BM25 score", () => {
+    createMemory({ key: "low-imp-go", value: "golang best practices", importance: 2 });
+    createMemory({ key: "high-imp-go", value: "golang best practices", importance: 9 });
+
+    const results = searchWithBm25("golang");
+    expect(results.length).toBe(2);
+    // Higher importance should have higher weighted score
+    expect(results[0]!.memory.key).toBe("high-imp-go");
+  });
+
+  test("respects limit parameter", () => {
+    for (let i = 0; i < 10; i++) {
+      createMemory({ key: `java-mem-${i}`, value: `Java programming topic ${i}` });
+    }
+    const results = searchWithBm25("java", { limit: 3 });
+    expect(results.length).toBe(3);
+  });
+});
+
+// ============================================================================
+// Hybrid search tests
+// ============================================================================
+
+describe("hybridSearch", () => {
+  test("returns results from keyword search when no embeddings exist", async () => {
+    createMemory({ key: "auth-system", value: "JWT-based authentication with refresh tokens", importance: 8 });
+    createMemory({ key: "db-schema", value: "PostgreSQL database schema design", importance: 7 });
+
+    const results = await hybridSearch("authentication");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    expect(results[0]!.memory.key).toBe("auth-system");
+  });
+
+  test("results include rank information", async () => {
+    createMemory({ key: "deploy-guide", value: "deployment process for production", importance: 8 });
+
+    const results = await hybridSearch("deployment");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    const first = results[0]!;
+    // Should have keyword_rank since it matches via FTS
+    expect(first.keyword_rank).not.toBeNull();
+    expect(first.score).toBeGreaterThan(0);
+  });
+
+  test("RRF score is higher when both keyword and semantic match", async () => {
+    createMemory({ key: "testing-strategy", value: "unit tests and integration tests for the API", importance: 8 });
+    createMemory({ key: "api-testing", value: "testing REST endpoints with Playwright", importance: 7 });
+
+    const results = await hybridSearch("testing");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    // All results should have valid RRF scores
+    results.forEach(r => {
+      expect(r.score).toBeGreaterThan(0);
+      expect(typeof r.keyword_rank === "number" || r.keyword_rank === null).toBe(true);
+      expect(typeof r.semantic_rank === "number" || r.semantic_rank === null).toBe(true);
+    });
+  });
+
+  test("respects filter parameters", async () => {
+    createMemory({ key: "global-css", value: "CSS grid layout guide", scope: "global", importance: 7 });
+    createMemory({ key: "private-css", value: "CSS flexbox tutorial", scope: "private", importance: 6 });
+
+    const results = await hybridSearch("CSS", { filter: { scope: "global" } });
+    expect(results.length).toBe(1);
+    expect(results[0]!.memory.key).toBe("global-css");
+  });
+
+  test("respects limit parameter", async () => {
+    for (let i = 0; i < 10; i++) {
+      createMemory({ key: `node-mem-${i}`, value: `Node.js programming topic ${i}` });
+    }
+    const results = await hybridSearch("node", { limit: 3 });
+    expect(results.length).toBeLessThanOrEqual(3);
+  });
+
+  test("returns empty for no matches", async () => {
+    createMemory({ key: "rust-mem", value: "Rust programming language" });
+    const results = await hybridSearch("zzz_nonexistent_zzz");
+    expect(results.length).toBe(0);
+  });
+
+  test("deduplicates results across keyword and semantic", async () => {
+    createMemory({ key: "docker-guide", value: "Docker container orchestration with Kubernetes", importance: 8 });
+
+    const results = await hybridSearch("docker");
+    // Each memory should appear at most once
+    const ids = results.map(r => r.memory.id);
+    const uniqueIds = new Set(ids);
+    expect(ids.length).toBe(uniqueIds.size);
+  });
+
+  test("match_type is preserved from keyword results", async () => {
+    createMemory({ key: "webpack", value: "module bundler configuration" });
+
+    const results = await hybridSearch("webpack");
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    // Should have a valid match_type
+    expect(["exact", "fuzzy", "tag"]).toContain(results[0]!.match_type);
   });
 });

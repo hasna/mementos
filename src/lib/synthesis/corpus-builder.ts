@@ -92,8 +92,8 @@ export async function buildCorpus(options: {
   const limit = options.limit ?? 500;
   const projectId = options.projectId ?? null;
 
-  // 1. Fetch active memories
-  const memories = listMemories(
+  // 1. Fetch active memories (exclude working scope — transient session scratchpad)
+  const allMemories = listMemories(
     {
       status: "active",
       project_id: options.projectId,
@@ -102,6 +102,7 @@ export async function buildCorpus(options: {
     },
     d
   );
+  const memories = allMemories.filter((m) => m.scope !== "working");
 
   // 2. Build recall count map from synthesis_events
   const recallEvents = listSynthesisEvents(

@@ -80,6 +80,7 @@ const scopeColor: Record<MemoryScope, (s: string) => string> = {
   global: chalk.cyan,
   shared: chalk.yellow,
   private: chalk.magenta,
+  working: chalk.gray,
 };
 
 const categoryColor: Record<MemoryCategory, (s: string) => string> = {
@@ -87,6 +88,8 @@ const categoryColor: Record<MemoryCategory, (s: string) => string> = {
   fact: chalk.green,
   knowledge: chalk.yellow,
   history: chalk.gray,
+  procedural: chalk.cyan,
+  resource: chalk.magenta,
 };
 
 function importanceColor(importance: number): (s: string) => string {
@@ -1305,12 +1308,14 @@ program
 
       const stats: MemoryStats = {
         total,
-        by_scope: { global: 0, shared: 0, private: 0 },
+        by_scope: { global: 0, shared: 0, private: 0, working: 0 },
         by_category: {
           preference: 0,
           fact: 0,
           knowledge: 0,
           history: 0,
+          procedural: 0,
+          resource: 0,
         },
         by_status: { active: 0, archived: 0, expired: 0 },
         by_agent: {},
@@ -1360,7 +1365,7 @@ program
         `${chalk.bold("Total active:")}  ${chalk.white(String(total))}`
       );
       console.log(
-        `${chalk.bold("By scope:")}      ${chalk.cyan("global")}=${stats.by_scope.global}  ${chalk.yellow("shared")}=${stats.by_scope.shared}  ${chalk.magenta("private")}=${stats.by_scope.private}`
+        `${chalk.bold("By scope:")}      ${chalk.cyan("global")}=${stats.by_scope.global}  ${chalk.yellow("shared")}=${stats.by_scope.shared}  ${chalk.magenta("private")}=${stats.by_scope.private}  ${chalk.dim("working")}=${stats.by_scope.working}`
       );
       console.log(
         `${chalk.bold("By category:")}   ${chalk.blue("preference")}=${stats.by_category.preference}  ${chalk.green("fact")}=${stats.by_category.fact}  ${chalk.yellow("knowledge")}=${stats.by_category.knowledge}  ${chalk.gray("history")}=${stats.by_category.history}`
@@ -3605,7 +3610,7 @@ compdef _mementos mementos`);
 // config [subcommand]
 // ============================================================================
 
-const VALID_SCOPES = ["global", "shared", "private"];
+const VALID_SCOPES = ["global", "shared", "private", "working"];
 const VALID_CATEGORIES = ["preference", "fact", "knowledge", "history"];
 
 /** Navigate a nested object using dot-notation key path */

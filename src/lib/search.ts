@@ -3,6 +3,8 @@ import type { Memory, MemoryFilter, MemorySearchResult } from "../types/index.js
 import { getDatabase } from "../db/database.js";
 import { listEntities, getEntityByName } from "../db/entities.js";
 import { getMemoriesForEntity } from "../db/entity-memories.js";
+import { semanticSearch, type SemanticSearchResult } from "../db/memories.js";
+import { computeDecayScore } from "./decay.js";
 
 // ============================================================================
 // Helpers
@@ -31,6 +33,9 @@ function parseMemoryRow(row: Record<string, unknown>): Memory {
     access_count: row["access_count"] as number,
     version: row["version"] as number,
     expires_at: (row["expires_at"] as string) || null,
+    valid_from: (row["valid_from"] as string) || null,
+    valid_until: (row["valid_until"] as string) || null,
+    ingested_at: (row["ingested_at"] as string) || null,
     created_at: row["created_at"] as string,
     updated_at: row["updated_at"] as string,
     accessed_at: (row["accessed_at"] as string) || null,
@@ -583,22 +588,6 @@ function getGraphBoostedMemoryIds(query: string, d: Database): Set<string> {
 // Shared scoring
 // ============================================================================
 
-/**
- * Compute a recency boost multiplier for a memory.
- * Returns a value between 0 and 1: full boost (1.0) for today,
- * decaying linearly to 0 over 30 days. Pinned memories always get full boost.
- */
-function computeRecencyBoost(memory: Memory): number {
-  if (memory.pinned) return 1.0;
-
-  const mostRecent = memory.accessed_at || memory.updated_at;
-  if (!mostRecent) return 0;
-
-  const daysSinceAccess =
-    (Date.now() - Date.parse(mostRecent)) / (1000 * 60 * 60 * 24);
-  return Math.max(0, 1 - daysSinceAccess / 30);
-}
-
 function scoreResults(
   rows: Record<string, unknown>[],
   queryLower: string,
@@ -610,20 +599,17 @@ function scoreResults(
     const rawScore = computeScore(memory, queryLower);
     if (rawScore === 0) continue; // safety: skip if no actual match
 
-    // Weight by importance: score * importance / 10
-    const weightedScore = (rawScore * memory.importance) / 10;
+    // Effective importance via forgetting curve: factors in time decay + access boost.
+    // Returns raw importance for pinned memories; decays for stale ones.
+    const effectiveImportance = computeDecayScore(memory);
 
-    // Recency boost: up to 30% bonus for recently accessed memories
-    const recencyBoost = computeRecencyBoost(memory);
-
-    // Access count boost: up to 20% bonus for frequently accessed memories
-    const accessBoost = Math.min(memory.access_count / 20, 0.2);
+    // Weight by effective importance: score * effectiveImportance / 10
+    const weightedScore = (rawScore * effectiveImportance) / 10;
 
     // Graph boost: memories linked to entities matching the query get a bonus
     const graphBoost = graphBoostedIds?.has(memory.id) ? 2.0 : 0;
 
-    const finalScore =
-      (weightedScore + graphBoost) * (1 + recencyBoost * 0.3) * (1 + accessBoost);
+    const finalScore = weightedScore + graphBoost;
 
     const matchType = determineMatchType(memory, queryLower);
 
@@ -725,6 +711,187 @@ export function searchMemories(
   logSearchQuery(query, scored.length, filter?.agent_id, filter?.project_id, d);
 
   return finalResults;
+}
+
+// ============================================================================
+// BM25 search — explicit FTS5 bm25() ranking
+// ============================================================================
+
+/**
+ * Search memories using FTS5 BM25 ranking explicitly.
+ * Returns results ranked by BM25 score (key weight 10, value weight 5, summary weight 3).
+ */
+export function searchWithBm25(
+  query: string,
+  filter?: MemoryFilter,
+  db?: Database
+): MemorySearchResult[] {
+  const d = db || getDatabase();
+  query = preprocessQuery(query);
+  if (!query) return [];
+
+  if (!hasFts5Table(d)) {
+    // Fall back to standard search if FTS5 not available
+    return searchMemories(query, filter, d);
+  }
+
+  const ftsQuery = escapeFts5Query(query);
+  if (!ftsQuery) return [];
+
+  try {
+    const { conditions, params } = buildFilterConditions(filter);
+
+    // Use bm25() with weights: key=10, value=5, summary=3
+    const sql = `
+      SELECT m.*, bm25(memories_fts, 10.0, 5.0, 3.0) AS bm25_score
+      FROM memories m
+      JOIN memories_fts f ON f.rowid = m.rowid
+      WHERE memories_fts MATCH ?
+        AND ${conditions.join(" AND ")}
+      ORDER BY bm25_score ASC
+    `;
+    // bm25() returns negative values (lower = better match), so ASC order
+    const allParams: SQLQueryBindings[] = [ftsQuery, ...params];
+    const rows = d.query(sql).all(...allParams) as Array<Record<string, unknown> & { bm25_score: number }>;
+
+    const results: MemorySearchResult[] = rows.map((row) => {
+      const { bm25_score, ...memRow } = row;
+      const memory = parseMemoryRow(memRow);
+      // Convert negative bm25 score to positive (negate it) and weight by importance
+      const score = (-bm25_score * memory.importance) / 10;
+      return {
+        memory,
+        score,
+        match_type: "exact" as const,
+        highlights: extractHighlights(memory, query.toLowerCase()),
+      };
+    });
+
+    // Sort by weighted score desc, then importance desc
+    results.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return b.memory.importance - a.memory.importance;
+    });
+
+    // Apply limit/offset
+    const offset = filter?.offset ?? 0;
+    const limit = filter?.limit ?? results.length;
+    return results.slice(offset, offset + limit);
+  } catch {
+    // BM25 query failed — fall back to standard search
+    return searchMemories(query, filter, d);
+  }
+}
+
+// ============================================================================
+// Hybrid search — RRF fusion of keyword + semantic results
+// ============================================================================
+
+export interface HybridSearchResult {
+  memory: Memory;
+  score: number;
+  keyword_rank: number | null;
+  semantic_rank: number | null;
+  match_type: MemorySearchResult["match_type"];
+  highlights?: { field: string; snippet: string }[];
+}
+
+/**
+ * Reciprocal Rank Fusion: score = sum(1 / (k + rank_i)) across all result sets.
+ * k=60 is the standard constant from the RRF paper (Cormack et al. 2009).
+ */
+function rrfScore(ranks: (number | null)[], k: number = 60): number {
+  let score = 0;
+  for (const rank of ranks) {
+    if (rank !== null) {
+      score += 1 / (k + rank);
+    }
+  }
+  return score;
+}
+
+/**
+ * Hybrid search: runs keyword search (FTS5+fuzzy) and semantic search in parallel,
+ * then fuses results using Reciprocal Rank Fusion (RRF).
+ *
+ * This combines the precision of keyword matching with the recall of semantic similarity.
+ */
+export async function hybridSearch(
+  query: string,
+  options: {
+    filter?: MemoryFilter;
+    semantic_threshold?: number;
+    semantic_weight?: number;
+    keyword_weight?: number;
+    limit?: number;
+    k?: number;
+  } = {},
+  db?: Database
+): Promise<HybridSearchResult[]> {
+  const d = db || getDatabase();
+  const {
+    filter,
+    semantic_threshold = 0.3,
+    limit = 20,
+    k = 60,
+  } = options;
+
+  // Run keyword search and semantic search in parallel
+  const keywordResults = searchMemories(query, { ...filter, limit: limit * 2 }, d);
+
+  let semanticResults: SemanticSearchResult[] = [];
+  try {
+    semanticResults = await semanticSearch(query, {
+      threshold: semantic_threshold,
+      limit: limit * 2,
+      scope: filter?.scope as string | undefined,
+      agent_id: filter?.agent_id,
+      project_id: filter?.project_id,
+    }, d);
+  } catch {
+    // Semantic search may fail if no embeddings — that's fine, just use keyword results
+  }
+
+  // Build rank maps (1-indexed)
+  const keywordRankMap = new Map<string, number>();
+  keywordResults.forEach((r, i) => keywordRankMap.set(r.memory.id, i + 1));
+
+  const semanticRankMap = new Map<string, number>();
+  semanticResults.forEach((r, i) => semanticRankMap.set(r.memory.id, i + 1));
+
+  // Collect all unique memory IDs
+  const allMemoryIds = new Set<string>([
+    ...keywordRankMap.keys(),
+    ...semanticRankMap.keys(),
+  ]);
+
+  // Compute RRF score for each memory
+  const fused: HybridSearchResult[] = [];
+  for (const memoryId of allMemoryIds) {
+    const kwRank = keywordRankMap.get(memoryId) ?? null;
+    const semRank = semanticRankMap.get(memoryId) ?? null;
+
+    const score = rrfScore([kwRank, semRank], k);
+
+    // Get memory from whichever result set has it
+    const kwResult = keywordResults.find((r) => r.memory.id === memoryId);
+    const semResult = semanticResults.find((r) => r.memory.id === memoryId);
+    const memory = kwResult?.memory ?? semResult!.memory;
+
+    fused.push({
+      memory,
+      score,
+      keyword_rank: kwRank,
+      semantic_rank: semRank,
+      match_type: kwResult?.match_type ?? "fuzzy",
+      highlights: kwResult?.highlights,
+    });
+  }
+
+  // Sort by RRF score descending
+  fused.sort((a, b) => b.score - a.score);
+
+  return fused.slice(0, limit);
 }
 
 // ============================================================================

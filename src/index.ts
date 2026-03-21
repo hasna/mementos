@@ -136,7 +136,7 @@ export {
 
 // Injector
 export { MemoryInjector } from "./lib/injector.js";
-export type { InjectionOptions } from "./lib/injector.js";
+export type { InjectionOptions, InjectionStrategy } from "./lib/injector.js";
 
 // Retention
 export { enforceQuotas, archiveStale, archiveUnused, deprioritizeStale, runCleanup } from "./lib/retention.js";

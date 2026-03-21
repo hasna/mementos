@@ -17,6 +17,7 @@ export const DEFAULT_CONFIG: MementosConfig = {
     global: 500,
     shared: 300,
     private: 200,
+    working: 100,
   },
   injection: {
     max_tokens: 500,
@@ -75,7 +76,7 @@ function deepMerge<T extends Record<string, unknown>>(
 // Validators
 // ============================================================================
 
-const VALID_SCOPES: MemoryScope[] = ["global", "shared", "private"];
+const VALID_SCOPES: MemoryScope[] = ["global", "shared", "private", "working"];
 const VALID_CATEGORIES: MemoryCategory[] = [
   "preference",
   "fact",

@@ -30,11 +30,11 @@ import {
   getProject,
 } from "../db/projects.js";
 import { registerMachine, listMachines, getMachine, renameMachine, getCurrentMachineId } from "../db/machines.js";
-import { createEntity, getEntity, getEntityByName, listEntities, updateEntity, deleteEntity, mergeEntities } from "../db/entities.js";
+import { createEntity, getEntity, getEntityByName, listEntities, updateEntity, deleteEntity, mergeEntities, graphTraverse } from "../db/entities.js";
 import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../db/entity-memories.js";
 import { getDatabase, resolvePartialId } from "../db/database.js";
-import { searchMemories } from "../lib/search.js";
+import { searchMemories, hybridSearch, searchWithBm25 } from "../lib/search.js";
 import { detectProject } from "../lib/project-detect.js";
 import {
   MemoryNotFoundError,
@@ -146,12 +146,12 @@ function formatMemory(m: Memory): string {
 
 server.tool(
   "memory_save",
-  "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent. conflict controls what happens when key already exists.",
+  "Save/upsert a memory. scope: global=all agents, shared=project, private=single agent, working=transient session scratchpad (auto-expires in 1h, excluded from ALMA synthesis). conflict controls what happens when key already exists.",
   {
     key: z.string(),
     value: z.string(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
     importance: z.coerce.number().min(1).max(10).optional(),
     tags: z.array(z.string()).optional(),
     summary: z.string().optional(),
@@ -163,6 +163,8 @@ server.tool(
     metadata: z.record(z.unknown()).optional(),
     conflict: z.enum(["merge", "overwrite", "error", "version-fork"]).optional()
       .describe("Conflict strategy: merge=upsert(default), overwrite=same as merge, error=fail if key exists, version-fork=always create new"),
+    conflict_strategy: z.enum(["last_writer_wins", "reject"]).optional()
+      .describe("Vector clock conflict strategy: last_writer_wins (default) proceeds even if diverged, reject returns error on divergence"),
     machine_id: z.string().optional().describe("Machine ID (from register_machine). If omitted, auto-detected from current hostname."),
   },
   async (args) => {
@@ -183,7 +185,54 @@ server.tool(
         try { input.machine_id = getCurrentMachineId(); } catch { /* ignore — machine registry optional */ }
       }
       const dedupeMode = (conflict as import("../types/index.js").DedupeMode | undefined) ?? "merge";
+      const conflictStrategy = (args as Record<string, unknown>).conflict_strategy as string | undefined ?? "last_writer_wins";
+
+      // Vector clock conflict detection (Task 2)
+      // Before creating/updating, check if existing memory has a diverged vector clock
+      if (conflictStrategy === "reject" && input.agent_id) {
+        const db = getDatabase();
+        try {
+          const existing = db.query(
+            `SELECT vector_clock FROM memories WHERE key = ? AND scope = ? AND COALESCE(agent_id, '') = ? AND COALESCE(project_id, '') = ? AND COALESCE(session_id, '') = ? AND status = 'active'`
+          ).get(
+            input.key as string,
+            (input.scope as string) || "private",
+            (input.agent_id as string) || "",
+            (input.project_id as string) || "",
+            (input.session_id as string) || ""
+          ) as { vector_clock: string } | null;
+
+          if (existing?.vector_clock) {
+            const existingClock = JSON.parse(existing.vector_clock) as Record<string, number>;
+            const agentEntry = existingClock[input.agent_id as string] || 0;
+            // If another agent has written since our last write, the clock has diverged
+            const otherWrites = Object.entries(existingClock).some(
+              ([aid, count]) => aid !== input.agent_id && count > 0
+            );
+            if (otherWrites && agentEntry === 0) {
+              return { content: [{ type: "text" as const, text: `Vector clock conflict: memory was modified by another agent. Use conflict_strategy='last_writer_wins' to override.` }], isError: true };
+            }
+          }
+        } catch {
+          // vector_clock column may not exist yet — skip check
+        }
+      }
+
       const memory = createMemory(input as unknown as CreateMemoryInput, dedupeMode);
+
+      // Update vector_clock with agent_id entry incremented
+      if (input.agent_id) {
+        try {
+          const db = getDatabase();
+          const row = db.query("SELECT vector_clock FROM memories WHERE id = ?").get(memory.id) as { vector_clock: string } | null;
+          const clock = JSON.parse(row?.vector_clock || "{}") as Record<string, number>;
+          clock[input.agent_id as string] = (clock[input.agent_id as string] || 0) + 1;
+          db.run("UPDATE memories SET vector_clock = ? WHERE id = ?", [JSON.stringify(clock), memory.id]);
+        } catch {
+          // vector_clock column may not exist in older DBs — ignore
+        }
+      }
+
       if (args.agent_id) touchAgent(args.agent_id);
 
       // Auto-broadcast shared memories to active agents via conversations MCP
@@ -208,13 +257,14 @@ server.tool(
 
 server.tool(
   "memory_recall",
-  "Recall a memory by key. Returns the best matching active memory.",
+  "Recall a memory by key. Returns the best matching active memory. Use as_of for temporal queries (what was true at a specific date).",
   {
     key: z.string(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     session_id: z.string().optional(),
+    as_of: z.string().optional().describe("ISO8601 date — recall what was known at this point in time (bi-temporal query)"),
   },
   async (args) => {
     try {
@@ -224,7 +274,7 @@ server.tool(
       if (!args.scope && !args.project_id && args.agent_id) {
         effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
       }
-      const memory = getMemoryByKey(args.key, args.scope, args.agent_id, effectiveProjectId, args.session_id);
+      const memory = getMemoryByKey(args.key, args.scope, args.agent_id, effectiveProjectId, args.session_id, undefined, args.as_of);
       if (memory) {
         touchMemory(memory.id);
         if (args.agent_id) touchAgent(args.agent_id);
@@ -250,7 +300,13 @@ server.tool(
         };
       }
 
-      return { content: [{ type: "text" as const, text: `No memory found for key: ${args.key}` }] };
+      // Proactive save suggestion when nothing found
+      const suggestedKey = args.key.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+      const suggestedCategory = suggestedKey.includes("prefer") ? "preference"
+        : suggestedKey.includes("how") || suggestedKey.includes("process") || suggestedKey.includes("step") ? "procedural"
+        : suggestedKey.includes("stack") || suggestedKey.includes("arch") ? "fact"
+        : "knowledge";
+      return { content: [{ type: "text" as const, text: `No memory found for key: "${args.key}".\n\n💡 Save suggestion: memory_save(key="${suggestedKey}", value="...", category="${suggestedCategory}", scope="shared")` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -314,8 +370,8 @@ server.tool(
   "memory_list",
   "List memories. Default: compact lines. full=true for complete JSON objects.",
   {
-    scope: z.enum(["global", "shared", "private"]).optional(),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
     tags: z.array(z.string()).optional(),
     min_importance: z.coerce.number().optional(),
     pinned: z.boolean().optional(),
@@ -323,6 +379,7 @@ server.tool(
     project_id: z.string().optional(),
     session_id: z.string().optional(),
     status: z.enum(["active", "archived", "expired"]).optional(),
+    as_of: z.string().optional().describe("ISO8601 date — list memories valid at this point in time (bi-temporal query)"),
     limit: z.coerce.number().optional(),
     offset: z.coerce.number().optional(),
     full: z.boolean().optional(),
@@ -376,8 +433,8 @@ server.tool(
   {
     id: z.string(),
     value: z.string().optional(),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     importance: z.coerce.number().min(1).max(10).optional(),
     tags: z.array(z.string()).optional(),
     summary: z.string().nullable().optional(),
@@ -411,7 +468,7 @@ server.tool(
     id: z.string().optional(),
     key: z.string().optional(),
     pinned: z.boolean().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
   },
@@ -434,7 +491,7 @@ server.tool(
   {
     id: z.string().optional(),
     key: z.string().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
   },
@@ -456,7 +513,7 @@ server.tool(
   {
     id: z.string().optional(),
     key: z.string().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
   },
@@ -712,8 +769,8 @@ server.tool(
   "Search memories by keyword across key, value, summary, and tags",
   {
     query: z.string(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
     tags: z.array(z.string()).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
@@ -739,7 +796,8 @@ server.tool(
       };
       const memories = listMemories(filter);
       if (memories.length === 0) {
-        return { content: [{ type: "text" as const, text: `No memories found matching "${args.query}".` }] };
+        const sugKey = args.query.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
+        return { content: [{ type: "text" as const, text: `No memories found matching "${args.query}".\n\n💡 Consider saving relevant information: memory_save(key="${sugKey}", value="...", scope="shared")` }] };
       }
       const lines = memories.map((m, i) =>
         `${i + 1}. [${m.scope}/${m.category}] ${m.key} = ${m.value.slice(0, 100)}${m.value.length > 100 ? "..." : ""} (importance: ${m.importance})`
@@ -758,7 +816,7 @@ server.tool(
     query: z.string().describe("Natural language query"),
     threshold: z.coerce.number().min(0).max(1).optional().describe("Minimum cosine similarity score (default: 0.5)"),
     limit: z.coerce.number().optional().describe("Max results (default: 10)"),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     index_missing: z.coerce.boolean().optional().describe("If true, index any memories that lack embeddings before searching"),
@@ -810,11 +868,197 @@ server.tool(
 );
 
 server.tool(
+  "memory_search_hybrid",
+  "Hybrid search combining keyword (FTS5) and semantic (embedding) search using Reciprocal Rank Fusion (RRF). Best of both worlds: keyword precision + semantic recall.",
+  {
+    query: z.string().describe("Search query (natural language or keywords)"),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
+    tags: z.array(z.string()).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    semantic_threshold: z.coerce.number().min(0).max(1).optional().describe("Minimum cosine similarity for semantic results (default: 0.3)"),
+    limit: z.coerce.number().optional().describe("Max results (default: 20)"),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+      let effectiveProjectId = args.project_id;
+      if (!args.project_id && args.agent_id) {
+        effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
+      }
+      const filter: MemoryFilter = {
+        scope: args.scope,
+        category: args.category,
+        tags: args.tags,
+        agent_id: args.agent_id,
+        project_id: effectiveProjectId,
+      };
+      const results = await hybridSearch(args.query, {
+        filter,
+        semantic_threshold: args.semantic_threshold,
+        limit: args.limit,
+      });
+      if (results.length === 0) {
+        return { content: [{ type: "text" as const, text: `No memories found for "${args.query}" via hybrid search.` }] };
+      }
+      const lines = results.map((r, i) => {
+        const kw = r.keyword_rank !== null ? `kw:#${r.keyword_rank}` : "kw:—";
+        const sem = r.semantic_rank !== null ? `sem:#${r.semantic_rank}` : "sem:—";
+        return `${i + 1}. [rrf:${r.score.toFixed(4)}] [${kw} ${sem}] [${r.memory.scope}/${r.memory.category}] ${r.memory.key} = ${r.memory.value.slice(0, 100)}${r.memory.value.length > 100 ? "..." : ""}`;
+      });
+      return { content: [{ type: "text" as const, text: `${results.length} hybrid result(s) for "${args.query}":\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_search_bm25",
+  "Search memories using FTS5 BM25 ranking. Returns results scored by term frequency, document length, and field weights (key=10, value=5, summary=3).",
+  {
+    query: z.string().describe("Search query"),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
+    tags: z.array(z.string()).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    limit: z.coerce.number().optional().describe("Max results (default: 20)"),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+      let effectiveProjectId = args.project_id;
+      if (!args.project_id && args.agent_id) {
+        effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
+      }
+      const filter: MemoryFilter = {
+        scope: args.scope,
+        category: args.category,
+        tags: args.tags,
+        agent_id: args.agent_id,
+        project_id: effectiveProjectId,
+        limit: args.limit || 20,
+      };
+      const results = searchWithBm25(args.query, filter);
+      if (results.length === 0) {
+        return { content: [{ type: "text" as const, text: `No memories found for "${args.query}" via BM25 search.` }] };
+      }
+      const lines = results.map((r, i) =>
+        `${i + 1}. [bm25:${r.score.toFixed(3)}] [${r.memory.scope}/${r.memory.category}] ${r.memory.key} = ${r.memory.value.slice(0, 100)}${r.memory.value.length > 100 ? "..." : ""}`
+      );
+      return { content: [{ type: "text" as const, text: `${results.length} BM25 result(s) for "${args.query}":\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_check_contradiction",
+  "Check if a new memory would contradict existing high-importance facts. Call before saving to detect conflicts. Returns contradiction details if found.",
+  {
+    key: z.string().describe("Memory key to check"),
+    value: z.string().describe("New value to check for contradictions"),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    project_id: z.string().optional(),
+    min_importance: z.coerce.number().optional().describe("Only check against memories with importance >= this (default: 7)"),
+  },
+  async (args) => {
+    try {
+      const { detectContradiction } = await import("../lib/contradiction.js");
+      const result = await detectContradiction(args.key, args.value, {
+        scope: args.scope,
+        project_id: args.project_id,
+        min_importance: args.min_importance,
+      });
+      if (result.contradicts) {
+        const mem = result.conflicting_memory;
+        return { content: [{ type: "text" as const, text: `⚠ CONTRADICTION DETECTED (confidence: ${(result.confidence * 100).toFixed(0)}%)\n${result.reasoning}\n\nExisting memory: [${mem?.scope}/${mem?.category}] ${mem?.key} = ${mem?.value?.slice(0, 200)}\nImportance: ${mem?.importance}\nID: ${mem?.id?.slice(0, 8)}` }] };
+      }
+      return { content: [{ type: "text" as const, text: `No contradiction detected for key "${args.key}". ${result.reasoning}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_invalidate",
+  "Invalidate an existing fact by setting valid_until to now. Use when a contradiction is confirmed and the old fact should be superseded. Optionally link to the new superseding memory.",
+  {
+    old_memory_id: z.string().describe("ID of the memory to invalidate"),
+    new_memory_id: z.string().optional().describe("ID of the new memory that supersedes the old one"),
+  },
+  async (args) => {
+    try {
+      const { invalidateFact } = await import("../lib/contradiction.js");
+      const oldId = resolveId(args.old_memory_id);
+      const existing = getMemory(oldId);
+      if (!existing) {
+        return { content: [{ type: "text" as const, text: `Memory not found: ${args.old_memory_id}` }] };
+      }
+      const result = invalidateFact(oldId, args.new_memory_id);
+      return { content: [{ type: "text" as const, text: `Invalidated "${existing.key}" (valid_until: ${result.valid_until})${result.new_memory_id ? ` — superseded by ${result.new_memory_id.slice(0, 8)}` : ""}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_audit_trail",
+  "Get the immutable audit trail for a specific memory. Shows all create/update/delete operations with timestamps and agent IDs.",
+  {
+    memory_id: z.string().describe("Memory ID to get audit trail for"),
+    limit: z.coerce.number().optional().describe("Max entries (default: 50)"),
+  },
+  async (args) => {
+    try {
+      const { getMemoryAuditTrail } = await import("../db/audit.js");
+      const id = resolveId(args.memory_id);
+      const entries = getMemoryAuditTrail(id, args.limit);
+      if (entries.length === 0) {
+        return { content: [{ type: "text" as const, text: `No audit entries for memory ${args.memory_id}` }] };
+      }
+      const lines = entries.map((e) =>
+        `[${e.created_at}] ${e.operation} by ${e.agent_id || "system"} — ${JSON.stringify(e.changes)}`
+      );
+      return { content: [{ type: "text" as const, text: `Audit trail (${entries.length} entries):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_audit_export",
+  "Export the full immutable audit log for compliance reporting. Supports date range and operation type filtering.",
+  {
+    since: z.string().optional().describe("Start date (ISO8601)"),
+    until: z.string().optional().describe("End date (ISO8601)"),
+    operation: z.enum(["create", "update", "delete", "archive", "restore"]).optional(),
+    agent_id: z.string().optional(),
+    limit: z.coerce.number().optional().describe("Max entries (default: 1000)"),
+  },
+  async (args) => {
+    try {
+      const { exportAuditLog } = await import("../db/audit.js");
+      const entries = exportAuditLog(args);
+      return { content: [{ type: "text" as const, text: JSON.stringify(entries, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_sync_push",
   "Push local memories to a remote mementos-serve instance. Set MEMENTOS_REMOTE_URL or pass url.",
   {
     url: z.string().optional().describe("Remote URL (e.g. http://apple01:19428). Defaults to MEMENTOS_REMOTE_URL env var."),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     limit: z.coerce.number().optional(),
@@ -835,7 +1079,7 @@ server.tool(
   "Pull memories from a remote mementos-serve instance into local DB. Set MEMENTOS_REMOTE_URL or pass url.",
   {
     url: z.string().optional().describe("Remote URL. Defaults to MEMENTOS_REMOTE_URL env var."),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     limit: z.coerce.number().optional(),
@@ -885,8 +1129,8 @@ server.tool(
 
       const stats: MemoryStats = {
         total,
-        by_scope: { global: 0, shared: 0, private: 0 },
-        by_category: { preference: 0, fact: 0, knowledge: 0, history: 0 },
+        by_scope: { global: 0, shared: 0, private: 0, working: 0 },
+        by_category: { preference: 0, fact: 0, knowledge: 0, history: 0, procedural: 0, resource: 0 },
         by_status: { active: 0, archived: 0, expired: 0 },
         by_agent: {},
         pinned_count: pinnedCount,
@@ -905,7 +1149,7 @@ server.tool(
 
       const lines = [
         `Total active: ${stats.total}`,
-        `By scope: global=${stats.by_scope.global}, shared=${stats.by_scope.shared}, private=${stats.by_scope.private}`,
+        `By scope: global=${stats.by_scope.global}, shared=${stats.by_scope.shared}, private=${stats.by_scope.private}, working=${stats.by_scope.working}`,
         `By category: preference=${stats.by_category.preference}, fact=${stats.by_category.fact}, knowledge=${stats.by_category.knowledge}, history=${stats.by_category.history}`,
         `Pinned: ${stats.pinned_count}`,
         `Expired: ${stats.expired_count}`,
@@ -925,7 +1169,7 @@ server.tool(
   "Get daily memory creation activity over N days.",
   {
     days: z.coerce.number().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
   },
@@ -1003,15 +1247,21 @@ server.tool(
 
 server.tool(
   "memory_export",
-  "Export memories as JSON",
+  "Export memories. format='json' (default) returns JSON array. format='v1' returns mementos-export-v1 JSONL with entity links.",
   {
-    scope: z.enum(["global", "shared", "private"]).optional(),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
+    format: z.enum(["json", "v1"]).optional().describe("Export format: json (default) or v1 (JSONL with entity links)"),
   },
   async (args) => {
     try {
+      if (args.format === "v1") {
+        const { exportV1, toJsonl } = await import("../lib/export-v1.js");
+        const entries = exportV1({ ...args });
+        return { content: [{ type: "text" as const, text: toJsonl(entries) }] };
+      }
       const memories = listMemories({ ...args, limit: 10000 });
       return { content: [{ type: "text" as const, text: JSON.stringify(memories, null, 2) }] };
     } catch (e) {
@@ -1027,8 +1277,8 @@ server.tool(
     memories: z.array(z.object({
       key: z.string(),
       value: z.string(),
-      scope: z.enum(["global", "shared", "private"]).optional(),
-      category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+      scope: z.enum(["global", "shared", "private", "working"]).optional(),
+      category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
       importance: z.coerce.number().optional(),
       tags: z.array(z.string()).optional(),
       summary: z.string().optional(),
@@ -1056,16 +1306,18 @@ server.tool(
 
 server.tool(
   "memory_inject",
-  "Get memory context for system prompt injection. Selects by scope, importance, recency.",
+  "Get memory context for system prompt injection. Selects by scope, importance, recency. Use strategy='smart' with a query for embedding-based relevance scoring.",
   {
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
     session_id: z.string().optional(),
     max_tokens: z.coerce.number().optional(),
-    categories: z.array(z.enum(["preference", "fact", "knowledge", "history"])).optional(),
+    categories: z.array(z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"])).optional(),
     min_importance: z.coerce.number().optional(),
     format: z.enum(["xml", "markdown", "compact", "json"]).optional(),
     raw: z.boolean().optional(),
+    strategy: z.enum(["default", "smart"]).optional().describe("Injection strategy: 'default' uses importance+recency, 'smart' uses embedding similarity+importance+recency"),
+    query: z.string().optional().describe("Query for smart injection relevance scoring. Required when strategy='smart'."),
   },
   async (args) => {
     try {
@@ -1113,6 +1365,19 @@ server.tool(
         allMemories.push(...privateMems);
       }
 
+      // Working memories (session-scoped transient scratchpad — always relevant to current context)
+      if (args.session_id || args.agent_id) {
+        const workingMems = listMemories({
+          scope: "working",
+          status: "active",
+          ...(args.session_id ? { session_id: args.session_id } : {}),
+          ...(args.agent_id ? { agent_id: args.agent_id } : {}),
+          ...(args.project_id ? { project_id: args.project_id } : {}),
+          limit: 50,
+        });
+        allMemories.push(...workingMems);
+      }
+
       // Deduplicate by ID
       const seen = new Set<string>();
       const unique = allMemories.filter((m) => {
@@ -1121,11 +1386,55 @@ server.tool(
         return true;
       });
 
-      // Sort by importance DESC, then recency
-      unique.sort((a, b) => {
-        if (b.importance !== a.importance) return b.importance - a.importance;
-        return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-      });
+      // Smart strategy: score by embedding similarity + importance + recency
+      if (args.strategy === "smart" && args.query) {
+        const { generateEmbedding: genEmb, cosineSimilarity: cosSim, deserializeEmbedding: deserEmb } = await import("../lib/embeddings.js");
+        const { getDatabase: getDb } = await import("../db/database.js");
+        const d = getDb();
+        const { embedding: queryEmbedding } = await genEmb(args.query);
+
+        // Load embeddings for candidate memories
+        const embeddingMap = new Map<string, number[]>();
+        if (unique.length > 0) {
+          const rows = d.prepare(
+            `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${unique.map(() => "?").join(",")})`
+          ).all(...unique.map((m) => m.id)) as Array<{ memory_id: string; embedding: string }>;
+          for (const row of rows) {
+            try { embeddingMap.set(row.memory_id, deserEmb(row.embedding)); } catch { /* skip malformed */ }
+          }
+        }
+
+        if (embeddingMap.size > 0) {
+          // Compute recency reference
+          const nowMs = Date.now();
+          const oldestMs = Math.min(...unique.map((m) => new Date(m.updated_at).getTime()));
+          const timeRange = nowMs - oldestMs || 1;
+
+          // Score: similarity * 0.4 + importance/10 * 0.3 + recency * 0.3 + pin bonus
+          const scores = new Map<string, number>();
+          for (const m of unique) {
+            const memEmb = embeddingMap.get(m.id);
+            const similarity = memEmb ? cosSim(queryEmbedding, memEmb) : 0;
+            const importanceScore = m.importance / 10;
+            const recencyScore = (new Date(m.updated_at).getTime() - oldestMs) / timeRange;
+            const pinBonus = m.pinned ? 0.5 : 0;
+            scores.set(m.id, similarity * 0.4 + importanceScore * 0.3 + recencyScore * 0.3 + pinBonus);
+          }
+          unique.sort((a, b) => (scores.get(b.id) || 0) - (scores.get(a.id) || 0));
+        } else {
+          // No embeddings — fall back to default sort
+          unique.sort((a, b) => {
+            if (b.importance !== a.importance) return b.importance - a.importance;
+            return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+          });
+        }
+      } else {
+        // Default strategy: sort by importance DESC, then recency
+        unique.sort((a, b) => {
+          if (b.importance !== a.importance) return b.importance - a.importance;
+          return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+        });
+      }
 
       // resolve format: new `format` param takes priority, legacy `raw` maps to compact
       const fmt = args.format ?? (args.raw ? "compact" : "xml");
@@ -1188,6 +1497,49 @@ server.tool(
         sessionId: args.session_id,
         timestamp: Date.now(),
       });
+
+      // Task 6: Check for subscription notifications
+      if (args.agent_id) {
+        try {
+          const db = getDatabase();
+          const subs = db.query(
+            "SELECT key_pattern, tag_pattern, scope FROM memory_subscriptions WHERE agent_id = ?"
+          ).all(args.agent_id) as Array<{ key_pattern: string | null; tag_pattern: string | null; scope: string | null }>;
+
+          if (subs.length > 0) {
+            // Find recently changed memories matching subscriptions (last 10 minutes)
+            const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+            const changes: string[] = [];
+            for (const sub of subs) {
+              let sql = "SELECT key, updated_at FROM memories WHERE updated_at > ? AND status = 'active'";
+              const params: (string | null)[] = [cutoff];
+              if (sub.key_pattern) {
+                const like = sub.key_pattern.replace(/\*/g, "%");
+                sql += " AND key LIKE ?";
+                params.push(like);
+              }
+              if (sub.scope) {
+                sql += " AND scope = ?";
+                params.push(sub.scope);
+              }
+              // Exclude agent's own writes
+              sql += " AND COALESCE(agent_id, '') != ?";
+              params.push(args.agent_id);
+              sql += " LIMIT 5";
+              const matches = db.query(sql).all(...params) as Array<{ key: string; updated_at: string }>;
+              for (const m of matches) {
+                changes.push(`${m.key} (updated ${m.updated_at})`);
+              }
+            }
+            if (changes.length > 0) {
+              const changeSection = `\n\n## Changes\n${changes.map((c) => `- ${c}`).join("\n")}`;
+              context += changeSection;
+            }
+          }
+        } catch {
+          // memory_subscriptions table may not exist — ignore
+        }
+      }
 
       return { content: [{ type: "text" as const, text: context }] };
     } catch (e) {
@@ -1682,7 +2034,7 @@ server.tool(
     importance: z.coerce.number().min(1).max(10).optional(),
     tags: z.array(z.string()).optional(),
     pinned: z.boolean().optional(),
-    category: z.enum(["preference", "fact", "knowledge", "history"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
     status: z.enum(["active", "archived", "expired"]).optional(),
   },
   async (args) => {
@@ -1781,7 +2133,7 @@ server.tool(
     agent_id: z.string().optional().describe("Agent ID or name. If provided, defaults since to agent's last_seen_at."),
     since: z.string().optional().describe("ISO 8601 timestamp. Defaults to agent's last_seen_at if agent_id provided, otherwise 24h ago."),
     project_id: z.string().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     limit: z.coerce.number().optional().describe("Max memories per category (default: 20)"),
   },
   async (args) => {
@@ -1864,7 +2216,7 @@ server.tool(
   {
     agent_id: z.string().optional(),
     project_id: z.string().optional(),
-    scope: z.enum(["global", "shared", "private"]).optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
     limit: z.coerce.number().optional(),
     decay_halflife_days: z.coerce.number().optional().describe("Importance half-life in days (default: 90). Lower = more weight on recent memories."),
     no_decay: z.coerce.boolean().optional().describe("Set true to disable decay and sort purely by importance."),
@@ -1915,6 +2267,37 @@ server.tool(
         `[${m.scope}/${m.category}] ${m.key}: ${m.value} (score: ${m.effective_score}, raw: ${m.importance}${m.pinned ? ", pinned" : ""}${m.flag ? `, flag: ${m.flag}` : ""})`
       );
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_context_layered",
+  "Structured multi-section memory context: Core Facts, Recent History, Relevant Knowledge, Active Decisions. Better than flat lists for agent prompts.",
+  {
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    query: z.string().optional().describe("Query to find relevant knowledge (populates Relevant Knowledge section)"),
+    max_per_section: z.coerce.number().optional().describe("Max memories per section (default: 10)"),
+  },
+  async (args) => {
+    try {
+      const { assembleContext, formatLayeredContext } = await import("../lib/context.js");
+      const ctx = assembleContext({
+        project_id: args.project_id,
+        agent_id: args.agent_id,
+        scope: args.scope,
+        query: args.query,
+        max_per_section: args.max_per_section,
+      });
+      if (ctx.total_memories === 0) {
+        return { content: [{ type: "text" as const, text: "No memories found for layered context." }] };
+      }
+      const formatted = formatLayeredContext(ctx);
+      return { content: [{ type: "text" as const, text: `${formatted}\n---\n${ctx.total_memories} memories, ~${ctx.token_estimate} tokens` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -2253,7 +2636,7 @@ server.tool(
 
 server.tool(
   "graph_stats",
-  "Get entity and relation counts by type.",
+  "Comprehensive knowledge graph statistics: entity/relation counts by type, most-connected entities, orphan count, average degree.",
   {},
   async () => {
     try {
@@ -2263,6 +2646,23 @@ server.tool(
       const relationTotal = (db.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }).c;
       const byRelType = db.query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type").all() as { relation_type: string; c: number }[];
       const linkTotal = (db.query("SELECT COUNT(*) as c FROM entity_memories").get() as { c: number }).c;
+
+      // Most-connected entities (top 10 by total degree)
+      const mostConnected = db.query(`
+        SELECT e.id, e.name, e.type,
+          (SELECT COUNT(*) FROM relations WHERE source_entity_id = e.id) +
+          (SELECT COUNT(*) FROM relations WHERE target_entity_id = e.id) as degree
+        FROM entities e ORDER BY degree DESC LIMIT 10
+      `).all() as { id: string; name: string; type: string; degree: number }[];
+
+      // Orphan entities (no relations)
+      const orphanCount = (db.query(`
+        SELECT COUNT(*) as c FROM entities e
+        WHERE NOT EXISTS (SELECT 1 FROM relations WHERE source_entity_id = e.id OR target_entity_id = e.id)
+      `).get() as { c: number }).c;
+
+      // Average degree
+      const avgDegree = entityTotal > 0 ? (relationTotal * 2) / entityTotal : 0;
 
       const lines = [
         `Entities: ${entityTotal}`,
@@ -2275,6 +2675,60 @@ server.tool(
         lines.push(`  By type: ${byRelType.map(r => `${r.relation_type}=${r.c}`).join(", ")}`);
       }
       lines.push(`Entity-memory links: ${linkTotal}`);
+      lines.push(`Avg degree: ${avgDegree.toFixed(1)}`);
+      lines.push(`Orphan entities: ${orphanCount}`);
+      if (mostConnected.length > 0 && mostConnected[0]!.degree > 0) {
+        lines.push(`Most connected:`);
+        for (const e of mostConnected.filter(e => e.degree > 0)) {
+          lines.push(`  ${e.name} (${e.type}) — ${e.degree} connections`);
+        }
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "graph_traverse",
+  "Multi-hop graph traversal from an entity. Returns all paths with entities and relations at each hop. Supports direction and relation-type filtering.",
+  {
+    entity_name_or_id: z.string().describe("Starting entity name or ID"),
+    max_depth: z.coerce.number().optional().describe("Max traversal depth (default 2)"),
+    relation_types: z.array(z.string()).optional().describe("Filter by relation types"),
+    direction: z.enum(["outgoing", "incoming", "both"]).optional().describe("Traversal direction (default both)"),
+    limit: z.coerce.number().optional().describe("Max paths to return (default 50)"),
+  },
+  async (args) => {
+    try {
+      const entity = resolveEntityParam(args.entity_name_or_id);
+      const result = graphTraverse(entity.id, {
+        max_depth: args.max_depth,
+        relation_types: args.relation_types,
+        direction: args.direction,
+        limit: args.limit,
+      });
+
+      if (result.total_paths === 0) {
+        return { content: [{ type: "text" as const, text: `No paths found from: ${entity.name}` }] };
+      }
+
+      const lines = [
+        `Traversal from ${entity.name} (${result.total_paths} paths, ${result.visited_entities.length} entities):`,
+      ];
+
+      for (const path of result.paths) {
+        const pathStr = path.entities.map(e => e.name).join(" -> ");
+        const relStr = path.relations.map(r => r.relation_type).join(", ");
+        lines.push(`  [depth ${path.depth}] ${pathStr} (${relStr})`);
+      }
+
+      lines.push(`\nVisited entities:`);
+      for (const ve of result.visited_entities) {
+        lines.push(`  ${ve.id.slice(0, 8)} | ${ve.type} | ${ve.name}`);
+      }
+
       return { content: [{ type: "text" as const, text: lines.join("\n") }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -2334,8 +2788,8 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     params: {
       key: { type: "string", description: "Unique key for the memory (kebab-case recommended)", required: true },
       value: { type: "string", description: "The memory content", required: true },
-      scope: { type: "string", description: "Visibility: global=all agents, shared=project, private=single agent", enum: ["global", "shared", "private"] },
-      category: { type: "string", description: "Memory type", enum: ["preference", "fact", "knowledge", "history"] },
+      scope: { type: "string", description: "Visibility: global=all agents, shared=project, private=single agent, working=transient session scratchpad (auto-expires 1h)", enum: ["global", "shared", "private", "working"] },
+      category: { type: "string", description: "Memory type", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
       importance: { type: "number", description: "Priority 1-10 (10=critical)" },
       tags: { type: "array", description: "Searchable tags", items: { type: "string" } },
       summary: { type: "string", description: "Short summary for display" },
@@ -2369,7 +2823,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     category: "memory",
     params: {
       key: { type: "string", description: "Key to look up", required: true },
-      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
       agent_id: { type: "string", description: "Agent UUID filter" },
       project_id: { type: "string", description: "Project UUID filter" },
       session_id: { type: "string", description: "Session UUID filter" },
@@ -2380,8 +2834,8 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     description: "List memories with optional filters. Returns compact lines by default.",
     category: "memory",
     params: {
-      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
-      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history"] },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
       tags: { type: "array", description: "Filter by tags (AND logic)", items: { type: "string" } },
       min_importance: { type: "number", description: "Minimum importance threshold" },
       pinned: { type: "boolean", description: "Filter to pinned memories only" },
@@ -2403,8 +2857,8 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       id: { type: "string", description: "Memory ID (partial OK)", required: true },
       version: { type: "number", description: "Current version for conflict detection (omit to auto-fetch)" },
       value: { type: "string", description: "New value" },
-      category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history"] },
-      scope: { type: "string", description: "New scope", enum: ["global", "shared", "private"] },
+      category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
+      scope: { type: "string", description: "New scope", enum: ["global", "shared", "private", "working"] },
       importance: { type: "number", description: "New importance 1-10" },
       tags: { type: "array", description: "New tags (replaces all)", items: { type: "string" } },
       summary: { type: "string", description: "New summary (null to clear)" },
@@ -2422,7 +2876,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       id: { type: "string", description: "Memory ID" },
       key: { type: "string", description: "Memory key (alternative to id)" },
       pinned: { type: "boolean", description: "true=pin (default), false=unpin" },
-      scope: { type: "string", description: "Scope filter for key lookup", enum: ["global", "shared", "private"] },
+      scope: { type: "string", description: "Scope filter for key lookup", enum: ["global", "shared", "private", "working"] },
     },
     example: '{"key":"project-stack","pinned":true}',
   },
@@ -2432,7 +2886,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     params: {
       id: { type: "string", description: "Memory ID" },
       key: { type: "string", description: "Memory key (alternative to id)" },
-      scope: { type: "string", description: "Scope filter for key lookup", enum: ["global", "shared", "private"] },
+      scope: { type: "string", description: "Scope filter for key lookup", enum: ["global", "shared", "private", "working"] },
     },
     example: '{"key":"old-project-stack"}',
   },
@@ -2442,7 +2896,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     params: {
       id: { type: "string", description: "Memory ID (partial OK)" },
       key: { type: "string", description: "Memory key" },
-      scope: { type: "string", description: "Scope for key lookup", enum: ["global", "shared", "private"] },
+      scope: { type: "string", description: "Scope for key lookup", enum: ["global", "shared", "private", "working"] },
       agent_id: { type: "string", description: "Agent UUID for key lookup" },
       project_id: { type: "string", description: "Project UUID for key lookup" },
     },
@@ -2464,8 +2918,8 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     category: "memory",
     params: {
       query: { type: "string", description: "Search query", required: true },
-      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
-      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history"] },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
       tags: { type: "array", description: "Tag filter", items: { type: "string" } },
       agent_id: { type: "string", description: "Agent UUID filter" },
       project_id: { type: "string", description: "Project UUID filter" },
@@ -2474,12 +2928,39 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     },
     example: '{"query":"typescript","scope":"global","limit":10}',
   },
+  memory_search_hybrid: {
+    description: "Hybrid search combining keyword (FTS5) and semantic (embedding) search via Reciprocal Rank Fusion. Best retrieval quality.",
+    category: "memory",
+    params: {
+      query: { type: "string", description: "Search query (natural language or keywords)", required: true },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+      semantic_threshold: { type: "number", description: "Min cosine similarity for semantic results (default 0.3)" },
+      limit: { type: "number", description: "Max results (default 20)" },
+    },
+    example: '{"query":"how does the auth system work","project_id":"proj-uuid"}',
+  },
+  memory_search_bm25: {
+    description: "FTS5 BM25-ranked search. Field weights: key=10, value=5, summary=3.",
+    category: "memory",
+    params: {
+      query: { type: "string", description: "Search query", required: true },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
+      agent_id: { type: "string", description: "Agent UUID filter" },
+      project_id: { type: "string", description: "Project UUID filter" },
+      limit: { type: "number", description: "Max results (default 20)" },
+    },
+    example: '{"query":"database migration","limit":5}',
+  },
   memory_activity: {
     description: "Get daily memory creation counts over N days (max 365). Like 'git log --stat' for memories.",
     category: "memory",
     params: {
       days: { type: "number", description: "Number of days to look back (default 30)" },
-      scope: { type: "string", description: "Filter by scope", enum: ["global", "shared", "private"] },
+      scope: { type: "string", description: "Filter by scope", enum: ["global", "shared", "private", "working"] },
       agent_id: { type: "string", description: "Filter by agent" },
       project_id: { type: "string", description: "Filter by project" },
     },
@@ -2495,8 +2976,8 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     description: "Export memories as a JSON array.",
     category: "memory",
     params: {
-      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
-      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history"] },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+      category: { type: "string", description: "Category filter", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
       agent_id: { type: "string", description: "Agent UUID filter" },
       project_id: { type: "string", description: "Project UUID filter" },
     },
@@ -2512,19 +2993,21 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     example: '{"memories":[{"key":"foo","value":"bar","scope":"global","importance":7}]}',
   },
   memory_inject: {
-    description: "Get formatted memory context for system prompt injection. Respects token budget.",
+    description: "Get formatted memory context for system prompt injection. Respects token budget. Use strategy='smart' with a query for embedding-based relevance scoring.",
     category: "memory",
     params: {
       agent_id: { type: "string", description: "Agent UUID to include private memories" },
       project_id: { type: "string", description: "Project UUID to include shared memories" },
       session_id: { type: "string", description: "Session UUID" },
       max_tokens: { type: "number", description: "Approximate token budget (default 500)" },
-      categories: { type: "array", description: "Categories to include (default: preference, fact, knowledge)", items: { type: "string", enum: ["preference", "fact", "knowledge", "history"] } },
+      categories: { type: "array", description: "Categories to include (default: preference, fact, knowledge)", items: { type: "string", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] } },
       min_importance: { type: "number", description: "Minimum importance (default 3)" },
       format: { type: "string", description: "Output format: xml (default, <agent-memories>), compact (key: value, ~60% smaller), markdown, json", enum: ["xml", "compact", "markdown", "json"] },
       raw: { type: "boolean", description: "Deprecated: use format=compact instead. true=plain lines only" },
+      strategy: { type: "string", description: "Injection strategy: 'default' (importance+recency) or 'smart' (embedding similarity+importance+recency)", enum: ["default", "smart"] },
+      query: { type: "string", description: "Query for smart injection relevance scoring. Required when strategy='smart'." },
     },
-    example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5,"format":"compact"}',
+    example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5,"format":"compact","strategy":"smart","query":"database migrations"}',
   },
   session_extract: {
     description: "Auto-create memories from a session summary (title, topics, notes, project). Designed for sessions→mementos integration.",
@@ -2548,7 +3031,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     params: {
       agent_id: { type: "string", description: "Agent UUID filter" },
       project_id: { type: "string", description: "Project UUID filter" },
-      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private"] },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
       limit: { type: "number", description: "Max results (default 30)" },
     },
     example: '{"project_id":"proj-uuid","scope":"shared","limit":20}',
@@ -2639,7 +3122,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       importance: { type: "number", description: "New importance 1-10" },
       tags: { type: "array", description: "New tags (replaces all)", items: { type: "string" } },
       pinned: { type: "boolean", description: "Pin/unpin" },
-      category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history"] },
+      category: { type: "string", description: "New category", enum: ["preference", "fact", "knowledge", "history", "procedural", "resource"] },
       status: { type: "string", description: "New status", enum: ["active", "archived", "expired"] },
     },
     example: '{"ids":["abc123","def456"],"importance":9,"tags":["important"]}',
@@ -2799,6 +3282,98 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     category: "graph",
     params: {},
     example: "{}",
+  },
+  graph_traverse: {
+    description: "Multi-hop graph traversal from an entity. Returns all paths with entities and relations at each hop. Supports direction and relation-type filtering.",
+    category: "graph",
+    params: {
+      entity_name_or_id: { type: "string", description: "Starting entity name or ID", required: true },
+      max_depth: { type: "number", description: "Max traversal depth (default 2)" },
+      relation_types: { type: "array", description: "Filter by relation types", items: { type: "string", enum: ["uses", "knows", "depends_on", "created_by", "related_to", "contradicts", "part_of", "implements"] } },
+      direction: { type: "string", description: "Traversal direction (default both)", enum: ["outgoing", "incoming", "both"] },
+      limit: { type: "number", description: "Max paths to return (default 50)" },
+    },
+    example: '{"entity_name_or_id":"MyApp","max_depth":3,"direction":"outgoing","relation_types":["uses","depends_on"]}',
+  },
+  memory_audit: {
+    description: "Review low-trust memories flagged by poisoning detection heuristic.",
+    category: "memory",
+    params: {
+      threshold: { type: "number", description: "Trust score threshold (default 0.8). Returns memories below this." },
+      project_id: { type: "string", description: "Project UUID filter" },
+      limit: { type: "number", description: "Max results (default 50)" },
+    },
+    example: '{"threshold":0.7,"limit":20}',
+  },
+  memory_rate: {
+    description: "Rate a memory as useful or not useful for quality tracking.",
+    category: "memory",
+    params: {
+      memory_id: { type: "string", description: "Memory ID (partial OK)", required: true },
+      useful: { type: "boolean", description: "Was this memory useful?", required: true },
+      agent_id: { type: "string", description: "Agent providing the rating" },
+      context: { type: "string", description: "Optional context about why" },
+    },
+    example: '{"memory_id":"abc12345","useful":true,"context":"Helped debug issue"}',
+  },
+  memory_evict: {
+    description: "Enforce memory bounds per scope — archives lowest-utility memories when any scope exceeds limit.",
+    category: "memory",
+    params: {
+      project_id: { type: "string", description: "Optional project ID to scope eviction to" },
+    },
+    example: '{"project_id":"proj-uuid"}',
+  },
+  memory_save_image: {
+    description: "Save an image memory. Auto-extracts description via GPT-4o-mini vision if OPENAI_API_KEY set.",
+    category: "memory",
+    params: {
+      key: { type: "string", description: "Memory key", required: true },
+      image_url: { type: "string", description: "URL of the image to describe" },
+      image_description: { type: "string", description: "Manual description" },
+      scope: { type: "string", description: "Visibility scope", enum: ["global", "shared", "private", "working"] },
+      importance: { type: "number", description: "Priority 1-10" },
+      tags: { type: "array", description: "Tags", items: { type: "string" } },
+      agent_id: { type: "string", description: "Agent UUID" },
+      project_id: { type: "string", description: "Project UUID" },
+    },
+    example: '{"key":"screenshot-auth-bug","image_url":"https://example.com/screenshot.png","importance":7}',
+  },
+  entity_disambiguate: {
+    description: "Find potential duplicate entities by name similarity (trigram).",
+    category: "graph",
+    params: {
+      threshold: { type: "number", description: "Similarity threshold 0-1 (default 0.8)" },
+    },
+    example: '{"threshold":0.7}',
+  },
+  memory_compress: {
+    description: "Compress multiple memories into a single summary. Uses LLM if available, otherwise truncates.",
+    category: "memory",
+    params: {
+      memory_ids: { type: "array", description: "Memory IDs to compress", required: true, items: { type: "string" } },
+      max_length: { type: "number", description: "Max chars (default 500)" },
+    },
+    example: '{"memory_ids":["abc12345","def67890"]}',
+  },
+  memory_subscribe: {
+    description: "Subscribe an agent to memory change notifications by key/tag pattern.",
+    category: "memory",
+    params: {
+      agent_id: { type: "string", description: "Agent ID", required: true },
+      key_pattern: { type: "string", description: "Key glob pattern (e.g. 'architecture-*')" },
+      tag_pattern: { type: "string", description: "Tag pattern to match" },
+      scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+    },
+    example: '{"agent_id":"maximus","key_pattern":"architecture-*"}',
+  },
+  memory_unsubscribe: {
+    description: "Remove a memory subscription.",
+    category: "memory",
+    params: {
+      id: { type: "string", description: "Subscription ID", required: true },
+    },
+    example: '{"id":"sub-abc12"}',
   },
   search_tools: {
     description: "Search available tools by name or keyword. Returns matching tool names and categories.",
@@ -3369,6 +3944,431 @@ server.tool(
     try {
       const jobs = listSessionJobs({ agent_id: args.agent_id, project_id: args.project_id, status: args.status, limit: args.limit ?? 20 });
       return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// Memory Poisoning & Ratings
+// ============================================================================
+
+server.tool(
+  "memory_audit",
+  "Review low-trust memories (trust_score < threshold). Returns memories flagged by the poisoning detection heuristic for manual review.",
+  {
+    threshold: z.coerce.number().optional().describe("Trust score threshold (default 0.8). Returns memories below this."),
+    project_id: z.string().optional(),
+    limit: z.coerce.number().optional().describe("Max results (default 50)"),
+  },
+  async (args) => {
+    try {
+      const db = getDatabase();
+      const threshold = args.threshold ?? 0.8;
+      const limit = args.limit ?? 50;
+      const conditions: string[] = ["trust_score < ?", "status = 'active'"];
+      const params: (string | number)[] = [threshold];
+      if (args.project_id) {
+        const resolved = resolvePartialId(db, "projects", args.project_id);
+        conditions.push("project_id = ?");
+        params.push(resolved ?? args.project_id);
+      }
+      params.push(limit);
+      const sql = `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY trust_score ASC LIMIT ?`;
+      const rows = db.query(sql).all(...params) as Record<string, unknown>[];
+      if (rows.length === 0) {
+        return { content: [{ type: "text" as const, text: `No low-trust memories found (threshold: ${threshold})` }] };
+      }
+      const { parseMemoryRow } = await import("../db/memories.js");
+      const memories = rows.map(parseMemoryRow);
+      const lines = memories.map((m) =>
+        `[trust=${(m.trust_score ?? 1.0).toFixed(2)}] ${m.id.slice(0, 8)} ${m.key}: ${m.value.slice(0, 80)}${m.value.length > 80 ? "..." : ""}`
+      );
+      return { content: [{ type: "text" as const, text: `Low-trust memories (${rows.length}, threshold < ${threshold}):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_rate",
+  "Rate a memory as useful or not useful. Provides feedback for memory quality tracking.",
+  {
+    memory_id: z.string().describe("Memory ID (partial OK)"),
+    useful: z.coerce.boolean().describe("Was this memory useful?"),
+    agent_id: z.string().optional().describe("Agent providing the rating"),
+    context: z.string().optional().describe("Optional context about why the rating was given"),
+  },
+  async (args) => {
+    try {
+      const id = resolveId(args.memory_id);
+      const { rateMemory, getRatingsSummary } = await import("../db/ratings.js");
+      const rating = rateMemory(id, args.useful, args.agent_id, args.context);
+      const summary = getRatingsSummary(id);
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        rated: rating.id.slice(0, 8),
+        memory_id: id.slice(0, 8),
+        useful: rating.useful,
+        total_ratings: summary.total,
+        usefulness_ratio: summary.usefulness_ratio.toFixed(2),
+      }) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// GDPR & ACLs
+// ============================================================================
+
+server.tool(
+  "memory_gdpr_erase",
+  "GDPR right to be forgotten: erase all memories containing a PII identifier. Replaces content with [REDACTED], preserves anonymized audit trail. IRREVERSIBLE.",
+  {
+    identifier: z.string().describe("PII to search for and erase (name, email, etc.)"),
+    project_id: z.string().optional(),
+    dry_run: z.boolean().optional().describe("Preview what would be erased without actually erasing (default: false)"),
+  },
+  async (args) => {
+    try {
+      const { gdprErase } = await import("../lib/gdpr.js");
+      const result = gdprErase(args.identifier, { project_id: args.project_id, dry_run: args.dry_run });
+      const action = args.dry_run ? "Would erase" : "Erased";
+      return { content: [{ type: "text" as const, text: `${action} ${result.erased_count} memor${result.erased_count === 1 ? "y" : "ies"} containing "${args.identifier}".${args.dry_run ? " (dry run — no changes made)" : ""}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_acl_set",
+  "Set an access control rule for an agent. Patterns use * for glob matching (e.g., 'architecture-*' matches all architecture keys).",
+  {
+    agent_id: z.string().describe("Agent ID to set ACL for"),
+    key_pattern: z.string().describe("Key pattern (glob: * matches anything)"),
+    permission: z.enum(["read", "readwrite", "admin"]).describe("Permission level"),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const { setAcl } = await import("../db/acl.js");
+      setAcl(args.agent_id, args.key_pattern, args.permission, args.project_id);
+      return { content: [{ type: "text" as const, text: `ACL set: ${args.agent_id} → ${args.key_pattern} = ${args.permission}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_acl_list",
+  "List access control rules for an agent.",
+  {
+    agent_id: z.string().describe("Agent ID to list ACLs for"),
+  },
+  async (args) => {
+    try {
+      const { listAcls } = await import("../db/acl.js");
+      const acls = listAcls(args.agent_id);
+      if (acls.length === 0) {
+        return { content: [{ type: "text" as const, text: `No ACLs set for agent ${args.agent_id} (full access by default)` }] };
+      }
+      const lines = acls.map((a) => `${a.key_pattern} → ${a.permission}`);
+      return { content: [{ type: "text" as const, text: `ACLs for ${args.agent_id}:\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// TASK 1: memory_evict — bounded memory with utility-based eviction
+// ============================================================================
+
+server.tool(
+  "memory_evict",
+  "Enforce memory bounds per scope. Archives lowest-utility memories (using decay score) when any scope exceeds its configured limit.",
+  {
+    project_id: z.string().optional().describe("Optional project ID to scope eviction to"),
+  },
+  async (args) => {
+    try {
+      const { enforceMemoryBounds } = await import("../lib/retention.js");
+      const result = enforceMemoryBounds(args.project_id);
+      return { content: [{ type: "text" as const, text: JSON.stringify(result) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// TASK 2: memory_save conflict_strategy with vector clocks
+// (conflict_strategy param is already handled via the existing 'conflict' param —
+//  vector clock logic is added inline in memory_save via the save path)
+// ============================================================================
+
+// Vector clock update is done via a PostMemorySave-style approach.
+// On every memory_save, we update the vector_clock column with the agent_id entry incremented.
+
+// ============================================================================
+// TASK 3: memory_save_image — image/screenshot memory with vision API
+// ============================================================================
+
+server.tool(
+  "memory_save_image",
+  "Save an image memory. If OPENAI_API_KEY is set and image_url provided, auto-extracts a description via GPT-4o-mini vision. Saves with content_type='image'.",
+  {
+    key: z.string(),
+    image_url: z.string().optional().describe("URL of the image to describe"),
+    image_description: z.string().optional().describe("Manual description if no auto-extraction needed"),
+    scope: z.enum(["global", "shared", "private", "working"]).optional(),
+    category: z.enum(["preference", "fact", "knowledge", "history", "procedural", "resource"]).optional(),
+    importance: z.coerce.number().min(1).max(10).optional(),
+    tags: z.array(z.string()).optional(),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    session_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+      let description = args.image_description || "";
+
+      // If image_url is provided and OPENAI_API_KEY is set, extract description via vision API
+      if (args.image_url && process.env.OPENAI_API_KEY && !description) {
+        try {
+          const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [{
+                role: "user",
+                content: [
+                  { type: "text", text: "Describe this image concisely for an AI agent's memory. Focus on what is shown, any text visible, and key details." },
+                  { type: "image_url", image_url: { url: args.image_url } },
+                ],
+              }],
+              max_tokens: 300,
+            }),
+            signal: AbortSignal.timeout(30000),
+          });
+          if (resp.ok) {
+            const data = await resp.json() as { choices: Array<{ message: { content: string } }> };
+            description = data.choices?.[0]?.message?.content || "";
+          }
+        } catch {
+          // Vision API failed — fall back to URL-only
+        }
+      }
+
+      if (!description && args.image_url) {
+        description = `Image at: ${args.image_url}`;
+      }
+      if (!description) {
+        return { content: [{ type: "text" as const, text: "Error: Provide either image_url or image_description" }], isError: true };
+      }
+
+      const metadata: Record<string, unknown> = {};
+      if (args.image_url) metadata.resource_uri = args.image_url;
+
+      const memory = createMemory({
+        key: args.key,
+        value: description,
+        scope: args.scope,
+        category: args.category || "knowledge",
+        importance: args.importance,
+        tags: args.tags,
+        agent_id: args.agent_id,
+        project_id: args.project_id,
+        session_id: args.session_id,
+        metadata,
+      });
+
+      // Set content_type to 'image'
+      const db = getDatabase();
+      db.run("UPDATE memories SET content_type = 'image' WHERE id = ?", [memory.id]);
+
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        saved: memory.key,
+        id: memory.id.slice(0, 8),
+        content_type: "image",
+        has_vision_description: !!args.image_url && description !== `Image at: ${args.image_url}`,
+      }) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// TASK 4: entity_disambiguate — find duplicate entities
+// ============================================================================
+
+server.tool(
+  "entity_disambiguate",
+  "Find potential duplicate entities by name similarity (trigram). Returns pairs above the threshold within same type+project.",
+  {
+    threshold: z.coerce.number().min(0).max(1).optional().describe("Similarity threshold 0-1 (default 0.8)"),
+  },
+  async (args) => {
+    try {
+      const { findDuplicateEntities } = await import("../db/entities.js");
+      const pairs = findDuplicateEntities(args.threshold ?? 0.8);
+      if (pairs.length === 0) {
+        return { content: [{ type: "text" as const, text: "No duplicate entities found." }] };
+      }
+      const lines = pairs.map((p) =>
+        `${p.entity_a.name} <-> ${p.entity_b.name} [${p.entity_a.type}] similarity=${p.similarity.toFixed(2)}`
+      );
+      return { content: [{ type: "text" as const, text: `Found ${pairs.length} potential duplicate(s):\n${lines.join("\n")}` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// TASK 5: memory_compress — active context compression
+// ============================================================================
+
+server.tool(
+  "memory_compress",
+  "Compress multiple memories into a single summary memory. Uses LLM if available, otherwise truncates.",
+  {
+    memory_ids: z.array(z.string()).describe("Memory IDs to compress"),
+    max_length: z.coerce.number().optional().describe("Max chars for compression (default 500)"),
+  },
+  async (args) => {
+    try {
+      const maxLen = args.max_length || 500;
+
+      // Resolve and fetch all memories
+      const memories: Memory[] = [];
+      for (const mid of args.memory_ids) {
+        const id = resolveId(mid);
+        const m = getMemory(id);
+        if (m) memories.push(m);
+      }
+
+      if (memories.length === 0) {
+        return { content: [{ type: "text" as const, text: "No valid memories found for the given IDs." }], isError: true };
+      }
+
+      const concatenated = memories.map((m) => `[${m.key}]: ${m.value}`).join("\n\n");
+
+      let compressed: string;
+
+      // Try LLM summarization
+      try {
+        const { providerRegistry } = await import("../lib/providers/registry.js");
+        const provider = providerRegistry.getAvailable();
+        if (provider) {
+          const result = await provider.extractMemories(
+            `Summarize these memories into a single concise paragraph (max ${maxLen} chars). Preserve key facts and decisions:\n\n${concatenated}`,
+            {}
+          );
+          compressed = result?.[0]?.content || concatenated.slice(0, maxLen);
+        } else {
+          // No LLM available — simple truncation
+          compressed = concatenated.slice(0, maxLen);
+          if (concatenated.length > maxLen) compressed += "...";
+        }
+      } catch {
+        // LLM failed — fall back to truncation
+        compressed = concatenated.slice(0, maxLen);
+        if (concatenated.length > maxLen) compressed += "...";
+      }
+
+      // Save compressed result as new memory
+      const timestamp = Date.now();
+      const compressedMemory = createMemory({
+        key: `compressed-${timestamp}`,
+        value: compressed,
+        category: "knowledge",
+        scope: memories[0]!.scope,
+        importance: Math.max(...memories.map((m) => m.importance)),
+        tags: ["compressed"],
+        agent_id: memories[0]!.agent_id || undefined,
+        project_id: memories[0]!.project_id || undefined,
+        metadata: {
+          source_memory_ids: memories.map((m) => m.id),
+          compression_ratio: concatenated.length > 0 ? (compressed.length / concatenated.length).toFixed(2) : "1.00",
+        },
+      });
+
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        compressed_id: compressedMemory.id.slice(0, 8),
+        key: compressedMemory.key,
+        source_count: memories.length,
+        original_length: concatenated.length,
+        compressed_length: compressed.length,
+      }) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// TASK 6: memory_subscribe / memory_unsubscribe — memory subscriptions
+// ============================================================================
+
+server.tool(
+  "memory_subscribe",
+  "Subscribe an agent to memory change notifications. Matches by key pattern (glob) and/or tag pattern.",
+  {
+    agent_id: z.string().describe("Agent ID to subscribe"),
+    key_pattern: z.string().optional().describe("Key glob pattern (e.g. 'architecture-*')"),
+    tag_pattern: z.string().optional().describe("Tag pattern to match"),
+    scope: z.enum(["global", "shared", "private", "working"]).optional().describe("Scope filter"),
+  },
+  async (args) => {
+    try {
+      if (!args.key_pattern && !args.tag_pattern) {
+        return { content: [{ type: "text" as const, text: "Error: Provide at least one of key_pattern or tag_pattern" }], isError: true };
+      }
+      const db = getDatabase();
+      const id = crypto.randomUUID().slice(0, 8);
+      db.run(
+        `INSERT INTO memory_subscriptions (id, agent_id, key_pattern, tag_pattern, scope, created_at)
+         VALUES (?, ?, ?, ?, ?, datetime('now'))`,
+        [id, args.agent_id, args.key_pattern || null, args.tag_pattern || null, args.scope || null]
+      );
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        subscription_id: id,
+        agent_id: args.agent_id,
+        key_pattern: args.key_pattern || null,
+        tag_pattern: args.tag_pattern || null,
+      }) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_unsubscribe",
+  "Remove a memory subscription by ID.",
+  {
+    id: z.string().describe("Subscription ID to remove"),
+  },
+  async (args) => {
+    try {
+      const db = getDatabase();
+      const result = db.run("DELETE FROM memory_subscriptions WHERE id = ?", [args.id]);
+      if (result.changes === 0) {
+        return { content: [{ type: "text" as const, text: `Subscription not found: ${args.id}` }], isError: true };
+      }
+      return { content: [{ type: "text" as const, text: `Unsubscribed: ${args.id}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }

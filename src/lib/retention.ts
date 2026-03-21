@@ -2,6 +2,8 @@ import type { Database } from "bun:sqlite";
 import type { MementosConfig, MemoryScope } from "../types/index.js";
 import { getDatabase, now } from "../db/database.js";
 import { cleanExpiredMemories } from "../db/memories.js";
+import { loadConfig } from "./config.js";
+import { computeDecayScore } from "./decay.js";
 
 // ============================================================================
 // enforceQuotas — evict oldest/lowest-importance memories when over limit
@@ -11,7 +13,7 @@ export function enforceQuotas(config: MementosConfig, db?: Database): number {
   const d = db || getDatabase();
   let totalEvicted = 0;
 
-  const scopes: MemoryScope[] = ["global", "shared", "private"];
+  const scopes: MemoryScope[] = ["global", "shared", "private", "working"];
 
   for (const scope of scopes) {
     const limit = config.max_entries_per_scope[scope];
@@ -163,4 +165,85 @@ export function runCleanup(
   );
 
   return { expired, evicted, archived, unused_archived, deprioritized };
+}
+
+// ============================================================================
+// enforceMemoryBounds — archive lowest utility memories when any scope exceeds limit
+// Uses decay score (importance * time_decay * access_boost) for ordering.
+// ============================================================================
+
+export function enforceMemoryBounds(
+  projectId?: string,
+  db?: Database
+): { archived: number } {
+  const d = db || getDatabase();
+  const config = loadConfig();
+  const timestamp = now();
+  let totalArchived = 0;
+
+  const scopes: MemoryScope[] = ["global", "shared", "private", "working"];
+
+  for (const scope of scopes) {
+    const limit = config.max_entries_per_scope[scope];
+    if (!limit || limit <= 0) continue;
+
+    // Build project filter
+    const projectFilter = projectId ? " AND project_id = ?" : "";
+    const projectParams = projectId ? [projectId] : [];
+
+    // Count active memories in this scope
+    const countRow = d
+      .query(
+        `SELECT COUNT(*) as cnt FROM memories WHERE scope = ? AND status = 'active'${projectFilter}`
+      )
+      .get(scope, ...projectParams) as { cnt: number };
+
+    const count = countRow.cnt;
+    if (count <= limit) continue;
+
+    const excess = count - limit;
+
+    // Fetch candidates for eviction (non-pinned, active)
+    const candidates = d
+      .query(
+        `SELECT id, importance, access_count, accessed_at, created_at, pinned FROM memories
+         WHERE scope = ? AND status = 'active' AND pinned = 0${projectFilter}
+         ORDER BY importance ASC, created_at ASC`
+      )
+      .all(scope, ...projectParams) as Array<{
+        id: string;
+        importance: number;
+        access_count: number;
+        accessed_at: string | null;
+        created_at: string;
+        pinned: number;
+      }>;
+
+    // Sort by decay score ascending (lowest utility first)
+    const scored = candidates.map((c) => ({
+      id: c.id,
+      decayScore: computeDecayScore({
+        importance: c.importance,
+        access_count: c.access_count,
+        accessed_at: c.accessed_at,
+        created_at: c.created_at,
+        pinned: !!c.pinned,
+      }),
+    }));
+    scored.sort((a, b) => a.decayScore - b.decayScore);
+
+    // Archive the lowest-utility memories
+    const toArchive = scored.slice(0, excess);
+    if (toArchive.length > 0) {
+      const placeholders = toArchive.map(() => "?").join(",");
+      const ids = toArchive.map((m) => m.id);
+      d.run(
+        `UPDATE memories SET status = 'archived', updated_at = ? WHERE id IN (${placeholders})`,
+        [timestamp, ...ids]
+      );
+      totalArchived += toArchive.length;
+    }
+  }
+
+  return { archived: totalArchived };
 }

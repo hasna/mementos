@@ -2,10 +2,13 @@ import { Database } from "bun:sqlite";
 import type { Memory, MemoryCategory, MementosConfig } from "../types/index.js";
 import { listMemories, touchMemory } from "../db/memories.js";
 import { loadConfig } from "./config.js";
+import { generateEmbedding, cosineSimilarity, deserializeEmbedding } from "./embeddings.js";
 
 // ============================================================================
 // MemoryInjector — selects and formats memories for context injection
 // ============================================================================
+
+export type InjectionStrategy = "default" | "smart";
 
 export interface InjectionOptions {
   agent_id?: string;
@@ -14,6 +17,8 @@ export interface InjectionOptions {
   max_tokens?: number;
   categories?: MemoryCategory[];
   min_importance?: number;
+  strategy?: InjectionStrategy;
+  query?: string; // required when strategy='smart'
   db?: Database;
 }
 
@@ -83,6 +88,22 @@ export class MemoryInjector {
         db
       );
       allMemories.push(...privateMems);
+    }
+
+    // Working memories — transient session scratchpad (always relevant to current context)
+    if (options.session_id || options.agent_id) {
+      const workingMems = listMemories(
+        {
+          scope: "working",
+          status: "active",
+          ...(options.session_id ? { session_id: options.session_id } : {}),
+          ...(options.agent_id ? { agent_id: options.agent_id } : {}),
+          ...(options.project_id ? { project_id: options.project_id } : {}),
+          limit: 100,
+        },
+        db
+      );
+      allMemories.push(...workingMems);
     }
 
     // Deduplicate by ID
@@ -195,6 +216,193 @@ export class MemoryInjector {
       sections.push(`## Recent Context\n${recentLines.join("\n")}`);
     }
 
+    sections.push(footer);
+
+    return `<agent-memories>\n${sections.join("\n\n")}\n</agent-memories>`;
+  }
+
+  /**
+   * Async smart injection: scores memories by embedding similarity + importance + recency.
+   * Falls back to default strategy if no embeddings exist or no query is provided.
+   */
+  async getSmartInjectionContext(options: InjectionOptions = {}): Promise<string> {
+    // Fall back to default if no query provided
+    if (!options.query) {
+      return this.getInjectionContext(options);
+    }
+
+    const maxTokens = options.max_tokens || this.config.injection.max_tokens;
+    const minImportance =
+      options.min_importance || this.config.injection.min_importance;
+    const categories = options.categories || this.config.injection.categories;
+    const db = options.db;
+
+    // Collect candidate memories from all visible scopes (same as default)
+    const allMemories: Memory[] = [];
+
+    const globalMems = listMemories(
+      {
+        scope: "global",
+        category: categories,
+        min_importance: minImportance,
+        status: "active",
+        limit: 100,
+      },
+      db
+    );
+    allMemories.push(...globalMems);
+
+    if (options.project_id) {
+      const sharedMems = listMemories(
+        {
+          scope: "shared",
+          category: categories,
+          min_importance: minImportance,
+          status: "active",
+          project_id: options.project_id,
+          limit: 100,
+        },
+        db
+      );
+      allMemories.push(...sharedMems);
+    }
+
+    if (options.agent_id) {
+      const privateMems = listMemories(
+        {
+          scope: "private",
+          category: categories,
+          min_importance: minImportance,
+          status: "active",
+          agent_id: options.agent_id,
+          limit: 100,
+        },
+        db
+      );
+      allMemories.push(...privateMems);
+    }
+
+    // Working memories — transient session scratchpad (always relevant to current context)
+    if (options.session_id || options.agent_id) {
+      const workingMems = listMemories(
+        {
+          scope: "working",
+          status: "active",
+          ...(options.session_id ? { session_id: options.session_id } : {}),
+          ...(options.agent_id ? { agent_id: options.agent_id } : {}),
+          ...(options.project_id ? { project_id: options.project_id } : {}),
+          limit: 100,
+        },
+        db
+      );
+      allMemories.push(...workingMems);
+    }
+
+    // Deduplicate by ID
+    const seen = new Set<string>();
+    const unique = allMemories.filter((m) => {
+      if (seen.has(m.id)) return false;
+      seen.add(m.id);
+      return true;
+    });
+
+    if (unique.length === 0) {
+      return "";
+    }
+
+    // Generate query embedding
+    const { embedding: queryEmbedding } = await generateEmbedding(options.query);
+
+    // Load memory embeddings from DB
+    const d = db || (await import("../db/database.js")).getDatabase();
+    const embeddingRows = d
+      .prepare(
+        `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${unique.map(() => "?").join(",")})`
+      )
+      .all(...unique.map((m) => m.id)) as Array<{ memory_id: string; embedding: string }>;
+
+    const embeddingMap = new Map<string, number[]>();
+    for (const row of embeddingRows) {
+      try {
+        embeddingMap.set(row.memory_id, deserializeEmbedding(row.embedding));
+      } catch {
+        // Skip malformed embeddings
+      }
+    }
+
+    // If no embeddings exist at all, fall back to default strategy
+    if (embeddingMap.size === 0) {
+      return this.getInjectionContext(options);
+    }
+
+    // Compute recency reference: newest updated_at among candidates
+    const nowMs = Date.now();
+    const oldestMs = Math.min(...unique.map((m) => new Date(m.updated_at).getTime()));
+    const timeRange = nowMs - oldestMs || 1; // avoid division by zero
+
+    // Score each memory: similarity * 0.4 + importance/10 * 0.3 + recency * 0.3
+    interface ScoredMemory {
+      memory: Memory;
+      score: number;
+    }
+
+    const scored: ScoredMemory[] = unique
+      .filter((m) => !this.injectedIds.has(m.id))
+      .map((m) => {
+        const memEmbedding = embeddingMap.get(m.id);
+        const similarity = memEmbedding
+          ? cosineSimilarity(queryEmbedding, memEmbedding)
+          : 0;
+        const importanceScore = m.importance / 10;
+        const recencyScore =
+          (new Date(m.updated_at).getTime() - oldestMs) / timeRange;
+
+        // Pinned memories get a bonus to stay at the top
+        const pinBonus = m.pinned ? 0.5 : 0;
+
+        const score =
+          similarity * 0.4 +
+          importanceScore * 0.3 +
+          recencyScore * 0.3 +
+          pinBonus;
+
+        return { memory: m, score };
+      });
+
+    // Sort by composite score descending
+    scored.sort((a, b) => b.score - a.score);
+
+    // Token budget allocation (~4 chars per token estimate)
+    const totalCharBudget = maxTokens * 4;
+    const footer = "Tip: Use memory_search for deeper lookup on specific topics.";
+    const footerChars = footer.length;
+    const contentBudget = totalCharBudget - footerChars;
+
+    const lines: string[] = [];
+    const injectedIds: string[] = [];
+    let totalChars = 0;
+
+    for (const { memory: m } of scored) {
+      const line = `- [${m.scope}/${m.category}] ${m.key}: ${m.value}`;
+      if (totalChars + line.length > contentBudget) break;
+      lines.push(line);
+      injectedIds.push(m.id);
+      totalChars += line.length;
+    }
+
+    if (lines.length === 0) {
+      return "";
+    }
+
+    // Touch and track all injected memories
+    for (const id of injectedIds) {
+      this.injectedIds.add(id);
+      touchMemory(id, db);
+    }
+
+    // Build structured output
+    const sections: string[] = [];
+    sections.push(`## Relevant Memories\n${lines.join("\n")}`);
     sections.push(footer);
 
     return `<agent-memories>\n${sections.join("\n\n")}\n</agent-memories>`;

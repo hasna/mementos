@@ -31,7 +31,7 @@ import {
 import { registerProject, listProjects, getProject } from "../db/projects.js";
 import { getActiveProfile, listProfiles, getDbPath } from "../lib/config.js";
 import { getDatabase } from "../db/database.js";
-import { searchMemories } from "../lib/search.js";
+import { searchMemories, hybridSearch, searchWithBm25 } from "../lib/search.js";
 import {
   MemoryNotFoundError,
   VersionConflictError,
@@ -326,8 +326,8 @@ addRoute("GET", "/api/memories/stats", (_req) => {
 
   const stats: MemoryStats = {
     total,
-    by_scope: { global: 0, shared: 0, private: 0 },
-    by_category: { preference: 0, fact: 0, knowledge: 0, history: 0 },
+    by_scope: { global: 0, shared: 0, private: 0, working: 0 },
+    by_category: { preference: 0, fact: 0, knowledge: 0, history: 0, procedural: 0, resource: 0 },
     by_status: { active: 0, archived: 0, expired: 0 },
     by_agent: {},
     pinned_count: pinnedCount,
@@ -349,6 +349,39 @@ addRoute("GET", "/api/memories/stats", (_req) => {
   for (const row of byAgent) stats.by_agent[row.agent_id] = row.c;
 
   return json(stats);
+});
+
+// GET /api/metrics — comprehensive memory health metrics
+addRoute("GET", "/api/metrics", (_req: Request) => {
+  const db = getDatabase();
+
+  const total = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get() as { c: number }).c;
+
+  const byScope = db.query("SELECT scope, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY scope").all() as { scope: string; c: number }[];
+  const byCategory = db.query("SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY category").all() as { category: string; c: number }[];
+
+  // Growth rate (last 7 days vs prior 7 days)
+  const last7 = (db.query("SELECT COUNT(*) as c FROM memories WHERE created_at >= datetime('now', '-7 days')").get() as { c: number }).c;
+  const prior7 = (db.query("SELECT COUNT(*) as c FROM memories WHERE created_at >= datetime('now', '-14 days') AND created_at < datetime('now', '-7 days')").get() as { c: number }).c;
+  const growthRate = prior7 > 0 ? ((last7 - prior7) / prior7 * 100) : 0;
+
+  // Stale percentage (not accessed in 30 days)
+  const staleCount = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 0 AND (accessed_at IS NULL OR accessed_at < datetime('now', '-30 days'))").get() as { c: number }).c;
+  const stalePercentage = total > 0 ? (staleCount / total * 100) : 0;
+
+  // Top accessed memories
+  const topAccessed = db.query("SELECT id, key, access_count, importance FROM memories WHERE status = 'active' ORDER BY access_count DESC LIMIT 10").all() as { id: string; key: string; access_count: number; importance: number }[];
+
+  return json({
+    total_memories: total,
+    by_scope: Object.fromEntries(byScope.map(r => [r.scope, r.c])),
+    by_category: Object.fromEntries(byCategory.map(r => [r.category, r.c])),
+    growth_rate_7d: Math.round(growthRate * 10) / 10,
+    new_last_7d: last7,
+    stale_percentage: Math.round(stalePercentage * 10) / 10,
+    stale_count: staleCount,
+    top_accessed: topAccessed,
+  });
 });
 
 // GET /api/activity — daily memory activity over N days
@@ -465,6 +498,47 @@ addRoute("POST", "/api/memories/search", async (req) => {
   if (body["limit"]) filter.limit = body["limit"] as number;
 
   const results = searchMemories(body["query"] as string, filter);
+  return json({ results, count: results.length });
+});
+
+// POST /api/memories/search/hybrid — hybrid search (keyword + semantic via RRF)
+addRoute("POST", "/api/memories/search/hybrid", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || typeof body["query"] !== "string") {
+    return errorResponse("Missing required field: query", 400);
+  }
+
+  const filter: MemoryFilter = {};
+  if (body["scope"]) filter.scope = body["scope"] as MemoryScope;
+  if (body["category"]) filter.category = body["category"] as MemoryCategory;
+  if (body["tags"]) filter.tags = body["tags"] as string[];
+  if (body["agent_id"]) filter.agent_id = body["agent_id"] as string;
+  if (body["project_id"]) filter.project_id = body["project_id"] as string;
+
+  const results = await hybridSearch(body["query"] as string, {
+    filter,
+    semantic_threshold: (body["semantic_threshold"] as number) ?? undefined,
+    limit: (body["limit"] as number) ?? undefined,
+  });
+  return json({ results, count: results.length });
+});
+
+// POST /api/memories/search/bm25 — BM25-ranked search
+addRoute("POST", "/api/memories/search/bm25", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || typeof body["query"] !== "string") {
+    return errorResponse("Missing required field: query", 400);
+  }
+
+  const filter: MemoryFilter = {};
+  if (body["scope"]) filter.scope = body["scope"] as MemoryScope;
+  if (body["category"]) filter.category = body["category"] as MemoryCategory;
+  if (body["tags"]) filter.tags = body["tags"] as string[];
+  if (body["agent_id"]) filter.agent_id = body["agent_id"] as string;
+  if (body["project_id"]) filter.project_id = body["project_id"] as string;
+  if (body["limit"]) filter.limit = body["limit"] as number;
+
+  const results = searchWithBm25(body["query"] as string, filter);
   return json({ results, count: results.length });
 });
 

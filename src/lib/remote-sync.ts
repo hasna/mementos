@@ -13,7 +13,7 @@ const DEFAULT_PORT = 19428;
 
 export interface RemoteSyncOptions {
   remoteUrl?: string;
-  scope?: "global" | "shared" | "private";
+  scope?: "global" | "shared" | "private" | "working";
   agentId?: string;
   projectId?: string;
   since?: string;

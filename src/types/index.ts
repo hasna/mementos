@@ -2,13 +2,13 @@
 // Memory Scope — who can access the memory
 // ============================================================================
 
-export type MemoryScope = "global" | "shared" | "private";
+export type MemoryScope = "global" | "shared" | "private" | "working";
 
 // ============================================================================
 // Memory Category — what kind of memory
 // ============================================================================
 
-export type MemoryCategory = "preference" | "fact" | "knowledge" | "history";
+export type MemoryCategory = "preference" | "fact" | "knowledge" | "history" | "procedural" | "resource";
 
 // ============================================================================
 // Memory Source — how the memory was created
@@ -43,10 +43,18 @@ export interface Memory {
   session_id: string | null;
   machine_id?: string | null;
   flag?: string | null;
+  content_type?: "text" | "code" | "image" | "resource";
+  namespace?: string | null;
+  created_by_agent?: string | null;
+  updated_by_agent?: string | null;
+  trust_score?: number | null;
   metadata: Record<string, unknown>;
   access_count: number;
   version: number;
   expires_at: string | null;
+  valid_from: string | null;
+  valid_until: string | null;
+  ingested_at: string | null;
   created_at: string;
   updated_at: string;
   accessed_at: string | null;
@@ -82,6 +90,7 @@ export interface CreateMemoryInput {
   ttl_ms?: number;
   machine_id?: string;
   flag?: string;
+  namespace?: string;
 }
 
 export interface UpdateMemoryInput {
@@ -115,6 +124,8 @@ export interface MemoryFilter {
   min_importance?: number;
   pinned?: boolean;
   search?: string;
+  namespace?: string;
+  as_of?: string; // ISO8601 date — return memories valid at this point in time
   limit?: number;
   offset?: number;
 }
@@ -274,7 +285,7 @@ export interface SyncResult {
 // ============================================================================
 
 export type EntityType = 'person' | 'project' | 'tool' | 'concept' | 'file' | 'api' | 'pattern' | 'organization';
-export type RelationType = 'uses' | 'knows' | 'depends_on' | 'created_by' | 'related_to' | 'contradicts' | 'part_of' | 'implements';
+export type RelationType = 'uses' | 'knows' | 'depends_on' | 'created_by' | 'related_to' | 'contradicts' | 'part_of' | 'implements' | 'happened_before' | 'happened_after' | 'caused_by' | 'resulted_in' | 'supersedes' | 'version_of';
 export type EntityRole = 'subject' | 'object' | 'context';
 
 export interface Entity {
