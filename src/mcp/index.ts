@@ -643,6 +643,71 @@ server.tool(
 );
 
 server.tool(
+  "memory_diff",
+  "Show what changed between two versions of a memory. Compares value, importance, scope. Omit v1/v2 to diff the two most recent versions.",
+  {
+    id: z.string().optional().describe("Memory ID or partial ID"),
+    key: z.string().optional().describe("Memory key (alternative to id)"),
+    v1: z.coerce.number().optional().describe("First version number (default: second-to-last)"),
+    v2: z.coerce.number().optional().describe("Second version number (default: current/latest)"),
+  },
+  async (args) => {
+    try {
+      let memId: string | undefined;
+      if (args.id) {
+        memId = resolvePartialId(getDatabase(), "memories", args.id) ?? args.id;
+      } else if (args.key) {
+        const row = getDatabase().query("SELECT id FROM memories WHERE key = ? LIMIT 1").get(args.key) as { id: string } | null;
+        memId = row?.id;
+      }
+      if (!memId) return { content: [{ type: "text" as const, text: `Memory not found: ${args.id || args.key}` }], isError: true };
+
+      const memory = getMemory(memId);
+      if (!memory) return { content: [{ type: "text" as const, text: `Memory not found: ${memId}` }], isError: true };
+
+      const versions = getMemoryVersions(memId);
+      // Add current version as a pseudo-version
+      const allVersions = [
+        ...versions,
+        { version: memory.version, value: memory.value, importance: memory.importance, scope: memory.scope, created_at: memory.updated_at, summary: memory.summary },
+      ].sort((a, b) => a.version - b.version);
+
+      if (allVersions.length < 2) {
+        return { content: [{ type: "text" as const, text: `Only 1 version exists for "${memory.key}". No diff available.` }] };
+      }
+
+      const v1Num = args.v1 ?? allVersions[allVersions.length - 2]?.version ?? 1;
+      const v2Num = args.v2 ?? allVersions[allVersions.length - 1]?.version ?? memory.version;
+
+      const ver1 = allVersions.find(v => v.version === v1Num);
+      const ver2 = allVersions.find(v => v.version === v2Num);
+
+      if (!ver1 || !ver2) {
+        return { content: [{ type: "text" as const, text: `Versions not found: v${v1Num}, v${v2Num}. Available: ${allVersions.map(v => `v${v.version}`).join(", ")}` }], isError: true };
+      }
+
+      const parts = [`Diff for "${memory.key}" (v${v1Num} → v${v2Num})`];
+      parts.push(`Time: ${ver1.created_at?.slice(0, 16)} → ${ver2.created_at?.slice(0, 16)}`);
+
+      if (ver1.value !== ver2.value) {
+        parts.push(`\n--- v${v1Num} value ---`);
+        parts.push(ver1.value.slice(0, 500) + (ver1.value.length > 500 ? "..." : ""));
+        parts.push(`\n+++ v${v2Num} value +++`);
+        parts.push(ver2.value.slice(0, 500) + (ver2.value.length > 500 ? "..." : ""));
+      } else {
+        parts.push("value: unchanged");
+      }
+      if (ver1.importance !== ver2.importance) parts.push(`importance: ${ver1.importance} → ${ver2.importance}`);
+      if (ver1.scope !== ver2.scope) parts.push(`scope: ${ver1.scope} → ${ver2.scope}`);
+
+      return { content: [{ type: "text" as const, text: parts.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_search",
   "Search memories by keyword across key, value, summary, and tags",
   {
