@@ -15,6 +15,7 @@ import {
   getMemoryVersions,
   semanticSearch,
   indexMemoryEmbedding,
+  parseMemoryRow,
 } from "../db/memories.js";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../db/agents.js";
 import { setFocus, getFocus, unfocus, resolveProjectId } from "../lib/focus.js";
@@ -56,6 +57,8 @@ import type {
 
 import { hookRegistry } from "../lib/hooks.js";
 import { buildFileDependencyGraph } from "../lib/file-deps.js";
+import { synthesizeProfile } from "../lib/profile-synthesizer.js";
+import { saveToolEvent, getToolStats, getToolLessons, getToolEvents } from "../db/tool-events.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import {
   createWebhookHook,
@@ -67,16 +70,35 @@ import { runSynthesis, rollbackSynthesis, getSynthesisStatus } from "../lib/synt
 import { listSynthesisRuns } from "../db/synthesis.js";
 import { createSessionJob, getSessionJob, listSessionJobs } from "../db/session-jobs.js";
 import { enqueueSessionJob } from "../lib/session-queue.js";
+import { startAutoInject, stopAutoInject, getAutoInjectConfig, updateAutoInjectConfig, getAutoInjectStatus } from "../lib/auto-inject-orchestrator.js";
+import { findActivatedMemories } from "../lib/activation-matcher.js";
+import { asmrRecall } from "../lib/asmr/index.js";
+import { ensembleAnswer } from "../lib/asmr/ensemble.js";
 
 // Read version from package.json — never hardcode
 import { createRequire } from "node:module";
 const _require = createRequire(import.meta.url);
 const _pkg = _require("../../package.json") as { version: string };
 
-const server = new McpServer({
-  name: "mementos",
-  version: _pkg.version,
-});
+/** Exported so other modules can push channel notifications via the underlying Server. */
+export let mcpServer: McpServer | null = null;
+
+const server = new McpServer(
+  {
+    name: "mementos",
+    version: _pkg.version,
+  },
+  {
+    capabilities: {
+      experimental: { "claude/channel": {} },
+    },
+    instructions: `Mementos is the persistent memory layer for AI agents. It stores, searches, and manages memories across sessions and projects.
+
+When running with --dangerously-load-development-channels, mementos will proactively push relevant memories into your conversation via channel notifications. These appear as <channel source="mementos"> tags. They contain memories activated by your current task context — use them to inform your work. You don't need to call memory_inject when auto-inject is active.`,
+  },
+);
+
+mcpServer = server;
 
 // ============================================================================
 // Auto-project detection (lazy init, cached)
@@ -103,7 +125,20 @@ function formatError(error: unknown): string {
   if (error instanceof MemoryNotFoundError) return `Not found: ${error.message}`;
   if (error instanceof DuplicateMemoryError) return `Duplicate: ${error.message}`;
   if (error instanceof InvalidScopeError) return `Invalid scope: ${error.message}`;
-  if (error instanceof Error) return error.message;
+  if (error instanceof Error) {
+    const msg = error.message;
+    if (msg.includes("UNIQUE constraint failed: projects.")) {
+      return `Project already registered at this path. Use list_projects to find it.`;
+    }
+    if (msg.includes("UNIQUE constraint failed")) {
+      const table = msg.match(/UNIQUE constraint failed: (\w+)\./)?.[1] ?? "unknown";
+      return `Duplicate entry in ${table}. The record already exists — use the list or get tool to find it.`;
+    }
+    if (msg.includes("FOREIGN KEY constraint failed")) {
+      return `Referenced record not found. Check that the project_id or agent_id exists.`;
+    }
+    return msg;
+  }
   return String(error);
 }
 
@@ -140,6 +175,33 @@ function formatMemory(m: Memory): string {
   return parts.join("\n");
 }
 
+function formatAsmrResult(result: import("../lib/asmr/types.js").AsmrResult, query: string): string {
+  const sections: string[] = [];
+
+  sections.push(`[deep] ASMR recall for "${query}" (${result.duration_ms}ms, agents: ${result.agents_used.join(", ")})`);
+
+  if (result.memories.length > 0) {
+    const memLines = result.memories.map((m, i) =>
+      `${i + 1}. [${m.source_agent}] [score:${m.score.toFixed(3)}] [${m.memory.scope}/${m.memory.category}] ${m.memory.key} = ${m.memory.value.slice(0, 120)}${m.memory.value.length > 120 ? "..." : ""}`,
+    );
+    sections.push(`Memories (${result.memories.length}):\n${memLines.join("\n")}`);
+  }
+
+  if (result.facts.length > 0) {
+    sections.push(`Facts:\n${result.facts.map((f) => `- ${f}`).join("\n")}`);
+  }
+
+  if (result.timeline.length > 0) {
+    sections.push(`Timeline:\n${result.timeline.map((t) => `- ${t}`).join("\n")}`);
+  }
+
+  if (result.reasoning) {
+    sections.push(`Reasoning: ${result.reasoning}`);
+  }
+
+  return sections.join("\n\n");
+}
+
 // ============================================================================
 // Memory Tools
 // ============================================================================
@@ -166,11 +228,15 @@ server.tool(
     conflict_strategy: z.enum(["last_writer_wins", "reject"]).optional()
       .describe("Vector clock conflict strategy: last_writer_wins (default) proceeds even if diverged, reject returns error on divergence"),
     machine_id: z.string().optional().describe("Machine ID (from register_machine). If omitted, auto-detected from current hostname."),
+    when_to_use: z.string().optional().describe("Activation context — describes WHEN this memory should be retrieved. Used for intent-based retrieval. Example: 'when deploying to production' or 'when debugging database issues'. If set, semantic search matches against this instead of the value."),
+    sequence_group: z.string().optional().describe("Chain/sequence group ID — links memories into an ordered procedural sequence. Use memory_chain_get to retrieve the full chain."),
+    sequence_order: z.coerce.number().optional().describe("Position within the sequence group (1-based). Memories in a chain are returned ordered by this field."),
+    dedup_mode: z.enum(["key", "semantic", "llm"]).optional().default("key").describe("Dedup strategy: 'key' = current key-based (default), 'semantic' = skip if >0.92 embedding similarity to existing memory, 'llm' = ask LLM if content is already covered"),
   },
   async (args) => {
     try {
       ensureAutoProject();
-      const { conflict, ...restArgs } = args as typeof args & { conflict?: string };
+      const { conflict, dedup_mode, ...restArgs } = args as typeof args & { conflict?: string; dedup_mode?: string };
       const input = { ...restArgs } as Record<string, unknown>;
       if ((restArgs as Record<string, unknown>).ttl_ms !== undefined) {
         input.ttl_ms = parseDuration((restArgs as Record<string, unknown>).ttl_ms as string | number);
@@ -215,6 +281,94 @@ server.tool(
           }
         } catch {
           // vector_clock column may not exist yet — skip check
+        }
+      }
+
+      // ── Semantic dedup: check embedding similarity before saving ──────────
+      if (dedup_mode === "semantic") {
+        try {
+          const textToEmbed = (input.when_to_use as string) || (input.value as string);
+          const results = await semanticSearch(textToEmbed, {
+            threshold: 0.3,
+            limit: 5,
+            scope: input.scope as string | undefined,
+            agent_id: input.agent_id as string | undefined,
+            project_id: input.project_id as string | undefined,
+          });
+          const SEMANTIC_THRESHOLD = 0.92;
+          for (const result of results) {
+            if (result.score >= SEMANTIC_THRESHOLD) {
+              return { content: [{ type: "text" as const, text: `Skipped: content similar to existing memory ${result.memory.id.slice(0, 8)} (similarity: ${result.score.toFixed(2)})` }] };
+            }
+          }
+        } catch {
+          // Embedding infrastructure unavailable — fall through to normal save
+        }
+      }
+
+      // ── LLM dedup: ask Haiku if content is already covered ─────────────────
+      if (dedup_mode === "llm") {
+        try {
+          const textToEmbed = (input.when_to_use as string) || (input.value as string);
+          const candidates = await semanticSearch(textToEmbed, {
+            threshold: 0.3,
+            limit: 5,
+            scope: input.scope as string | undefined,
+            agent_id: input.agent_id as string | undefined,
+            project_id: input.project_id as string | undefined,
+          });
+          if (candidates.length > 0) {
+            const anthropicKey = process.env["ANTHROPIC_API_KEY"];
+            if (anthropicKey) {
+              const existingList = candidates.map((c, i) =>
+                `[${i + 1}] key="${c.memory.key}" value="${c.memory.value}" (similarity: ${c.score.toFixed(2)})`
+              ).join("\n");
+              const llmPrompt = `New memory to save:\nkey="${input.key}"\nvalue="${input.value}"\n\nExisting similar memories:\n${existingList}\n\nIs the new memory already covered by these existing memories? Reply with JSON only:\n{"action": "skip" | "merge" | "add", "reason": "string", "merge_text": "string if action=merge — the merged content combining new and existing"}`;
+              const llmRes = await fetch("https://api.anthropic.com/v1/messages", {
+                method: "POST",
+                headers: {
+                  "x-api-key": anthropicKey,
+                  "anthropic-version": "2023-06-01",
+                  "content-type": "application/json",
+                },
+                body: JSON.stringify({
+                  model: "claude-haiku-4-5-20251001",
+                  max_tokens: 300,
+                  system: "You are a deduplication assistant. Given a new memory and existing similar memories, decide: skip (already covered), merge (combine with existing), or add (genuinely new). Reply with JSON only.",
+                  messages: [{ role: "user", content: llmPrompt }],
+                }),
+                signal: AbortSignal.timeout(15_000),
+              });
+              if (llmRes.ok) {
+                const llmData = await llmRes.json() as { content: { type: string; text: string }[] };
+                const llmText = llmData.content?.[0]?.text?.trim() ?? "";
+                // Extract JSON from response (handle markdown code fences)
+                const jsonMatch = llmText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                  const decision = JSON.parse(jsonMatch[0]) as { action: string; reason: string; merge_text?: string };
+                  if (decision.action === "skip") {
+                    return { content: [{ type: "text" as const, text: `Skipped (LLM dedup): ${decision.reason}` }] };
+                  }
+                  if (decision.action === "merge" && decision.merge_text && candidates[0]) {
+                    const target = candidates[0].memory;
+                    try {
+                      updateMemory(target.id, { value: decision.merge_text, version: target.version });
+                      return { content: [{ type: "text" as const, text: JSON.stringify({
+                        merged_into: target.id.slice(0, 8),
+                        key: target.key,
+                        reason: decision.reason,
+                      }) }] };
+                    } catch {
+                      // Merge failed (version conflict etc.) — fall through to normal save
+                    }
+                  }
+                  // action === "add" — fall through to normal save
+                }
+              }
+            }
+          }
+        } catch {
+          // LLM dedup failed — fall through to normal save
         }
       }
 
@@ -278,7 +432,26 @@ server.tool(
       if (memory) {
         touchMemory(memory.id);
         if (args.agent_id) touchAgent(args.agent_id);
-        return { content: [{ type: "text" as const, text: formatMemory(memory) }] };
+        let text = formatMemory(memory);
+
+        // If memory belongs to a chain, include chain context
+        if (memory.sequence_group) {
+          try {
+            const db = getDatabase();
+            const chainRows = db.prepare(
+              "SELECT * FROM memories WHERE sequence_group = ? AND status = 'active' ORDER BY sequence_order ASC"
+            ).all(memory.sequence_group) as Record<string, unknown>[];
+            if (chainRows.length > 1) {
+              const steps = chainRows.map(parseMemoryRow);
+              const chainLine = steps.map(s => `[${s.sequence_order ?? "?"}] ${s.key}`).join(" → ");
+              text += `\n\nChain context: ${chainLine}`;
+            }
+          } catch {
+            // chain lookup non-critical
+          }
+        }
+
+        return { content: [{ type: "text" as const, text }] };
       }
 
       // Fuzzy fallback: search for the key and return the top result
@@ -443,6 +616,7 @@ server.tool(
     metadata: z.record(z.unknown()).optional(),
     expires_at: z.string().nullable().optional(),
     version: z.coerce.number().optional(),
+    when_to_use: z.string().optional().describe("Update the activation context for this memory"),
   },
   async (args) => {
     try {
@@ -765,6 +939,48 @@ server.tool(
 );
 
 server.tool(
+  "memory_chain_get",
+  "Retrieve an ordered memory chain/sequence by group ID. Returns all steps in order.",
+  {
+    sequence_group: z.string().describe("The chain/sequence group ID to retrieve"),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+      const db = getDatabase();
+      let effectiveProjectId = args.project_id;
+
+      const conditions = ["sequence_group = ?", "status = 'active'"];
+      const params: (string | number)[] = [args.sequence_group];
+
+      if (effectiveProjectId) {
+        conditions.push("project_id = ?");
+        params.push(effectiveProjectId);
+      }
+
+      const rows = db.prepare(
+        `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY sequence_order ASC`
+      ).all(...params) as Record<string, unknown>[];
+
+      if (rows.length === 0) {
+        return { content: [{ type: "text" as const, text: `No chain found for sequence_group: "${args.sequence_group}"` }] };
+      }
+
+      const memories = rows.map(parseMemoryRow);
+      const chainSteps = memories.map((m, i) =>
+        `[Step ${m.sequence_order ?? i + 1}] ${m.key}: ${m.value}`
+      ).join("\n");
+
+      const header = `Chain "${args.sequence_group}" (${memories.length} steps):\n`;
+      return { content: [{ type: "text" as const, text: header + chainSteps }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
   "memory_search",
   "Search memories by keyword across key, value, summary, and tags",
   {
@@ -829,13 +1045,13 @@ server.tool(
       if (args.index_missing) {
         const db = getDatabase();
         const unindexed = db.prepare(
-          `SELECT id, value, summary FROM memories
+          `SELECT id, value, summary, when_to_use FROM memories
            WHERE status = 'active' AND id NOT IN (SELECT memory_id FROM memory_embeddings)
            LIMIT 100`
-        ).all() as Array<{ id: string; value: string; summary: string | null }>;
+        ).all() as Array<{ id: string; value: string; summary: string | null; when_to_use: string | null }>;
         await Promise.all(
           unindexed.map((m) =>
-            indexMemoryEmbedding(m.id, [m.value, m.summary].filter(Boolean).join(" "))
+            indexMemoryEmbedding(m.id, m.when_to_use || [m.value, m.summary].filter(Boolean).join(" "))
           )
         );
       }
@@ -953,6 +1169,99 @@ server.tool(
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
   }
+);
+
+server.tool(
+  "memory_recall_deep",
+  "Deep memory recall using ASMR (Agentic Search and Memory Retrieval) — runs 3 parallel search agents (facts, context, temporal) for high-accuracy retrieval with optional ensemble answering",
+  {
+    query: z.string().describe("Natural language query"),
+    mode: z.enum(["fast", "deep", "auto"]).default("deep").describe("fast=FTS+semantic, deep=ASMR 3-agent, auto=fast then escalate"),
+    max_results: z.coerce.number().default(20),
+    ensemble: z.coerce.boolean().default(false).describe("Use ensemble answering with majority voting"),
+    project_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+      const db = getDatabase();
+
+      const FAST_SCORE_THRESHOLD = 0.6;
+
+      // ── Fast mode: hybrid search (FTS + semantic) ─────────────────────
+      if (args.mode === "fast") {
+        const results = await hybridSearch(args.query, {
+          filter: { project_id: args.project_id, limit: args.max_results },
+          limit: args.max_results,
+        });
+        if (results.length === 0) {
+          return { content: [{ type: "text" as const, text: `No memories found for "${args.query}" via fast search.` }] };
+        }
+        const lines = results.map((r, i) =>
+          `${i + 1}. [score:${r.score.toFixed(3)}] [${r.memory.scope}/${r.memory.category}] ${r.memory.key} = ${r.memory.value.slice(0, 120)}${r.memory.value.length > 120 ? "..." : ""}`,
+        );
+        return { content: [{ type: "text" as const, text: `[fast] ${results.length} result(s) for "${args.query}":\n${lines.join("\n")}` }] };
+      }
+
+      // ── Deep mode: ASMR 3-agent recall ────────────────────────────────
+      if (args.mode === "deep") {
+        const asmrResult = await asmrRecall(db, args.query, {
+          max_results: args.max_results,
+          project_id: args.project_id,
+        });
+
+        let text = formatAsmrResult(asmrResult, args.query);
+
+        if (args.ensemble) {
+          try {
+            const answer = await ensembleAnswer(asmrResult, args.query);
+            text += `\n\n--- Ensemble Answer (confidence: ${(answer.confidence * 100).toFixed(0)}%, consensus: ${answer.consensus_reached ? "yes" : "no"}, escalated: ${answer.escalated ? "yes" : "no"}) ---\n${answer.answer}\n\nReasoning: ${answer.reasoning}`;
+          } catch (ensErr) {
+            text += `\n\n[Ensemble failed: ${ensErr instanceof Error ? ensErr.message : "unknown error"}]`;
+          }
+        }
+
+        return { content: [{ type: "text" as const, text }] };
+      }
+
+      // ── Auto mode: fast first, escalate to deep if low quality ────────
+      const fastResults = await hybridSearch(args.query, {
+        filter: { project_id: args.project_id, limit: args.max_results },
+        limit: args.max_results,
+      });
+
+      const topScore = fastResults.length > 0 ? fastResults[0]!.score : 0;
+
+      if (topScore >= FAST_SCORE_THRESHOLD && fastResults.length >= 3) {
+        // Fast results are good enough
+        const lines = fastResults.map((r, i) =>
+          `${i + 1}. [score:${r.score.toFixed(3)}] [${r.memory.scope}/${r.memory.category}] ${r.memory.key} = ${r.memory.value.slice(0, 120)}${r.memory.value.length > 120 ? "..." : ""}`,
+        );
+        return { content: [{ type: "text" as const, text: `[auto/fast] ${fastResults.length} result(s) for "${args.query}" (top score ${topScore.toFixed(3)} >= threshold):\n${lines.join("\n")}` }] };
+      }
+
+      // Escalate to deep ASMR
+      const asmrResult = await asmrRecall(db, args.query, {
+        max_results: args.max_results,
+        project_id: args.project_id,
+      });
+
+      let text = `[auto/escalated] Fast search top score ${topScore.toFixed(3)} < ${FAST_SCORE_THRESHOLD} threshold — escalated to ASMR deep recall.\n\n${formatAsmrResult(asmrResult, args.query)}`;
+
+      if (args.ensemble) {
+        try {
+          const answer = await ensembleAnswer(asmrResult, args.query);
+          text += `\n\n--- Ensemble Answer (confidence: ${(answer.confidence * 100).toFixed(0)}%, consensus: ${answer.consensus_reached ? "yes" : "no"}, escalated: ${answer.escalated ? "yes" : "no"}) ---\n${answer.answer}\n\nReasoning: ${answer.reasoning}`;
+        } catch (ensErr) {
+          text += `\n\n[Ensemble failed: ${ensErr instanceof Error ? ensErr.message : "unknown error"}]`;
+        }
+      }
+
+      return { content: [{ type: "text" as const, text }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  },
 );
 
 server.tool(
@@ -1318,9 +1627,25 @@ server.tool(
     raw: z.boolean().optional(),
     strategy: z.enum(["default", "smart"]).optional().describe("Injection strategy: 'default' uses importance+recency, 'smart' uses embedding similarity+importance+recency"),
     query: z.string().optional().describe("Query for smart injection relevance scoring. Required when strategy='smart'."),
+    task_context: z.string().optional().describe("What the agent is about to do. When provided, activates intent-based retrieval — matches against when_to_use fields for situationally relevant memories."),
+    mode: z.enum(["full", "hints"]).optional().default("full").describe("'full' = inject complete memory content (default), 'hints' = inject lightweight topic summary with counts, saving 60-70% tokens. Agent uses memory_recall to pull details as needed."),
   },
   async (args) => {
     try {
+      // Smart strategy: delegate to full smartInject pipeline (skip for hints mode — fall through to hints handler below)
+      if (args.strategy === "smart" && args.task_context && args.mode !== "hints") {
+        const { smartInject } = await import("../lib/injector.js");
+        const result = await smartInject({
+          task_context: args.task_context,
+          project_id: args.project_id,
+          agent_id: args.agent_id,
+          session_id: args.session_id,
+          max_tokens: args.max_tokens,
+          min_importance: args.min_importance,
+        });
+        return { content: [{ type: "text" as const, text: result.output }] };
+      }
+
       const maxTokens = args.max_tokens || 500;
       const minImportance = args.min_importance || 3;
       const categories = args.categories || ["preference", "fact", "knowledge"];
@@ -1386,6 +1711,29 @@ server.tool(
         return true;
       });
 
+      // task_context activation: semantic search against when_to_use embeddings
+      // Activation-matched memories get a +3 importance boost for sorting
+      const activationBoostedIds = new Set<string>();
+      if (args.task_context) {
+        try {
+          const activationResults = await semanticSearch(args.task_context, {
+            threshold: 0.3,
+            limit: 20,
+            scope: undefined,
+            agent_id: args.agent_id,
+            project_id: args.project_id,
+          });
+          for (const r of activationResults) {
+            activationBoostedIds.add(r.memory.id);
+            // Merge activation-matched memories not already in unique
+            if (!seen.has(r.memory.id)) {
+              seen.add(r.memory.id);
+              unique.push(r.memory);
+            }
+          }
+        } catch { /* Non-critical: proceed without activation matching if semantic search fails */ }
+      }
+
       // Smart strategy: score by embedding similarity + importance + recency
       if (args.strategy === "smart" && args.query) {
         const { generateEmbedding: genEmb, cosineSimilarity: cosSim, deserializeEmbedding: deserEmb } = await import("../lib/embeddings.js");
@@ -1410,30 +1758,110 @@ server.tool(
           const oldestMs = Math.min(...unique.map((m) => new Date(m.updated_at).getTime()));
           const timeRange = nowMs - oldestMs || 1;
 
-          // Score: similarity * 0.4 + importance/10 * 0.3 + recency * 0.3 + pin bonus
+          // Score: similarity * 0.4 + importance/10 * 0.3 + recency * 0.3 + pin bonus + activation boost
           const scores = new Map<string, number>();
           for (const m of unique) {
             const memEmb = embeddingMap.get(m.id);
             const similarity = memEmb ? cosSim(queryEmbedding, memEmb) : 0;
-            const importanceScore = m.importance / 10;
+            const importanceScore = (m.importance + (activationBoostedIds.has(m.id) ? 3 : 0)) / 10;
             const recencyScore = (new Date(m.updated_at).getTime() - oldestMs) / timeRange;
             const pinBonus = m.pinned ? 0.5 : 0;
             scores.set(m.id, similarity * 0.4 + importanceScore * 0.3 + recencyScore * 0.3 + pinBonus);
           }
           unique.sort((a, b) => (scores.get(b.id) || 0) - (scores.get(a.id) || 0));
         } else {
-          // No embeddings — fall back to default sort
+          // No embeddings — fall back to default sort with activation boost
           unique.sort((a, b) => {
-            if (b.importance !== a.importance) return b.importance - a.importance;
+            const aImp = a.importance + (activationBoostedIds.has(a.id) ? 3 : 0);
+            const bImp = b.importance + (activationBoostedIds.has(b.id) ? 3 : 0);
+            if (bImp !== aImp) return bImp - aImp;
             return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
           });
         }
       } else {
-        // Default strategy: sort by importance DESC, then recency
+        // Default strategy: sort by importance DESC (with activation boost), then recency
         unique.sort((a, b) => {
-          if (b.importance !== a.importance) return b.importance - a.importance;
+          const aImp = a.importance + (activationBoostedIds.has(a.id) ? 3 : 0);
+          const bImp = b.importance + (activationBoostedIds.has(b.id) ? 3 : 0);
+          if (bImp !== aImp) return bImp - aImp;
           return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
         });
+      }
+
+      // Hints mode: return lightweight topic summary instead of full content
+      if (args.mode === "hints") {
+        if (unique.length === 0) {
+          return { content: [{ type: "text" as const, text: "No relevant memories found." }] };
+        }
+
+        // Group memories by category
+        const groups = new Map<string, Memory[]>();
+        for (const m of unique) {
+          const cat = m.category || "knowledge";
+          if (!groups.has(cat)) groups.set(cat, []);
+          groups.get(cat)!.push(m);
+        }
+
+        // Extract topic keywords from memory keys: split on '-', dedupe, take meaningful words
+        const stopWords = new Set(["the", "a", "an", "is", "in", "on", "at", "to", "for", "of", "and", "or", "with", "my", "this", "that"]);
+        function extractTopics(memories: Memory[], maxTopics: number = 8): string[] {
+          const wordCounts = new Map<string, number>();
+          for (const m of memories) {
+            // Extract words from key
+            const keyWords = m.key.split(/[-_\s]+/).filter((w: string) => w.length > 2 && !stopWords.has(w.toLowerCase()));
+            for (const w of keyWords) {
+              const lower = w.toLowerCase();
+              wordCounts.set(lower, (wordCounts.get(lower) || 0) + 1);
+            }
+            // Extract words from tags
+            if (m.tags) {
+              const tags = Array.isArray(m.tags) ? m.tags : (typeof m.tags === "string" ? (m.tags as string).split(",") : []);
+              for (const t of tags) {
+                const tag = (t as string).trim().toLowerCase();
+                if (tag.length > 2 && !stopWords.has(tag)) {
+                  wordCounts.set(tag, (wordCounts.get(tag) || 0) + 1);
+                }
+              }
+            }
+          }
+          // Sort by frequency descending, take top N
+          return Array.from(wordCounts.entries())
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, maxTopics)
+            .map(([word]) => word);
+        }
+
+        // Category display names
+        const categoryLabels: Record<string, string> = {
+          fact: "Facts",
+          preference: "Preferences",
+          knowledge: "Knowledge",
+          history: "History",
+          procedural: "Procedures",
+          resource: "Resources",
+        };
+
+        const hintLines: string[] = ["You have relevant memories available:"];
+        // Order: fact, knowledge, preference, procedural, history, resource
+        const categoryOrder = ["fact", "knowledge", "preference", "procedural", "history", "resource"];
+        for (const cat of categoryOrder) {
+          const mems = groups.get(cat);
+          if (!mems || mems.length === 0) continue;
+          const label = categoryLabels[cat] || cat;
+          const topics = extractTopics(mems);
+          hintLines.push(`- ${label} (${mems.length}): ${topics.join(", ")}`);
+        }
+        // Include any categories not in the standard order
+        for (const [cat, mems] of groups) {
+          if (categoryOrder.includes(cat)) continue;
+          const topics = extractTopics(mems);
+          hintLines.push(`- ${cat} (${mems.length}): ${topics.join(", ")}`);
+        }
+
+        hintLines.push("");
+        hintLines.push('Use memory_recall(key="...") to access any of these. Use memory_search(query="...") for broader searches.');
+
+        return { content: [{ type: "text" as const, text: hintLines.join("\n") }] };
       }
 
       // resolve format: new `format` param takes priority, legacy `raw` maps to compact
@@ -2220,9 +2648,23 @@ server.tool(
     limit: z.coerce.number().optional(),
     decay_halflife_days: z.coerce.number().optional().describe("Importance half-life in days (default: 90). Lower = more weight on recent memories."),
     no_decay: z.coerce.boolean().optional().describe("Set true to disable decay and sort purely by importance."),
+    task_context: z.string().optional().describe("What the agent is about to do. When provided, activates intent-based retrieval — matches against when_to_use fields for situationally relevant memories."),
+    strategy: z.enum(["default", "smart"]).optional().default("default").describe("Injection strategy: 'default' = decay-scored, 'smart' = activation-matched + layered + tool-aware (requires task_context)"),
   },
   async (args) => {
     try {
+      // Smart strategy: delegate to full smartInject pipeline
+      if (args.strategy === "smart" && args.task_context) {
+        const { smartInject } = await import("../lib/injector.js");
+        const result = await smartInject({
+          task_context: args.task_context,
+          project_id: args.project_id,
+          agent_id: args.agent_id,
+          max_tokens: args.limit ? args.limit * 20 : undefined,
+        });
+        return { content: [{ type: "text" as const, text: result.output }] };
+      }
+
       const filter: MemoryFilter = {
         scope: args.scope,
         agent_id: args.agent_id,
@@ -2231,6 +2673,31 @@ server.tool(
         limit: (args.limit || 30) * 2, // fetch 2x, then rerank by effective score
       };
       const memories = listMemories(filter);
+
+      // task_context activation: semantic search against when_to_use embeddings
+      // Activation-matched memories get a +3 importance boost for scoring
+      const activationBoostedIds = new Set<string>();
+      if (args.task_context) {
+        try {
+          const activationResults = await semanticSearch(args.task_context, {
+            threshold: 0.3,
+            limit: 20,
+            scope: args.scope,
+            agent_id: args.agent_id,
+            project_id: args.project_id,
+          });
+          const seenIds = new Set(memories.map((m) => m.id));
+          for (const r of activationResults) {
+            activationBoostedIds.add(r.memory.id);
+            // Merge activation-matched memories not already in the list
+            if (!seenIds.has(r.memory.id)) {
+              seenIds.add(r.memory.id);
+              memories.push(r.memory);
+            }
+          }
+        } catch { /* Non-critical: proceed without activation matching if semantic search fails */ }
+      }
+
       if (memories.length === 0) {
         return { content: [{ type: "text" as const, text: "No memories in current context." }] };
       }
@@ -2240,13 +2707,15 @@ server.tool(
 
       // Compute effective score with optional time-decay
       // Flagged memories get a bonus to always surface near top
+      // Activation-matched memories get +3 importance boost
       const scored = memories.map((m) => {
-        let effectiveScore = m.importance;
+        const activationBoost = activationBoostedIds.has(m.id) ? 3 : 0;
+        let effectiveScore = m.importance + activationBoost;
         if (!args.no_decay && !m.pinned) {
           const ageMs = now - new Date(m.updated_at).getTime();
           const ageDays = ageMs / (1000 * 60 * 60 * 24);
           const decayFactor = Math.pow(0.5, ageDays / halflifeDays);
-          effectiveScore = m.importance * decayFactor;
+          effectiveScore = (m.importance + activationBoost) * decayFactor;
         }
         // Flagged memories always surface (boost to 11 equivalent — above max importance 10)
         if (m.flag) effectiveScore = Math.max(effectiveScore, 11);
@@ -2298,6 +2767,29 @@ server.tool(
       }
       const formatted = formatLayeredContext(ctx);
       return { content: [{ type: "text" as const, text: `${formatted}\n---\n${ctx.total_memories} memories, ~${ctx.token_estimate} tokens` }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_profile",
+  "Synthesize a coherent profile from preference and fact memories using LLM. Cached for 24h, auto-refreshed when preferences change. Returns markdown profile.",
+  {
+    project_id: z.string().optional(),
+    agent_id: z.string().optional(),
+    scope: z.enum(["agent", "project", "global"]).optional().default("project"),
+    force_refresh: z.boolean().optional().default(false).describe("Force re-synthesis even if cached profile exists"),
+  },
+  async (args) => {
+    try {
+      ensureAutoProject();
+      const result = await synthesizeProfile(args);
+      if (!result) {
+        return { content: [{ type: "text" as const, text: "No preference or fact memories found to synthesize a profile from." }] };
+      }
+      return { content: [{ type: "text" as const, text: `${result.from_cache ? "[cached] " : "[synthesized] "}(${result.memory_count} memories)\n\n${result.profile}` }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
     }
@@ -2762,6 +3254,100 @@ server.tool(
   }
 );
 
+server.tool(
+  "memory_tool_insights",
+  "Get usage stats, lessons learned, and recommendations for MCP tools. Helps agents avoid past mistakes and reuse successful patterns.",
+  {
+    tool_name: z.string().optional().describe("Specific tool to get insights for. If omitted, returns insights for all tools."),
+    task_context: z.string().optional().describe("What the agent is about to do — used to find relevant tool lessons via semantic match"),
+    project_id: z.string().optional(),
+    agent_id: z.string().optional(),
+    limit: z.coerce.number().optional().default(10).describe("Max lessons to return per tool"),
+  },
+  async (args) => {
+    try {
+      const db = getDatabase();
+      const projId = args.project_id ? resolvePartialId(db, "projects", args.project_id) ?? args.project_id : undefined;
+      const limit = args.limit ?? 10;
+
+      // Determine which tools to report on
+      let toolNames: string[];
+      if (args.tool_name) {
+        toolNames = [args.tool_name];
+      } else {
+        // Get unique tool names from recent events
+        const filters: Parameters<typeof getToolEvents>[0] = { limit: 200 };
+        if (projId) filters.project_id = projId;
+        if (args.agent_id) filters.agent_id = args.agent_id;
+        const events = getToolEvents(filters);
+        toolNames = [...new Set(events.map(e => e.tool_name))];
+      }
+
+      if (toolNames.length === 0) {
+        return { content: [{ type: "text" as const, text: "No tool events recorded yet." }] };
+      }
+
+      const sections: string[] = [];
+
+      for (const tn of toolNames) {
+        const stats = getToolStats(tn, projId);
+        const lessons = getToolLessons(tn, projId, limit);
+
+        // Build stats line
+        const successPct = stats.total_calls > 0 ? Math.round(stats.success_rate * 100) : 0;
+        const avgTok = stats.avg_tokens != null ? Math.round(stats.avg_tokens) : "?";
+        const avgLat = stats.avg_latency_ms != null ? (stats.avg_latency_ms / 1000).toFixed(1) : "?";
+        let section = `## Tool: ${tn}\nStats: ${stats.total_calls} calls | ${successPct}% success | avg ${avgTok} tokens | avg ${avgLat}s`;
+
+        // Common errors
+        if (stats.common_errors.length > 0) {
+          const errParts = stats.common_errors.map(e => `${e.error_type} (${e.count})`);
+          section += `\nCommon errors: ${errParts.join(", ")}`;
+        }
+
+        // Recommendations from lessons
+        if (lessons.length > 0) {
+          const dos: string[] = [];
+          const donts: string[] = [];
+          for (const l of lessons) {
+            const ctx = (l.when_to_use || "").toLowerCase();
+            if (ctx.includes("fail") || ctx.includes("error") || ctx.includes("avoid") || ctx.includes("don't") || ctx.includes("never")) {
+              donts.push(l.lesson);
+            } else {
+              dos.push(l.lesson);
+            }
+          }
+
+          if (dos.length > 0 || donts.length > 0) {
+            section += "\n\n### Recommendations";
+            for (const d of dos.slice(0, 5)) section += `\n✅ DO: ${d}`;
+            for (const d of donts.slice(0, 5)) section += `\n❌ DON'T: ${d}`;
+          }
+
+          // Full lesson list
+          section += "\n\n### Lessons (newest first)";
+          for (const l of lessons) {
+            const when = l.when_to_use ? ` (when: ${l.when_to_use})` : "";
+            section += `\n- ${l.lesson}${when}`;
+          }
+        }
+
+        sections.push(section);
+      }
+
+      // If task_context provided, highlight which lessons are most relevant
+      let header = "";
+      if (args.task_context) {
+        header = `> Context: "${args.task_context}"\n> Showing insights filtered for relevance.\n\n`;
+      }
+
+      return { content: [{ type: "text" as const, text: header + sections.join("\n\n---\n\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
 // ============================================================================
 // Meta-tools: search_tools + describe_tools (lean stubs — on-demand schema docs)
 // ============================================================================
@@ -2799,6 +3385,9 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       ttl_ms: { type: "string|number", description: "Time-to-live e.g. '7d', '2h', or ms integer" },
       source: { type: "string", description: "Origin of the memory", enum: ["user", "agent", "system", "auto", "imported"] },
       metadata: { type: "object", description: "Arbitrary JSON metadata" },
+      when_to_use: { type: "string", description: "Activation context — describes WHEN this memory should be retrieved. Used for intent-based retrieval. Example: 'when deploying to production'" },
+      sequence_group: { type: "string", description: "Chain/sequence group ID — links memories into an ordered procedural sequence" },
+      sequence_order: { type: "number", description: "Position within the sequence group (1-based)" },
     },
     example: '{"key":"preferred-language","value":"TypeScript","scope":"global","importance":8,"tags":["language","preference"]}',
   },
@@ -2829,6 +3418,15 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       session_id: { type: "string", description: "Session UUID filter" },
     },
     example: '{"key":"preferred-language","scope":"global"}',
+  },
+  memory_chain_get: {
+    description: "Retrieve an ordered memory chain/sequence by group ID. Returns all steps in procedural order.",
+    category: "memory",
+    params: {
+      sequence_group: { type: "string", description: "The chain/sequence group ID to retrieve", required: true },
+      project_id: { type: "string", description: "Project UUID filter" },
+    },
+    example: '{"sequence_group":"deploy-to-production"}',
   },
   memory_list: {
     description: "List memories with optional filters. Returns compact lines by default.",
@@ -2866,6 +3464,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       status: { type: "string", description: "New status", enum: ["active", "archived", "expired"] },
       metadata: { type: "object", description: "New metadata (replaces existing)" },
       expires_at: { type: "string", description: "New expiry ISO timestamp (null to clear)" },
+      when_to_use: { type: "string", description: "Update the activation context for this memory" },
     },
     example: '{"id":"abc123","version":1,"importance":9,"tags":["correction","important"]}',
   },
@@ -2955,6 +3554,18 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     },
     example: '{"query":"database migration","limit":5}',
   },
+  memory_recall_deep: {
+    description: "Deep memory recall using ASMR 3-agent search (facts, context, temporal). Modes: fast (hybrid), deep (ASMR), auto (fast then escalate). Optional ensemble answering.",
+    category: "memory",
+    params: {
+      query: { type: "string", description: "Natural language query", required: true },
+      mode: { type: "string", description: "fast=FTS+semantic, deep=ASMR 3-agent, auto=fast then escalate", enum: ["fast", "deep", "auto"] },
+      max_results: { type: "number", description: "Max results (default 20)" },
+      ensemble: { type: "boolean", description: "Use ensemble answering with majority voting (default false)" },
+      project_id: { type: "string", description: "Project UUID filter" },
+    },
+    example: '{"query":"what is the deployment process","mode":"deep","ensemble":true}',
+  },
   memory_activity: {
     description: "Get daily memory creation counts over N days (max 365). Like 'git log --stat' for memories.",
     category: "memory",
@@ -2993,7 +3604,7 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     example: '{"memories":[{"key":"foo","value":"bar","scope":"global","importance":7}]}',
   },
   memory_inject: {
-    description: "Get formatted memory context for system prompt injection. Respects token budget. Use strategy='smart' with a query for embedding-based relevance scoring.",
+    description: "Get formatted memory context for system prompt injection. Respects token budget. Use strategy='smart' with task_context for full activation-matched + layered + tool-aware pipeline. Use mode='hints' for a lightweight topic summary (60-70% fewer tokens) — agent can then use memory_recall for details on demand.",
     category: "memory",
     params: {
       agent_id: { type: "string", description: "Agent UUID to include private memories" },
@@ -3004,10 +3615,12 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       min_importance: { type: "number", description: "Minimum importance (default 3)" },
       format: { type: "string", description: "Output format: xml (default, <agent-memories>), compact (key: value, ~60% smaller), markdown, json", enum: ["xml", "compact", "markdown", "json"] },
       raw: { type: "boolean", description: "Deprecated: use format=compact instead. true=plain lines only" },
-      strategy: { type: "string", description: "Injection strategy: 'default' (importance+recency) or 'smart' (embedding similarity+importance+recency)", enum: ["default", "smart"] },
+      strategy: { type: "string", description: "Injection strategy: 'default' = decay-scored (importance+recency), 'smart' = full pipeline (activation-matched + layered + tool-aware). Smart requires task_context.", enum: ["default", "smart"] },
       query: { type: "string", description: "Query for smart injection relevance scoring. Required when strategy='smart'." },
+      task_context: { type: "string", description: "What the agent is about to do. Required for strategy='smart'. Activates intent-based retrieval — matches against when_to_use fields for situationally relevant memories." },
+      mode: { type: "string", description: "Injection mode: 'full' (default) = inject complete memory content, 'hints' = lightweight topic summary with counts per category, saving 60-70% tokens. In hints mode, use memory_recall(key=...) or memory_search(query=...) to pull details on demand.", enum: ["full", "hints"] },
     },
-    example: '{"project_id":"proj-uuid","max_tokens":300,"min_importance":5,"format":"compact","strategy":"smart","query":"database migrations"}',
+    example: '{"project_id":"proj-uuid","max_tokens":300,"strategy":"smart","task_context":"writing database migration for user table"}',
   },
   session_extract: {
     description: "Auto-create memories from a session summary (title, topics, notes, project). Designed for sessions→mementos integration.",
@@ -3026,15 +3639,28 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     example: '{"session_id":"abc123","title":"Fix auth middleware","project":"alumia","key_topics":["jwt","compliance"],"agent_id":"galba-id"}',
   },
   memory_context: {
-    description: "Get active memories for the current context (agent/project/scope).",
+    description: "Get active memories for the current context (agent/project/scope). Supports intent-based retrieval via task_context. Use strategy='smart' for full activation-matched + layered + tool-aware pipeline.",
     category: "memory",
     params: {
       agent_id: { type: "string", description: "Agent UUID filter" },
       project_id: { type: "string", description: "Project UUID filter" },
       scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
       limit: { type: "number", description: "Max results (default 30)" },
+      task_context: { type: "string", description: "What the agent is about to do. Required for strategy='smart'. Activates intent-based retrieval — matches against when_to_use fields for situationally relevant memories." },
+      strategy: { type: "string", description: "Injection strategy: 'default' = decay-scored, 'smart' = activation-matched + layered + tool-aware (requires task_context)", enum: ["default", "smart"] },
     },
-    example: '{"project_id":"proj-uuid","scope":"shared","limit":20}',
+    example: '{"project_id":"proj-uuid","scope":"shared","limit":20,"strategy":"smart","task_context":"deploying to production"}',
+  },
+  memory_profile: {
+    description: "Synthesize a coherent profile from preference and fact memories using LLM. Cached for 24h, auto-refreshed when preferences change.",
+    category: "memory",
+    params: {
+      project_id: { type: "string", description: "Project UUID to scope profile to" },
+      agent_id: { type: "string", description: "Agent UUID to scope profile to" },
+      scope: { type: "string", description: "Profile scope", enum: ["agent", "project", "global"] },
+      force_refresh: { type: "boolean", description: "Force re-synthesis even if cached profile exists (default false)" },
+    },
+    example: '{"project_id":"proj-uuid","scope":"project"}',
   },
   register_agent: {
     description: "Register an agent. Idempotent — same name returns existing agent.",
@@ -3374,6 +4000,68 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
       id: { type: "string", description: "Subscription ID", required: true },
     },
     example: '{"id":"sub-abc12"}',
+  },
+  memory_tool_insights: {
+    description: "Get usage stats, lessons learned, and recommendations for MCP tools. Helps agents avoid past mistakes and reuse successful patterns.",
+    category: "utility",
+    params: {
+      tool_name: { type: "string", description: "Specific tool to get insights for. If omitted, returns insights for all tools." },
+      task_context: { type: "string", description: "What the agent is about to do — used to find relevant tool lessons via semantic match" },
+      project_id: { type: "string", description: "Project ID filter" },
+      agent_id: { type: "string", description: "Agent ID filter" },
+      limit: { type: "number", description: "Max lessons to return per tool (default: 10)" },
+    },
+    example: '{"tool_name":"bash","limit":5}',
+  },
+  memory_save_tool_event: {
+    description: "Record a tool call event (success/failure, latency, tokens). Optionally saves a lesson as a shared memory.",
+    category: "memory",
+    params: {
+      tool_name: { type: "string", description: "Name of the tool that was called", required: true },
+      action: { type: "string", description: "What was attempted" },
+      success: { type: "boolean", description: "Whether the tool call succeeded", required: true },
+      error_type: { type: "string", description: "Error category if failed", enum: ["timeout", "permission", "not_found", "syntax", "rate_limit", "other"] },
+      error_message: { type: "string", description: "Raw error text if failed" },
+      tokens_used: { type: "number", description: "Tokens consumed by the tool call" },
+      latency_ms: { type: "number", description: "Time taken in milliseconds" },
+      context: { type: "string", description: "What task triggered this tool call" },
+      lesson: { type: "string", description: "Qualitative insight learned from this call" },
+      when_to_use: { type: "string", description: "Activation context for the lesson" },
+      agent_id: { type: "string", description: "Agent ID" },
+      project_id: { type: "string", description: "Project ID" },
+      session_id: { type: "string", description: "Session ID" },
+    },
+    example: '{"tool_name":"bash","action":"npm install","success":false,"error_type":"timeout","lesson":"npm install hangs on large monorepos — use --prefer-offline","when_to_use":"when installing deps in a monorepo"}',
+  },
+  memory_autoinject_config: {
+    description: "Get or set auto-inject orchestrator config (channel-based proactive memory push). Controls throttle, debounce, rate limits, similarity thresholds.",
+    category: "utility",
+    params: {
+      action: { type: "string", description: "Get or set auto-inject config", enum: ["get", "set"], required: true },
+      throttle_ms: { type: "number", description: "Min ms between pushes (default 30000)" },
+      debounce_ms: { type: "number", description: "Wait ms after last message before processing (default 2000)" },
+      max_pushes_per_5min: { type: "number", description: "Rate limit per 5-minute window (default 5)" },
+      min_similarity: { type: "number", description: "Minimum activation match threshold 0-1 (default 0.4)" },
+      enabled: { type: "boolean", description: "Enable/disable auto-inject" },
+      session_briefing: { type: "boolean", description: "Push session-start briefing (default true)" },
+    },
+    example: '{"action":"set","throttle_ms":15000,"min_similarity":0.5}',
+  },
+  memory_autoinject_status: {
+    description: "Get auto-inject orchestrator status: running state, session watcher, push history, rate limit counters, and full config.",
+    category: "utility",
+    params: {},
+    example: '{}',
+  },
+  memory_autoinject_test: {
+    description: "Test what memories would be activated by a given context WITHOUT pushing. Shows what the auto-inject pipeline would match — useful for tuning min_similarity.",
+    category: "utility",
+    params: {
+      context_text: { type: "string", description: "Simulated context to test activation matching", required: true },
+      project_id: { type: "string", description: "Scope to a specific project" },
+      min_similarity: { type: "number", description: "Minimum similarity threshold (default 0.4)" },
+    },
+    example: '{"context_text":"debugging a SQLite FTS5 index issue","min_similarity":0.3}',
   },
   search_tools: {
     description: "Search available tools by name or keyword. Returns matching tool names and categories.",
@@ -4376,6 +5064,174 @@ server.tool(
 );
 
 // ============================================================================
+// Tool event tracking
+// ============================================================================
+
+server.tool(
+  "memory_save_tool_event",
+  "Record a tool call event (success/failure, latency, tokens). Optionally saves a lesson as a shared memory.",
+  {
+    tool_name: z.string().describe("Name of the tool that was called (e.g. 'bash', 'read', 'grep')"),
+    action: z.string().optional().describe("What was attempted (e.g. 'npm install', 'git push')"),
+    success: z.boolean().describe("Whether the tool call succeeded"),
+    error_type: z.enum(["timeout", "permission", "not_found", "syntax", "rate_limit", "other"]).optional().describe("Error category if failed"),
+    error_message: z.string().optional().describe("Raw error text if failed"),
+    tokens_used: z.number().optional().describe("Tokens consumed by the tool call"),
+    latency_ms: z.number().optional().describe("Time taken in milliseconds"),
+    context: z.string().optional().describe("What task triggered this tool call"),
+    lesson: z.string().optional().describe("Qualitative insight learned from this call"),
+    when_to_use: z.string().optional().describe("Activation context for the lesson"),
+    agent_id: z.string().optional(),
+    project_id: z.string().optional(),
+    session_id: z.string().optional(),
+  },
+  async (args) => {
+    try {
+      const event = saveToolEvent(args);
+
+      // If a lesson was provided, also persist it as a shared knowledge memory
+      if (args.lesson) {
+        try {
+          createMemory({
+            key: `tool-lesson-${args.tool_name}-${Date.now()}`,
+            value: args.lesson,
+            category: "knowledge",
+            scope: "shared",
+            importance: 7,
+            tags: ["tool-memory", args.tool_name],
+            when_to_use: args.when_to_use,
+            agent_id: args.agent_id,
+            project_id: args.project_id,
+            session_id: args.session_id,
+            source: "auto",
+          } as unknown as CreateMemoryInput);
+        } catch { /* duplicate or other non-critical error */ }
+      }
+
+      return { content: [{ type: "text" as const, text: JSON.stringify({
+        id: event.id,
+        tool_name: event.tool_name,
+        success: event.success,
+        error_type: event.error_type,
+        lesson_saved: !!args.lesson,
+        created_at: event.created_at,
+      }) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
+// Auto-Inject Orchestrator Tools (channel-based memory push)
+// ============================================================================
+
+server.tool(
+  "memory_autoinject_config",
+  "Get or set auto-inject orchestrator config (channel-based memory push). Controls throttle, debounce, rate limits, and similarity thresholds for proactive memory injection.",
+  {
+    action: z.enum(["get", "set"]).describe("Get or set auto-inject config"),
+    throttle_ms: z.number().optional().describe("Min ms between pushes (default 30000)"),
+    debounce_ms: z.number().optional().describe("Wait ms after last message before processing (default 2000)"),
+    max_pushes_per_5min: z.number().optional().describe("Rate limit per 5-minute window (default 5)"),
+    min_similarity: z.number().optional().describe("Minimum activation match threshold 0-1 (default 0.4)"),
+    enabled: z.boolean().optional().describe("Enable/disable auto-inject"),
+    session_briefing: z.boolean().optional().describe("Push session-start briefing (default true)"),
+  },
+  async (args) => {
+    try {
+      if (args.action === "get") {
+        return { content: [{ type: "text" as const, text: JSON.stringify(getAutoInjectConfig(), null, 2) }] };
+      }
+      // action === "set"
+      const updates: Record<string, unknown> = {};
+      if (args.throttle_ms !== undefined) updates.throttle_ms = args.throttle_ms;
+      if (args.debounce_ms !== undefined) updates.debounce_ms = args.debounce_ms;
+      if (args.max_pushes_per_5min !== undefined) updates.max_pushes_per_5min = args.max_pushes_per_5min;
+      if (args.min_similarity !== undefined) updates.min_similarity = args.min_similarity;
+      if (args.enabled !== undefined) updates.enabled = args.enabled;
+      if (args.session_briefing !== undefined) updates.session_briefing = args.session_briefing;
+      const updated = updateAutoInjectConfig(updates);
+      return { content: [{ type: "text" as const, text: JSON.stringify({ updated: true, config: updated }, null, 2) }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_autoinject_status",
+  "Get auto-inject orchestrator status: running state, session watcher, push history, rate limit counters, and full config.",
+  {},
+  async () => {
+    try {
+      const status = getAutoInjectStatus();
+      const lines = [
+        `Running: ${status.running}`,
+        `Session ID: ${status.session_id || "none"}`,
+        `Watcher active: ${status.watcher.active}`,
+        `Watching file: ${status.watcher.watching_file || "none"}`,
+        `Last offset: ${status.watcher.last_offset}`,
+        ``,
+        `Pushes:`,
+        `  Total: ${status.pushes.total}`,
+        `  Last 5 min: ${status.pushes.last_5min}`,
+        `  Recently pushed memories: ${status.pushes.recently_pushed_memories}`,
+        `  Next available in: ${status.pushes.next_available_in_ms}ms`,
+        ``,
+        `Config:`,
+        `  Enabled: ${status.config.enabled}`,
+        `  Throttle: ${status.config.throttle_ms}ms`,
+        `  Debounce: ${status.config.debounce_ms}ms`,
+        `  Max pushes/5min: ${status.config.max_pushes_per_5min}`,
+        `  Min similarity: ${status.config.min_similarity}`,
+        `  Session briefing: ${status.config.session_briefing}`,
+      ];
+      if (status.history.length > 0) {
+        lines.push(``, `Recent push history:`);
+        for (const h of status.history) {
+          lines.push(`  [${h.timestamp}] ${h.memory_count} memories — "${h.context}"`);
+        }
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  "memory_autoinject_test",
+  "Test what memories would be activated by a given context WITHOUT pushing. Shows what the auto-inject pipeline would match — useful for tuning min_similarity.",
+  {
+    context_text: z.string().describe("Simulated context to test activation matching"),
+    project_id: z.string().optional().describe("Scope to a specific project"),
+    min_similarity: z.number().optional().default(0.4).describe("Minimum similarity threshold (default 0.4)"),
+  },
+  async (args) => {
+    try {
+      const memories = await findActivatedMemories(args.context_text, {
+        project_id: args.project_id,
+        min_similarity: args.min_similarity,
+      });
+      if (memories.length === 0) {
+        return { content: [{ type: "text" as const, text: "No memories matched the given context. Try lowering min_similarity or broadening the context text." }] };
+      }
+      const lines = [`${memories.length} memories would be activated:\n`];
+      for (const m of memories) {
+        lines.push(`- [${m.id.slice(0, 8)}] ${m.key}: ${m.value.slice(0, 200)}${m.value.length > 200 ? "…" : ""}`);
+        if (m.tags.length > 0) lines.push(`  Tags: ${m.tags.join(", ")}`);
+        lines.push(`  Scope: ${m.scope} | Importance: ${m.importance}/10`);
+      }
+      lines.push(`\nNote: DRY RUN — nothing was pushed.`);
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+    }
+  }
+);
+
+// ============================================================================
 // Start server
 // ============================================================================
 
@@ -4421,6 +5277,19 @@ async function main(): Promise<void> {
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
+
+  // Start auto-inject orchestrator if enabled (non-blocking)
+  const autoProject = detectProject();
+  void startAutoInject({
+    server,
+    project_id: autoProject?.id,
+    project_name: autoProject?.name,
+    cwd: process.cwd(),
+  }).catch(() => { /* non-critical — auto-inject is best-effort */ });
+
+  // Clean up auto-inject on process exit
+  process.on("SIGINT", () => { stopAutoInject(); process.exit(0); });
+  process.on("SIGTERM", () => { stopAutoInject(); process.exit(0); });
 }
 
 main().catch((error) => {
