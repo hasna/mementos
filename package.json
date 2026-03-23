@@ -1,6 +1,6 @@
 {
   "name": "@hasna/mementos",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "Universal memory system for AI agents - CLI + MCP server + library API",
   "type": "module",
   "main": "dist/index.js",
@@ -44,6 +44,7 @@
     "sqlite"
   ],
   "publishConfig": {
+    "registry": "https://registry.npmjs.org",
     "access": "public"
   },
   "repository": {
