@@ -840,6 +840,47 @@ CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(mode
 PRAGMA foreign_keys = ON;
 INSERT OR IGNORE INTO _migrations (id) VALUES (29);
 `,
+  // Migration 30: Add when_to_use column to memories and memory_versions
+  `
+ALTER TABLE memories ADD COLUMN when_to_use TEXT DEFAULT NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_when_to_use ON memories(when_to_use) WHERE when_to_use IS NOT NULL;
+ALTER TABLE memory_versions ADD COLUMN when_to_use TEXT;
+INSERT OR IGNORE INTO _migrations (id) VALUES (30);
+`,
+  // Migration 31: Add tool_events table for structured tool call tracking
+  `
+CREATE TABLE IF NOT EXISTS tool_events (
+  id TEXT PRIMARY KEY,
+  tool_name TEXT NOT NULL,
+  action TEXT,
+  success INTEGER NOT NULL DEFAULT 1,
+  error_type TEXT CHECK(error_type IS NULL OR error_type IN ('timeout', 'permission', 'not_found', 'syntax', 'rate_limit', 'other')),
+  error_message TEXT,
+  tokens_used INTEGER,
+  latency_ms INTEGER,
+  context TEXT,
+  lesson TEXT,
+  when_to_use TEXT,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  session_id TEXT,
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tool_events_tool_name ON tool_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_tool_events_agent ON tool_events(agent_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_project ON tool_events(project_id);
+CREATE INDEX IF NOT EXISTS idx_tool_events_success ON tool_events(success);
+CREATE INDEX IF NOT EXISTS idx_tool_events_created ON tool_events(created_at);
+INSERT OR IGNORE INTO _migrations (id) VALUES (31);
+`,
+  // Migration 32: Memory chains / procedural sequences
+  `
+ALTER TABLE memories ADD COLUMN sequence_group TEXT DEFAULT NULL;
+ALTER TABLE memories ADD COLUMN sequence_order INTEGER DEFAULT NULL;
+CREATE INDEX IF NOT EXISTS idx_memories_sequence_group ON memories(sequence_group) WHERE sequence_group IS NOT NULL;
+INSERT OR IGNORE INTO _migrations (id) VALUES (32);
+`,
 ];
 
 // ============================================================================

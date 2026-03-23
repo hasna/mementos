@@ -43,6 +43,9 @@ export interface Memory {
   session_id: string | null;
   machine_id?: string | null;
   flag?: string | null;
+  when_to_use?: string | null;
+  sequence_group?: string | null;
+  sequence_order?: number | null;
   content_type?: "text" | "code" | "image" | "resource";
   namespace?: string | null;
   created_by_agent?: string | null;
@@ -90,6 +93,9 @@ export interface CreateMemoryInput {
   ttl_ms?: number;
   machine_id?: string;
   flag?: string;
+  when_to_use?: string;
+  sequence_group?: string;
+  sequence_order?: number;
   namespace?: string;
 }
 
@@ -105,6 +111,7 @@ export interface UpdateMemoryInput {
   metadata?: Record<string, unknown>;
   expires_at?: string | null;
   flag?: string | null;
+  when_to_use?: string | null;
   version: number; // required for optimistic locking
 }
 
@@ -371,6 +378,7 @@ export interface MemoryVersion {
   summary: string | null;
   pinned: boolean;
   status: MemoryStatus;
+  when_to_use?: string | null;
   created_at: string;
 }
 
@@ -434,4 +442,58 @@ export class MemoryConflictError extends Error {
     this.existingAgentId = existing.agent_id;
     this.existingUpdatedAt = existing.updated_at;
   }
+}
+
+// ============================================================================
+// Tool Events (ReMe-inspired tool memory)
+// ============================================================================
+
+export type ToolErrorType = 'timeout' | 'permission' | 'not_found' | 'syntax' | 'rate_limit' | 'other';
+
+export interface ToolEvent {
+  id: string;
+  tool_name: string;
+  action: string | null;
+  success: boolean;
+  error_type: ToolErrorType | null;
+  error_message: string | null;
+  tokens_used: number | null;
+  latency_ms: number | null;
+  context: string | null;
+  lesson: string | null;
+  when_to_use: string | null;
+  agent_id: string | null;
+  project_id: string | null;
+  session_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CreateToolEventInput {
+  tool_name: string;
+  action?: string;
+  success: boolean;
+  error_type?: ToolErrorType;
+  error_message?: string;
+  tokens_used?: number;
+  latency_ms?: number;
+  context?: string;
+  lesson?: string;
+  when_to_use?: string;
+  agent_id?: string;
+  project_id?: string;
+  session_id?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ToolStats {
+  tool_name: string;
+  total_calls: number;
+  success_count: number;
+  failure_count: number;
+  success_rate: number;
+  avg_tokens: number | null;
+  avg_latency_ms: number | null;
+  common_errors: { error_type: string; count: number }[];
+  last_used: string;
 }

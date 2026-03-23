@@ -56,6 +56,9 @@ export function parseMemoryRow(row: Record<string, unknown>): Memory {
     session_id: (row["session_id"] as string) || null,
   machine_id: (row["machine_id"] as string) || null,
   flag: (row["flag"] as string) || null,
+    when_to_use: (row["when_to_use"] as string) || null,
+    sequence_group: (row["sequence_group"] as string) || null,
+    sequence_order: (row["sequence_order"] as number) ?? null,
     content_type: (row["content_type"] as string as Memory["content_type"]) || "text",
     namespace: (row["namespace"] as string) || null,
     created_by_agent: (row["created_by_agent"] as string) || null,
@@ -161,6 +164,7 @@ export function createMemory(
         `UPDATE memories SET
            value = ?, category = ?, summary = ?, tags = ?,
            importance = ?, metadata = ?, expires_at = ?,
+           when_to_use = ?,
            pinned = COALESCE(pinned, 0),
            version = version + 1, updated_at = ?
          WHERE id = ?`,
@@ -172,6 +176,7 @@ export function createMemory(
           input.importance ?? 5,
           metadataJson,
           expiresAt,
+          input.when_to_use || null,
           timestamp,
           existing.id,
         ]
@@ -215,8 +220,8 @@ export function createMemory(
 
   // Insert new
   d.run(
-    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, when_to_use, sequence_group, sequence_order, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, ?, ?, ?, ?, ?, ?)`,
     [
       id,
       input.key,
@@ -233,6 +238,9 @@ export function createMemory(
       input.machine_id || null,
       input.namespace || null,
       input.agent_id || null, // created_by_agent
+      input.when_to_use || null,
+      input.sequence_group || null,
+      input.sequence_order ?? null,
       metadataJson,
       expiresAt,
       (input.metadata as Record<string, unknown>)?.valid_from as string ?? timestamp,
@@ -534,8 +542,8 @@ export function updateMemory(
   // Snapshot current state into memory_versions before mutating
   try {
     d.run(
-      `INSERT OR IGNORE INTO memory_versions (id, memory_id, version, value, importance, scope, category, tags, summary, pinned, status, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR IGNORE INTO memory_versions (id, memory_id, version, value, importance, scope, category, tags, summary, pinned, status, when_to_use, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         uuid(),
         existing.id,
@@ -548,6 +556,7 @@ export function updateMemory(
         existing.summary,
         existing.pinned ? 1 : 0,
         existing.status,
+        existing.when_to_use || null,
         existing.updated_at,
       ]
     );
@@ -597,6 +606,10 @@ export function updateMemory(
   if (input.flag !== undefined) {
     sets.push("flag = ?");
     params.push(input.flag ?? null);
+  }
+  if ((input as any).when_to_use !== undefined) {
+    sets.push("when_to_use = ?");
+    params.push((input as any).when_to_use ?? null);
   }
   if (input.tags !== undefined) {
     sets.push("tags = ?");
