@@ -2318,7 +2318,7 @@ program
       if (activeProfile) {
         checks.push({ name: "Active profile", status: "ok", detail: `${activeProfile} (${profiles.length} total)` });
       } else {
-        checks.push({ name: "Active profile", status: "ok", detail: `default (~/.mementos/mementos.db) — ${profiles.length} profile(s) available` });
+        checks.push({ name: "Active profile", status: "ok", detail: `default (~/.hasna/mementos/mementos.db) — ${profiles.length} profile(s) available` });
       }
     } catch (e) {
       checks.push({ name: "Active profile", status: "warn", detail: e instanceof Error ? e.message : String(e) });
@@ -3095,12 +3095,12 @@ program
 program
   .command("backup [path]")
   .description("Backup the SQLite database to a file")
-  .option("--list", "List available backups in ~/.mementos/backups/")
+  .option("--list", "List available backups in ~/.hasna/mementos/backups/")
   .action((targetPath: string | undefined, opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
       const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
-      const backupsDir = join(home, ".mementos", "backups");
+      const backupsDir = join(home, ".hasna", "mementos", "backups");
 
       // --list: show available backups
       if (opts.list) {
@@ -3200,13 +3200,13 @@ program
 program
   .command("restore [file]")
   .description("Restore the database from a backup file")
-  .option("--latest", "Restore the most recent backup from ~/.mementos/backups/")
+  .option("--latest", "Restore the most recent backup from ~/.hasna/mementos/backups/")
   .option("--force", "Skip confirmation and perform the restore")
   .action((filePath: string | undefined, opts) => {
     try {
       const globalOpts = program.opts<GlobalOpts>();
       const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
-      const backupsDir = join(home, ".mementos", "backups");
+      const backupsDir = join(home, ".hasna", "mementos", "backups");
 
       let source: string;
 
@@ -3705,7 +3705,7 @@ function validateConfigKeyValue(key: string, value: unknown): string | null {
 }
 
 function getConfigPath(): string {
-  return join(homedir(), ".mementos", "config.json");
+  return join(homedir(), ".hasna", "mementos", "config.json");
 }
 
 function readFileConfig(): Record<string, unknown> {
@@ -4477,12 +4477,12 @@ profileCmd
     if (active) {
       console.log(chalk.green(`Active profile: ${active}`));
       if (!process.env["MEMENTOS_PROFILE"]) {
-        console.log(chalk.dim("(persisted in ~/.mementos/config.json)"));
+        console.log(chalk.dim("(persisted in ~/.hasna/mementos/config.json)"));
       } else {
         console.log(chalk.dim("(from MEMENTOS_PROFILE env var)"));
       }
     } else {
-      console.log(chalk.dim("No active profile — using default DB (~/.mementos/mementos.db)"));
+      console.log(chalk.dim("No active profile — using default DB (~/.hasna/mementos/mementos.db)"));
     }
   });
 
@@ -4497,7 +4497,7 @@ profileCmd
     }
     setActiveProfile(clean);
     console.log(chalk.green(`✓ Switched to profile: ${clean}`));
-    console.log(chalk.dim(`  DB: ~/.mementos/profiles/${clean}.db (created on first use)`));
+    console.log(chalk.dim(`  DB: ~/.hasna/mementos/profiles/${clean}.db (created on first use)`));
   });
 
 profileCmd
@@ -4511,7 +4511,7 @@ profileCmd
     } else {
       console.log(chalk.dim("No active profile was set."));
     }
-    console.log(chalk.dim("  Now using default DB: ~/.mementos/mementos.db"));
+    console.log(chalk.dim("  Now using default DB: ~/.hasna/mementos/mementos.db"));
   });
 
 profileCmd

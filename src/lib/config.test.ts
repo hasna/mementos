@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { loadConfig, DEFAULT_CONFIG, getActiveProfile, setActiveProfile, listProfiles, deleteProfile, getDbPath } from "./config.js";
 
-const CONFIG_DIR = join(homedir(), ".mementos");
+const CONFIG_DIR = join(homedir(), ".hasna", "mementos");
 const CONFIG_PATH = join(CONFIG_DIR, "config.json");
 
 beforeEach(() => {
@@ -213,14 +213,15 @@ describe("getDbPath", () => {
     }
   });
 
-  test("fallback to ~/.mementos/mementos.db when no env, no local db, no git", () => {
+  test("fallback to ~/.hasna/mementos/mementos.db when no env, no local db, no git", () => {
     delete process.env["MEMENTOS_DB_PATH"];
+    delete process.env["HASNA_MEMENTOS_DB_PATH"];
     delete process.env["MEMENTOS_DB_SCOPE"];
     const origCwd = process.cwd();
     try {
       process.chdir("/tmp");
       const p = getDbPath();
-      expect(p).toContain(".mementos");
+      expect(p).toContain(".hasna/mementos");
       expect(p).toContain("mementos.db");
     } finally {
       process.chdir(origCwd);
@@ -456,7 +457,7 @@ describe("profile management", () => {
 
   test("listProfiles finds a created profile DB file", () => {
     // Create a real profile DB file in the profiles dir
-    const profilesPath = join(homedir(), ".mementos", "profiles");
+    const profilesPath = join(homedir(), ".hasna", "mementos", "profiles");
     mkdirSync(profilesPath, { recursive: true });
     const dbPath = join(profilesPath, "galba-test-profile-001.db");
     writeFileSync(dbPath, ""); // empty file simulates a profile DB
@@ -470,7 +471,7 @@ describe("profile management", () => {
   });
 
   test("deleteProfile removes the DB file and returns true", () => {
-    const profilesPath = join(homedir(), ".mementos", "profiles");
+    const profilesPath = join(homedir(), ".hasna", "mementos", "profiles");
     mkdirSync(profilesPath, { recursive: true });
     const dbPath = join(profilesPath, "galba-delete-test-002.db");
     writeFileSync(dbPath, "");
@@ -481,7 +482,7 @@ describe("profile management", () => {
   });
 
   test("deleteProfile clears active profile if deleted profile was active", () => {
-    const profilesPath = join(homedir(), ".mementos", "profiles");
+    const profilesPath = join(homedir(), ".hasna", "mementos", "profiles");
     mkdirSync(profilesPath, { recursive: true });
     const dbPath = join(profilesPath, "galba-active-delete-003.db");
     writeFileSync(dbPath, "");

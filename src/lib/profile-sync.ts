@@ -26,7 +26,7 @@ export interface ProfileSyncResult {
  */
 function getProfileDbPath(profile: string): string {
   const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
-  return join(home, ".mementos", "profiles", `${profile}.db`);
+  return join(home, ".hasna", "mementos", "profiles", `${profile}.db`);
 }
 
 /**

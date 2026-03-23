@@ -94,7 +94,7 @@ function freshDb(): Database {
 }
 
 const TEST_AGENT = `__test_sync_agent_${Date.now()}`;
-const agentSyncDir = join(homedir(), ".mementos", "agents", TEST_AGENT);
+const agentSyncDir = join(homedir(), ".hasna", "mementos", "agents", TEST_AGENT);
 
 let db: Database;
 

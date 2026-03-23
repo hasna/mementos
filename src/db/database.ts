@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
 // ============================================================================
@@ -33,9 +33,21 @@ function findGitRoot(startDir: string): string | null {
   return null;
 }
 
+function migrateGlobalDir(): void {
+  const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
+  const newDir = join(home, ".hasna", "mementos");
+  const oldDir = join(home, ".mementos");
+
+  if (!existsSync(newDir) && existsSync(oldDir)) {
+    mkdirSync(join(home, ".hasna"), { recursive: true });
+    cpSync(oldDir, newDir, { recursive: true });
+  }
+}
+
 export function getDbPath(): string {
-  if (process.env["MEMENTOS_DB_PATH"]) {
-    return process.env["MEMENTOS_DB_PATH"];
+  const envPath = process.env["HASNA_MEMENTOS_DB_PATH"] ?? process.env["MEMENTOS_DB_PATH"];
+  if (envPath) {
+    return envPath;
   }
 
   const cwd = process.cwd();
@@ -49,8 +61,9 @@ export function getDbPath(): string {
     }
   }
 
+  migrateGlobalDir();
   const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
-  return join(home, ".mementos", "mementos.db");
+  return join(home, ".hasna", "mementos", "mementos.db");
 }
 
 function ensureDir(filePath: string): void {

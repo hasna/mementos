@@ -15,7 +15,7 @@ import { createMemory, listMemories } from "../db/memories.js";
 // ============================================================================
 
 function getAgentSyncDir(agentName: string): string {
-  const dir = join(homedir(), ".mementos", "agents", agentName);
+  const dir = join(homedir(), ".hasna", "mementos", "agents", agentName);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }

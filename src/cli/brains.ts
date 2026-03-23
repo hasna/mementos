@@ -50,7 +50,7 @@ export function makeBrainsCommand(): Command {
     .description("Gather training data from memories and write to JSONL")
     .option("--limit <n>", "Maximum number of examples to gather", parseInt)
     .option("--since <date>", "Only include memories created since this date (ISO 8601)")
-    .option("--output <dir>", "Output directory (default: ~/.mementos/training/)")
+    .option("--output <dir>", "Output directory (default: ~/.hasna/mementos/training/)")
     .option("--json", "Output result summary as JSON")
     .action(
       async (opts: {
@@ -76,7 +76,7 @@ export function makeBrainsCommand(): Command {
           });
 
           const outputDir =
-            opts.output ?? join(homedir(), ".mementos", "training");
+            opts.output ?? join(homedir(), ".hasna", "mementos", "training");
           if (!existsSync(outputDir)) {
             mkdirSync(outputDir, { recursive: true });
           }
@@ -140,7 +140,8 @@ export function makeBrainsCommand(): Command {
           if (!datasetPath) {
             const trainingDir = join(
               homedir(),
-              ".mementos",
+              ".hasna",
+              "mementos",
               "training"
             );
             if (!existsSync(trainingDir)) {

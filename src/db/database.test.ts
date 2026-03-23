@@ -168,9 +168,17 @@ describe("getDbPath", () => {
 
   test("falls back to home dir when no env and no local db", () => {
     delete process.env["MEMENTOS_DB_PATH"];
-    const path = getDbPath();
-    expect(path).toContain(".mementos");
-    expect(path).toContain("mementos.db");
+    delete process.env["HASNA_MEMENTOS_DB_PATH"];
+    const origCwd = process.cwd();
+    try {
+      process.chdir("/tmp");
+      const path = getDbPath();
+      expect(path).toContain(".hasna/mementos");
+      expect(path).toContain("mementos.db");
+    } finally {
+      process.chdir(origCwd);
+      process.env["MEMENTOS_DB_PATH"] = ":memory:";
+    }
   });
 
   test("with MEMENTOS_DB_SCOPE=project and no git root, falls back", () => {
