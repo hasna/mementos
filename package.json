@@ -29,7 +29,8 @@
     "test": "bun test",
     "dev:cli": "bun run src/cli/index.tsx",
     "dev:mcp": "bun run src/mcp/index.ts",
-    "dev:serve": "bun run src/server/index.ts"
+    "dev:serve": "bun run src/server/index.ts",
+    "postinstall": "mkdir -p $HOME/.hasna/mementos $HOME/.hasna/mementos/profiles $HOME/.hasna/mementos/agents $HOME/.hasna/mementos/training 2>/dev/null || true"
   },
   "keywords": [
     "memory",
