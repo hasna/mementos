@@ -205,3 +205,14 @@ export { dedup, getDedupStats } from "./lib/dedup.js";
 
 // Recall tracking
 export { incrementRecallCount } from "./db/memories.js";
+
+// Training data gatherer (for @hasna/brains fine-tuning integration)
+export { gatherTrainingData } from "./lib/gatherer.js";
+
+// Model config (active fine-tuned model ID)
+export {
+  getActiveModel,
+  setActiveModel,
+  clearActiveModel,
+  DEFAULT_MODEL,
+} from "./lib/model-config.js";

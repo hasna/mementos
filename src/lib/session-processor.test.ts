@@ -74,6 +74,9 @@ function freshDb(): Database {
       session_id TEXT,
       machine_id TEXT,
       flag TEXT,
+      when_to_use TEXT DEFAULT NULL,
+      sequence_group TEXT DEFAULT NULL,
+      sequence_order INTEGER DEFAULT NULL,
       metadata TEXT DEFAULT '{}',
       access_count INTEGER NOT NULL DEFAULT 0,
       version INTEGER NOT NULL DEFAULT 1,
@@ -105,6 +108,7 @@ function freshDb(): Database {
       summary TEXT,
       pinned INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'active',
+      when_to_use TEXT,
       created_at TEXT NOT NULL DEFAULT (datetime('now')),
       UNIQUE(memory_id, version)
     );

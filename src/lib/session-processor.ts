@@ -13,6 +13,8 @@ import {
   getSessionJob,
   type SessionMemoryJob,
 } from "../db/session-jobs.js";
+import { extractToolLessons } from "./tool-lesson-extractor.js";
+import { extractProcedures } from "./procedural-extractor.js";
 
 // ============================================================================
 // Types
@@ -280,6 +282,28 @@ export async function processSessionJob(
   }
 
   result.memoriesExtracted = totalMemories;
+
+  // Extract tool lessons from the full transcript (non-blocking — errors are silently caught)
+  try {
+    await extractToolLessons(job.transcript, {
+      agent_id: job.agent_id ?? undefined,
+      project_id: job.project_id ?? undefined,
+      session_id: job.session_id,
+    });
+  } catch {
+    // Tool lesson extraction is best-effort — never block job completion
+  }
+
+  // Extract procedural memories (workflows, step sequences, failure patterns)
+  try {
+    await extractProcedures(job.transcript, {
+      agent_id: job.agent_id ?? undefined,
+      project_id: job.project_id ?? undefined,
+      session_id: job.session_id,
+    });
+  } catch {
+    // Procedural extraction is best-effort — never block job completion
+  }
 
   // Mark as completed or failed
   try {

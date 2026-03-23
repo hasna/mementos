@@ -5083,6 +5083,373 @@ program
   });
 
 // ============================================================================
+// tool-events [tool_name]
+// ============================================================================
+
+program
+  .command("tool-events [tool_name]")
+  .description("List tool events, optionally filtered by tool name")
+  .option("--limit <n>", "Max results (default: 20)", parseInt)
+  .option("--project-id <id>", "Filter by project ID")
+  .action((toolName: string | undefined, opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const { getToolEvents } = require("../db/tool-events.js") as typeof import("../db/tool-events.js");
+      const limit = (opts.limit as number | undefined) || 20;
+      const events = getToolEvents({
+        tool_name: toolName,
+        project_id: opts.projectId as string | undefined,
+        limit,
+      });
+
+      if (globalOpts.json) {
+        outputJson(events);
+        return;
+      }
+
+      if (events.length === 0) {
+        console.log(chalk.yellow("No tool events found."));
+        return;
+      }
+
+      console.log(chalk.bold(`${events.length} tool event${events.length === 1 ? "" : "s"}:`));
+      // Table header
+      console.log(
+        `  ${chalk.dim("tool_name".padEnd(24))} ${chalk.dim("action".padEnd(16))} ${chalk.dim("success")} ${chalk.dim("error_type".padEnd(20))} ${chalk.dim("created_at")}`
+      );
+      for (const e of events) {
+        const successStr = e.success ? chalk.green("true   ") : chalk.red("false  ");
+        const errorType = (e.error_type || "").padEnd(20);
+        const action = (e.action || "-").padEnd(16);
+        console.log(
+          `  ${e.tool_name.padEnd(24)} ${action} ${successStr} ${errorType} ${chalk.dim(e.created_at)}`
+        );
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// tool-insights <tool_name>
+// ============================================================================
+
+program
+  .command("tool-insights <tool_name>")
+  .description("Show tool guide/stats and lessons for a tool")
+  .option("--project-id <id>", "Filter by project ID")
+  .action((toolName: string, opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const { getToolStats, getToolLessons } = require("../db/tool-events.js") as typeof import("../db/tool-events.js");
+      const projectId = opts.projectId as string | undefined;
+      const stats = getToolStats(toolName, projectId);
+      const lessons = getToolLessons(toolName, projectId);
+
+      if (globalOpts.json) {
+        outputJson({ stats, lessons });
+        return;
+      }
+
+      // Stats line
+      const successRate = (stats.success_rate * 100).toFixed(1);
+      console.log(chalk.bold(`Tool: ${toolName}`));
+      console.log(
+        `  Calls: ${stats.total_calls}  Success: ${chalk.green(String(stats.success_count))}  Failures: ${chalk.red(String(stats.failure_count))}  Rate: ${successRate}%` +
+        (stats.avg_latency_ms !== null ? `  Avg latency: ${stats.avg_latency_ms.toFixed(0)}ms` : "") +
+        (stats.last_used ? `  Last used: ${chalk.dim(stats.last_used)}` : "")
+      );
+
+      if (stats.common_errors.length > 0) {
+        console.log(chalk.bold("\n  Common errors:"));
+        for (const err of stats.common_errors) {
+          console.log(`    ${chalk.red(err.error_type)}: ${err.count} times`);
+        }
+      }
+
+      if (lessons.length === 0) {
+        console.log(chalk.dim("\n  No lessons recorded."));
+        return;
+      }
+
+      console.log(chalk.bold(`\n  Lessons (${lessons.length}):`));
+      for (const l of lessons) {
+        console.log(`    ${chalk.cyan("-")} ${l.lesson} ${chalk.dim(`(${l.created_at.slice(0, 10)})`)}`);
+        if (l.when_to_use) {
+          console.log(`      ${chalk.dim("when_to_use:")} ${l.when_to_use}`);
+        }
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// synthesized-profile [--refresh]
+// ============================================================================
+
+program
+  .command("synthesized-profile")
+  .description("Show or refresh the synthesized agent/project profile")
+  .option("--project-id <id>", "Project ID")
+  .option("--refresh", "Force refresh the profile (re-synthesize from memories)")
+  .action(async (opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const { synthesizeProfile } = await import("../lib/profile-synthesizer.js");
+
+      let projectId = opts.projectId as string | undefined;
+      if (!projectId && globalOpts.project) {
+        const project = getProject(resolve(globalOpts.project));
+        if (project) projectId = project.id;
+      }
+
+      const result = await synthesizeProfile({
+        project_id: projectId,
+        agent_id: globalOpts.agent,
+        force_refresh: !!opts.refresh,
+      });
+
+      if (!result) {
+        if (globalOpts.json) {
+          outputJson({ error: "No profile available (no preference/fact memories found)" });
+        } else {
+          console.log(chalk.yellow("No profile available — save some preference or fact memories first."));
+        }
+        return;
+      }
+
+      if (globalOpts.json) {
+        outputJson(result);
+        return;
+      }
+
+      if (result.from_cache) {
+        console.log(chalk.dim("(cached profile)\n"));
+      } else {
+        console.log(chalk.dim(`(synthesized from ${result.memory_count} memories)\n`));
+      }
+      console.log(result.profile);
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// chain <sequence_group>
+// ============================================================================
+
+program
+  .command("chain <sequence_group>")
+  .description("Show a memory chain (memories linked by sequence_group, ordered by sequence_order)")
+  .action((sequenceGroup: string) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const db = getDatabase();
+
+      const rows = db
+        .query(
+          "SELECT * FROM memories WHERE sequence_group = ? AND status = 'active' ORDER BY sequence_order ASC"
+        )
+        .all(sequenceGroup) as Record<string, unknown>[];
+
+      const memories = rows.map(parseMemoryRow);
+
+      if (globalOpts.json) {
+        outputJson(memories);
+        return;
+      }
+
+      if (memories.length === 0) {
+        console.log(chalk.yellow(`No chain found for sequence group: ${sequenceGroup}`));
+        return;
+      }
+
+      console.log(chalk.bold(`Chain: ${sequenceGroup} (${memories.length} step${memories.length === 1 ? "" : "s"}):\n`));
+      for (let i = 0; i < memories.length; i++) {
+        const m = memories[i]!;
+        const order = m.sequence_order !== null && m.sequence_order !== undefined ? m.sequence_order : i + 1;
+        const value = m.value.length > 120 ? m.value.slice(0, 120) + "..." : m.value;
+        console.log(`  ${chalk.cyan(String(order) + ".")} ${chalk.bold(m.key)}: ${value}`);
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// when-to-use <memory_id>
+// ============================================================================
+
+program
+  .command("when-to-use <memory_id>")
+  .description("Show the when_to_use guidance for a memory")
+  .action((memoryId: string) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const resolvedId = resolveMemoryId(memoryId);
+      const memory = getMemory(resolvedId);
+
+      if (!memory) {
+        if (globalOpts.json) {
+          outputJson({ error: `Memory not found: ${memoryId}` });
+        } else {
+          console.error(chalk.red(`Memory not found: ${memoryId}`));
+        }
+        process.exit(1);
+      }
+
+      const whenToUse = memory.when_to_use ?? null;
+
+      if (globalOpts.json) {
+        outputJson({ id: memory.id, key: memory.key, when_to_use: whenToUse });
+        return;
+      }
+
+      console.log(chalk.bold(`${memory.key} (${memory.id.slice(0, 8)})`));
+      if (whenToUse) {
+        console.log(`  ${chalk.cyan("when_to_use:")} ${whenToUse}`);
+      } else {
+        console.log(chalk.dim("  (not set)"));
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// sessions — session registry management
+// ============================================================================
+
+const sessionsCmd = program
+  .command("sessions")
+  .description("Session registry — list, clean, and inspect active Claude Code sessions");
+
+sessionsCmd
+  .command("list")
+  .description("List all active sessions in the registry")
+  .option("--project <name>", "Filter by project name")
+  .option("--agent <name>", "Filter by agent name")
+  .option("--format <fmt>", "Output format: compact (default), json, yaml")
+  .action((opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const { listSessions } = require("../lib/session-registry.js") as typeof import("../lib/session-registry.js");
+      const sessions = listSessions({
+        project_name: opts.project as string | undefined,
+        agent_name: (opts.agent as string | undefined) || globalOpts.agent,
+      });
+
+      const fmt = getOutputFormat(opts.format as string | undefined);
+
+      if (fmt === "json") {
+        outputJson(sessions);
+        return;
+      }
+
+      if (fmt === "yaml") {
+        outputYaml(sessions);
+        return;
+      }
+
+      if (sessions.length === 0) {
+        console.log(chalk.yellow("No active sessions found."));
+        return;
+      }
+
+      console.log(chalk.bold(`${sessions.length} active session${sessions.length === 1 ? "" : "s"}:\n`));
+      for (const s of sessions) {
+        const pid = chalk.dim(`pid:${s.pid}`);
+        const agent = s.agent_name ? chalk.cyan(s.agent_name) : chalk.dim("(no agent)");
+        const project = s.project_name ? chalk.yellow(s.project_name) : chalk.dim("(no project)");
+        const mcp = chalk.dim(s.mcp_server);
+        const self = s.pid === process.pid ? chalk.green(" (self)") : "";
+        console.log(`  ${chalk.bold(s.id)} ${pid}${self} ${agent} ${project} ${mcp}`);
+        console.log(`    ${chalk.dim(`cwd: ${s.cwd}`)}  ${chalk.dim(`last seen: ${s.last_seen_at}`)}`);
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+sessionsCmd
+  .command("send <message>")
+  .description("Send a message to sessions (use MCP tool memory_send_channel for full support)")
+  .option("--agent <name>", "Target agent name")
+  .option("--project <name>", "Target project name")
+  .option("--all", "Broadcast to all sessions")
+  .action((message: string, opts) => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const { listSessions } = require("../lib/session-registry.js") as typeof import("../lib/session-registry.js");
+
+      if (!opts.agent && !opts.project && !opts.all) {
+        console.error(chalk.red("Specify a target: --agent <name>, --project <name>, or --all"));
+        process.exit(1);
+      }
+
+      // Show matching sessions and advise to use MCP tool
+      const filter: { agent_name?: string; project_name?: string } = {};
+      if (opts.agent) filter.agent_name = opts.agent as string;
+      if (opts.project) filter.project_name = opts.project as string;
+
+      const sessions = listSessions(opts.all ? undefined : filter);
+
+      if (globalOpts.json) {
+        outputJson({
+          message: "Channel push requires MCP server context. Use the memory_send_channel MCP tool.",
+          matching_sessions: sessions.length,
+          sessions: sessions.map((s: { id: string; pid: number; agent_name: string | null; project_name: string | null }) => ({
+            id: s.id, pid: s.pid, agent_name: s.agent_name, project_name: s.project_name,
+          })),
+        });
+        return;
+      }
+
+      console.log(chalk.bold(`Found ${sessions.length} matching session${sessions.length === 1 ? "" : "s"}:`));
+      for (const s of sessions) {
+        const agent = s.agent_name ? chalk.cyan(s.agent_name) : chalk.dim("(no agent)");
+        const project = s.project_name ? chalk.yellow(s.project_name) : "";
+        console.log(`  ${s.id} pid:${s.pid} ${agent} ${project}`);
+      }
+      console.log();
+      console.log(chalk.dim("Channel push requires the MCP server context."));
+      console.log(chalk.dim("Use the MCP tool:"));
+      console.log(chalk.cyan(`  memory_send_channel(content="${message.slice(0, 60)}${message.length > 60 ? "..." : ""}")`));
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+sessionsCmd
+  .command("clean")
+  .description("Remove dead/stale sessions from the registry")
+  .action(() => {
+    try {
+      const globalOpts = program.opts<GlobalOpts>();
+      const { cleanStaleSessions } = require("../lib/session-registry.js") as typeof import("../lib/session-registry.js");
+      const cleaned = cleanStaleSessions();
+
+      if (globalOpts.json) {
+        outputJson({ cleaned });
+      } else if (cleaned === 0) {
+        console.log(chalk.green("No stale sessions found — registry is clean."));
+      } else {
+        console.log(chalk.green(`Cleaned ${cleaned} stale session${cleaned === 1 ? "" : "s"}.`));
+      }
+    } catch (e) {
+      handleError(e);
+    }
+  });
+
+// ============================================================================
+// brains subcommand
+// ============================================================================
+
+import { makeBrainsCommand } from "./brains.js";
+program.addCommand(makeBrainsCommand());
+
+// ============================================================================
 // Parse and run
 // ============================================================================
 

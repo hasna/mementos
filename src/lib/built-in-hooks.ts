@@ -115,8 +115,103 @@ hookRegistry.register({
   description: "Generate and store vector embedding for semantic memory search",
   handler: async (ctx) => {
     const { indexMemoryEmbedding } = await import("../db/memories.js");
-    const text = [ctx.memory.value, ctx.memory.summary].filter(Boolean).join(" ");
+    const text = ctx.memory.when_to_use || [ctx.memory.value, ctx.memory.summary].filter(Boolean).join(" ");
     void indexMemoryEmbedding(ctx.memory.id, text);
+  },
+});
+
+// ============================================================================
+// Built-in: PostMemorySave → auto-generate when_to_use if missing (LLM)
+// ============================================================================
+
+hookRegistry.register({
+  type: "PostMemorySave",
+  blocking: false,
+  builtin: true,
+  priority: 60, // after auto-memory (50) and auto-entity (55)
+  description: "Auto-generate when_to_use activation context via LLM if missing",
+  handler: async (ctx) => {
+    const { autoGenerateWhenToUse } = await import("./when-to-use-generator.js");
+    await autoGenerateWhenToUse(ctx as any);
+  },
+});
+
+// ============================================================================
+// Built-in: PostMemorySave → mark profile as stale when preference/fact saved
+// ============================================================================
+
+hookRegistry.register({
+  type: "PostMemorySave",
+  blocking: false,
+  builtin: true,
+  priority: 65, // after when-to-use at 60
+  description: "Mark synthesized profile as stale when a preference or fact memory is saved",
+  handler: async (ctx) => {
+    const category = ctx.memory?.category;
+    if (category !== "preference" && category !== "fact") return;
+    try {
+      const { markProfileStale } = await import("./profile-synthesizer.js");
+      markProfileStale(ctx.projectId, ctx.agentId);
+    } catch {
+      // Non-critical — profile staleness is best-effort
+    }
+  },
+});
+
+// ============================================================================
+// Built-in: PostMemorySave → auto-decay contradicted memories
+// ============================================================================
+
+hookRegistry.register({
+  type: "PostMemorySave",
+  blocking: false,
+  builtin: true,
+  priority: 70, // after profile staleness at 65
+  description: "Auto-decay importance of existing memories contradicted by the newly saved memory",
+  handler: async (ctx) => {
+    // Only process new memories, not upsert merges
+    if (ctx.wasUpdated) return;
+
+    const memory = ctx.memory;
+    // Only check fact/knowledge categories — preferences and history rarely contradict
+    if (memory.category !== "fact" && memory.category !== "knowledge") return;
+
+    try {
+      const { detectContradiction } = await import("./contradiction.js");
+      const { updateMemory, getMemory } = await import("../db/memories.js");
+
+      const result = await detectContradiction(
+        memory.key,
+        memory.value,
+        {
+          scope: memory.scope,
+          project_id: ctx.projectId,
+          min_importance: 1, // check all importances
+        }
+      );
+
+      if (!result.contradicts || !result.conflicting_memory) return;
+
+      const conflicting = result.conflicting_memory;
+      // Don't decay the memory we just saved
+      if (conflicting.id === memory.id) return;
+
+      // Re-fetch to get the latest version (avoids stale version conflicts)
+      const fresh = getMemory(conflicting.id);
+      if (!fresh || fresh.status !== "active") return;
+
+      const halvedImportance = Math.max(1, Math.floor(fresh.importance / 2));
+      const metadata = { ...(fresh.metadata || {}), contradicted_by: memory.id };
+
+      updateMemory(fresh.id, {
+        importance: halvedImportance,
+        flag: "contradicted",
+        metadata,
+        version: fresh.version,
+      });
+    } catch {
+      // Non-critical — contradiction decay is best-effort
+    }
   },
 });
 

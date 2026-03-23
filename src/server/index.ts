@@ -53,6 +53,8 @@ import { loadWebhooksFromDb, reloadWebhooks } from "../lib/built-in-hooks.js";
 import { runSynthesis, rollbackSynthesis, getSynthesisStatus } from "../lib/synthesis/index.js";
 import { listSynthesisRuns } from "../db/synthesis.js";
 import { createSessionJob, getSessionJob, listSessionJobs } from "../db/session-jobs.js";
+import { saveToolEvent, getToolEvents, getToolStats, getToolLessons } from "../db/tool-events.js";
+import { synthesizeProfile } from "../lib/profile-synthesizer.js";
 import { enqueueSessionJob, getSessionQueueStats, startSessionQueueWorker } from "../lib/session-queue.js";
 import { autoResolveAgentProject } from "../lib/session-auto-resolve.js";
 import {
@@ -75,6 +77,7 @@ import type {
   CreateRelationInput,
   RelationType,
   EntityRole,
+  CreateToolEventInput,
 } from "../types/index.js";
 
 // ============================================================================
@@ -1628,6 +1631,101 @@ addRoute("GET", "/api/sessions/jobs/:id", (_req, _url, params) => {
 
 // GET /api/sessions/queue/stats — queue statistics
 addRoute("GET", "/api/sessions/queue/stats", () => json(getSessionQueueStats()));
+
+// ============================================================================
+// Tool Event endpoints
+// ============================================================================
+
+// POST /api/tool-events — save a tool event
+addRoute("POST", "/api/tool-events", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || !body["tool_name"]) {
+    return errorResponse("Missing required field: tool_name", 400);
+  }
+
+  const event = saveToolEvent(body as unknown as CreateToolEventInput);
+  return json(event, 201);
+});
+
+// GET /api/tool-events — list tool events
+addRoute("GET", "/api/tool-events", (_req: Request, url: URL) => {
+  const q = getSearchParams(url);
+  const filters: {
+    tool_name?: string;
+    agent_id?: string;
+    project_id?: string;
+    success?: boolean;
+    from_date?: string;
+    to_date?: string;
+    limit?: number;
+    offset?: number;
+  } = {};
+
+  if (q["tool_name"]) filters.tool_name = q["tool_name"];
+  if (q["agent_id"]) filters.agent_id = q["agent_id"];
+  if (q["project_id"]) filters.project_id = q["project_id"];
+  if (q["success"] !== undefined && q["success"] !== "") filters.success = q["success"] === "true";
+  if (q["from_date"]) filters.from_date = q["from_date"];
+  if (q["to_date"]) filters.to_date = q["to_date"];
+  if (q["limit"]) filters.limit = parseInt(q["limit"], 10);
+  if (q["offset"]) filters.offset = parseInt(q["offset"], 10);
+
+  const events = getToolEvents(filters);
+  return json({ events, count: events.length });
+});
+
+// GET /api/tool-insights/:tool_name — tool stats + lessons
+addRoute("GET", "/api/tool-insights/:tool_name", (_req: Request, url: URL, params) => {
+  const q = getSearchParams(url);
+  const toolName = decodeURIComponent(params["tool_name"]!);
+  const projectId = q["project_id"];
+  const lessonsLimit = q["limit"] ? parseInt(q["limit"], 10) : 20;
+
+  const stats = getToolStats(toolName, projectId || undefined);
+  const lessons = getToolLessons(toolName, projectId || undefined, lessonsLimit);
+
+  return json({ stats, lessons });
+});
+
+// ============================================================================
+// Profile endpoint
+// ============================================================================
+
+// GET /api/profile/synthesize — get/refresh synthesized profile
+addRoute("GET", "/api/profile/synthesize", async (_req: Request, url: URL) => {
+  const q = getSearchParams(url);
+  const result = await synthesizeProfile({
+    project_id: q["project_id"] || undefined,
+    agent_id: q["agent_id"] || undefined,
+    force_refresh: q["force_refresh"] === "true",
+  });
+
+  if (!result) {
+    return json({ profile: null, message: "No preference/fact memories found to synthesize" });
+  }
+
+  return json(result);
+});
+
+// ============================================================================
+// Memory chain endpoint
+// ============================================================================
+
+// GET /api/chains/:sequence_group — get memory chain ordered by sequence_order
+addRoute("GET", "/api/chains/:sequence_group", (_req: Request, _url: URL, params) => {
+  const db = getDatabase();
+  const sequenceGroup = decodeURIComponent(params["sequence_group"]!);
+
+  const rows = db.query(
+    `SELECT * FROM memories WHERE sequence_group = ? AND status = 'active' ORDER BY sequence_order ASC`
+  ).all(sequenceGroup) as Record<string, unknown>[];
+
+  if (rows.length === 0) {
+    return json({ chain: [], count: 0, sequence_group: sequenceGroup });
+  }
+
+  return json({ chain: rows, count: rows.length, sequence_group: sequenceGroup });
+});
 
 export function startServer(port: number): void {
   // Load persisted webhooks into the in-memory hook registry
