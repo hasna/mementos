@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { registerCloudTools } from "@hasna/cloud";
 import { z } from "zod";
 import {
   createMemory,
@@ -5298,6 +5299,7 @@ async function main(): Promise<void> {
   loadWebhooksFromDb();
 
   const transport = new StdioServerTransport();
+  registerCloudTools(server, "mementos");
   await server.connect(transport);
 
   // Start auto-inject orchestrator if enabled (non-blocking)
