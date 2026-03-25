@@ -1,4 +1,4 @@
-import type { Database } from "bun:sqlite";
+import type { SqliteAdapter as Database } from "@hasna/cloud";
 import type { Memory, MemoryScope, MemoryCategory } from "../types/index.js";
 import { listMemories } from "../db/memories.js";
 import { getDatabase } from "../db/database.js";

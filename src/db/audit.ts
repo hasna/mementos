@@ -3,7 +3,7 @@
  * The audit_log table is append-only — never UPDATE or DELETE from it.
  */
 
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase } from "./database.js";
 
 export interface AuditEntry {

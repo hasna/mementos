@@ -14,7 +14,7 @@
  *   updateMemory() provides a second layer of protection
  */
 
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { acquireLock, releaseLock, checkLock, type ResourceLock } from "../db/locks.js";
 import { getDatabase } from "../db/database.js";
 

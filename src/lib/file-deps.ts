@@ -8,7 +8,7 @@
 
 import { readdirSync, readFileSync, statSync, existsSync } from "fs";
 import { join, resolve, relative, dirname, extname, basename } from "path";
-import type { Database } from "bun:sqlite";
+import type { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase } from "../db/database.js";
 import { createEntity, listEntities } from "../db/entities.js";
 import { createRelation, listRelations } from "../db/relations.js";

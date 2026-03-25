@@ -189,7 +189,7 @@ describe("getDbPath", () => {
     const origCwd = process.cwd();
     try {
       // cwd is the project root which has .git
-      process.chdir("/Users/hasna/Workspace/hasna/opensource/opensourcedev/open-mementos");
+      process.chdir(new URL("../../", import.meta.url).pathname.replace(/\/$/, ""));
       const p = getDbPath();
       expect(p).toContain(".mementos");
       expect(p).toContain("mementos.db");

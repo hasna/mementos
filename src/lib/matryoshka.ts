@@ -8,7 +8,7 @@
  *   Stage 2: Full 1536-dim → precise rerank → top limit results
  */
 
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { generateEmbedding, cosineSimilarity, deserializeEmbedding } from "./embeddings.js";
 import { parseMemoryRow } from "../db/memories.js";
 import type { Memory } from "../types/index.js";

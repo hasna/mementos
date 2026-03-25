@@ -10,7 +10,7 @@
 
 import { listMemories } from "../db/memories.js";
 import type { MemoryFilter, Memory } from "../types/index.js";
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 
 export interface ContextSection {
   title: string;

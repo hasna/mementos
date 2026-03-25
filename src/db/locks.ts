@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase, now, shortUuid } from "./database.js";
 
 export type ResourceType = "project" | "memory" | "entity" | "agent" | "connector" | "file";

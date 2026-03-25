@@ -1,4 +1,5 @@
-import { Database, type SQLQueryBindings } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
+type SQLQueryBindings = string | number | null | boolean;
 import type { Memory, MemoryFilter, MemorySearchResult } from "../types/index.js";
 import { getDatabase } from "../db/database.js";
 import { listEntities, getEntityByName } from "../db/entities.js";

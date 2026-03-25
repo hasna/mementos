@@ -1,4 +1,7 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, setDefaultTimeout } from "bun:test";
+
+// Doctor spawns a child process that checks REST server, MCP, etc. — needs more than 5s
+setDefaultTimeout(30_000);
 import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";

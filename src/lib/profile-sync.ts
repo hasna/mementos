@@ -3,7 +3,7 @@
  * Selectively copy memories between different mementos profiles/databases.
  */
 
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { join } from "node:path";
 import { existsSync } from "node:fs";
 import { createMemory, listMemories } from "../db/memories.js";

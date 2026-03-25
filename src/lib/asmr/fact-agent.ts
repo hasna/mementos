@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import type { Memory } from "../../types/index.js";
 import { parseMemoryRow } from "../../db/memories.js";
 import { computeDecayScore } from "../decay.js";

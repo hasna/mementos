@@ -7,7 +7,7 @@
  * PID identifies the Claude Code process — all MCPs in same session share a PID.
  */
 
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 

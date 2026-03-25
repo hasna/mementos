@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase, now } from "./database.js";
 import type { Entity, Memory, EntityMemory, EntityRole } from "../types/index.js";
 import { parseMemoryRow } from "./memories.js";
@@ -139,7 +139,7 @@ export function bulkLinkEntities(
   const d = db || getDatabase();
   const timestamp = now();
 
-  const tx = d.transaction(() => {
+  d.transaction(() => {
     const stmt = d.prepare(
       `INSERT OR IGNORE INTO entity_memories (entity_id, memory_id, role, created_at)
        VALUES (?, ?, ?, ?)`
@@ -148,8 +148,6 @@ export function bulkLinkEntities(
       stmt.run(entityId, memoryId, role, timestamp);
     }
   });
-
-  tx();
 }
 
 // ============================================================================

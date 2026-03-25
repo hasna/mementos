@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase, now } from "../../db/database.js";
 import { getMemory } from "../../db/memories.js";
 import {
@@ -99,7 +99,7 @@ function executeProposal(
       default:
         throw new Error(`Unknown proposal type: ${(proposal as SynthesisProposal).proposal_type}`);
     }
-  })();
+  });
 
   return rollbackData;
 }
@@ -370,5 +370,5 @@ function rollbackProposal(proposal: SynthesisProposal, d: Database): void {
       default:
         break;
     }
-  })();
+  });
 }

@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase } from "../db/database.js";
 import { listAgents } from "../db/agents.js";
 import { listProjects } from "../db/projects.js";

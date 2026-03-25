@@ -4,7 +4,7 @@
  */
 
 import { describe, test, expect, beforeEach, mock } from "bun:test";
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase, resetDatabase } from "../db/database.js";
 import { hookRegistry } from "./hooks.js";
 import type { HookRegistration, HookType } from "../types/hooks.js";

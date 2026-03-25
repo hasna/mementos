@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import type { Memory } from "../../types/index.js";
 import { getDatabase, now } from "../../db/database.js";
 import { listMemories } from "../../db/memories.js";

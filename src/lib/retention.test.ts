@@ -2,7 +2,7 @@
 process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
 import { describe, it, expect, beforeEach } from "bun:test";
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { createMemory, getMemory, listMemories } from "../db/memories.js";
 import {

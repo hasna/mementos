@@ -4,7 +4,7 @@
  * try to detect them from available metadata fields.
  */
 
-import type { Database } from "bun:sqlite";
+import type { SqliteAdapter as Database } from "@hasna/cloud";
 import { getAgent } from "../db/agents.js";
 import { getProject, listProjects } from "../db/projects.js";
 

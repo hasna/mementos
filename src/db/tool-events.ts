@@ -1,4 +1,4 @@
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import type { ToolEvent, CreateToolEventInput, ToolStats } from "../types/index.js";
 import { getDatabase, uuid, now } from "./database.js";
 

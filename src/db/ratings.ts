@@ -2,7 +2,7 @@
  * Memory ratings — usefulness feedback for memories.
  */
 
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 import { getDatabase, uuid, now } from "./database.js";
 
 // ============================================================================

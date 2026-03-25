@@ -5,7 +5,7 @@
  * All failures are silently caught — never throws.
  */
 
-import type { Database } from "bun:sqlite";
+import type { SqliteAdapter as Database } from "@hasna/cloud";
 import { createMemory } from "../db/memories.js";
 import { providerRegistry } from "./providers/registry.js";
 import {

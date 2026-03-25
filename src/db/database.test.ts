@@ -11,7 +11,7 @@ import {
   getDbPath,
   resolvePartialId,
 } from "./database.js";
-import { Database } from "bun:sqlite";
+import { SqliteAdapter as Database } from "@hasna/cloud";
 
 beforeEach(() => {
   resetDatabase();
@@ -273,9 +273,8 @@ describe("getDbPath project scope in git repo", () => {
     const origCwd = process.cwd();
     try {
       // Use the project root which has .git
-      process.chdir(
-        "/Users/hasna/Workspace/hasna/opensource/opensourcedev/open-mementos"
-      );
+      const projectRoot = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
+      process.chdir(projectRoot);
       const path = getDbPath();
       expect(path).toContain(".mementos");
       expect(path).toContain("mementos.db");

@@ -15,7 +15,7 @@ beforeAll(async () => {
       env: { ...process.env, MEMENTOS_DB_PATH: ":memory:" },
       stdout: "pipe",
       stderr: "pipe",
-      cwd: "/Users/hasna/Workspace/hasna/opensource/opensourcedev/open-mementos",
+      cwd: new URL("../../", import.meta.url).pathname.replace(/\/$/, ""),
     }
   );
   // Wait for server to start
