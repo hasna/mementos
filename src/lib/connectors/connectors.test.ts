@@ -205,17 +205,110 @@ describe("syncFiles", () => {
 // ============================================================================
 
 describe("syncConnector", () => {
+  let db: Database;
+  let tmpDir: string;
+  const PROJECT_ID = "proj-dispatch-001";
+
+  beforeEach(() => {
+    db = freshDb();
+    seedProject(db, PROJECT_ID, "dispatch-project", "/tmp/dispatch-project");
+    tmpDir = mkdtempSync(join(tmpdir(), "mementos-dispatch-"));
+  });
+
+  afterEach(() => {
+    db.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
   test("disabled connector returns early with error message", async () => {
-    const db = freshDb();
     const config: ConnectorConfig = {
       type: "files",
       enabled: false,
       config: { paths: [] },
     };
-    const result = await syncConnector(db, "proj-1", config);
+    const result = await syncConnector(db, PROJECT_ID, config);
     expect(result.memories_created).toBe(0);
+    expect(result.memories_updated).toBe(0);
     expect(result.errors).toContain("Connector is disabled");
-    db.close();
+    expect(result.duration_ms).toBe(0);
+  });
+
+  test("dispatches to files connector when type is 'files'", async () => {
+    writeFileSync(join(tmpDir, "test.md"), "# Test file");
+    const config: ConnectorConfig = {
+      type: "files",
+      enabled: true,
+      config: { paths: [tmpDir] },
+    };
+    const result = await syncConnector(db, PROJECT_ID, config);
+    expect(result.memories_created).toBe(1);
+    expect(result.errors).toHaveLength(0);
+    expect(countMemories(db)).toBe(1);
+  });
+
+  test("dispatches to github connector when type is 'github'", async () => {
+    const config: ConnectorConfig = {
+      type: "github",
+      enabled: true,
+      config: { owner: "test-owner", repo: "test-repo", types: ["issues"] },
+    };
+    // syncGithub will try to spawn the connectors CLI which likely doesn't exist,
+    // so it should return a result (possibly with 0 memories or errors) without throwing
+    const result = await syncConnector(db, PROJECT_ID, config);
+    expect(result).toHaveProperty("memories_created");
+    expect(result).toHaveProperty("memories_updated");
+    expect(result).toHaveProperty("errors");
+    expect(result).toHaveProperty("duration_ms");
+    expect(typeof result.memories_created).toBe("number");
+    expect(typeof result.memories_updated).toBe("number");
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(typeof result.duration_ms).toBe("number");
+  });
+
+  test("dispatches to notion connector when type is 'notion'", async () => {
+    const config: ConnectorConfig = {
+      type: "notion",
+      enabled: true,
+      config: { database_id: "fake-db-id" },
+    };
+    // syncNotion will try to spawn the connectors CLI which likely doesn't exist,
+    // so it should return a result without throwing
+    const result = await syncConnector(db, PROJECT_ID, config);
+    expect(result).toHaveProperty("memories_created");
+    expect(result).toHaveProperty("memories_updated");
+    expect(result).toHaveProperty("errors");
+    expect(result).toHaveProperty("duration_ms");
+    expect(typeof result.memories_created).toBe("number");
+    expect(typeof result.memories_updated).toBe("number");
+    expect(Array.isArray(result.errors)).toBe(true);
+    expect(typeof result.duration_ms).toBe("number");
+  });
+
+  test("unknown connector type returns error", async () => {
+    const config = {
+      type: "unknown-type" as any,
+      enabled: true,
+      config: {},
+    } as ConnectorConfig;
+    const result = await syncConnector(db, PROJECT_ID, config);
+    expect(result.memories_created).toBe(0);
+    expect(result.memories_updated).toBe(0);
+    expect(result.errors).toHaveLength(1);
+    expect(result.errors[0]).toContain("Unknown connector type: unknown-type");
+    expect(result.duration_ms).toBe(0);
+  });
+
+  test("disabled connector with different types all return disabled error", async () => {
+    for (const type of ["github", "notion", "files"] as const) {
+      const config: ConnectorConfig = {
+        type,
+        enabled: false,
+        config: {},
+      };
+      const result = await syncConnector(db, PROJECT_ID, config);
+      expect(result.errors).toContain("Connector is disabled");
+      expect(result.memories_created).toBe(0);
+    }
   });
 });
 
