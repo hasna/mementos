@@ -1,6 +1,6 @@
 {
   "name": "@hasna/mementos",
-  "version": "0.14.10",
+  "version": "0.14.11",
   "description": "Universal memory system for AI agents - CLI + MCP server + library API",
   "type": "module",
   "main": "dist/index.js",
