@@ -4081,6 +4081,24 @@ const FULL_SCHEMAS: Record<string, ToolSchema> = {
     },
     example: '{"names":["memory_save","memory_recall"]}',
   },
+  send_feedback: {
+    description: "Send feedback about this service.",
+    category: "meta",
+    params: {
+      message: { type: "string", description: "Feedback message", required: true },
+      email: { type: "string", description: "Your email (optional)" },
+      category: { type: "string", description: "Category", enum: ["bug", "feature", "general"] },
+    },
+    example: '{"message":"Great tool!","category":"general"}',
+  },
+  migrate_pg: {
+    description: "Apply PostgreSQL schema migrations to the configured RDS instance.",
+    category: "utility",
+    params: {
+      connection_string: { type: "string", description: "PostgreSQL connection string (overrides cloud config)" },
+    },
+    example: '{}',
+  },
 };
 
 const TOOL_REGISTRY = Object.entries(FULL_SCHEMAS).map(([name, schema]) => ({
@@ -5288,6 +5306,55 @@ server.tool(
       return { content: [{ type: "text" as const, text: "Feedback saved. Thank you!" }] };
     } catch (e) {
       return { content: [{ type: "text" as const, text: String(e) }], isError: true };
+    }
+  },
+);
+
+// === PG MIGRATIONS ===
+
+server.tool(
+  "migrate_pg",
+  "Apply PostgreSQL schema migrations to the configured RDS instance",
+  {
+    connection_string: z.string().optional().describe("PostgreSQL connection string (overrides cloud config)"),
+  },
+  async ({ connection_string }) => {
+    try {
+      let connStr: string;
+      if (connection_string) {
+        connStr = connection_string;
+      } else {
+        const { getConnectionString } = await import("@hasna/cloud");
+        connStr = getConnectionString("mementos");
+      }
+
+      const { applyPgMigrations } = await import("../db/pg-migrate.js");
+      const result = await applyPgMigrations(connStr);
+
+      const lines: string[] = [];
+      if (result.applied.length > 0) {
+        lines.push(`Applied ${result.applied.length} migration(s): ${result.applied.join(", ")}`);
+      }
+      if (result.alreadyApplied.length > 0) {
+        lines.push(`Already applied: ${result.alreadyApplied.length} migration(s)`);
+      }
+      if (result.errors.length > 0) {
+        lines.push(`Errors:\n${result.errors.join("\n")}`);
+      }
+      if (result.applied.length === 0 && result.errors.length === 0) {
+        lines.push("Schema is up to date.");
+      }
+      lines.push(`Total migrations: ${result.totalMigrations}`);
+
+      return {
+        content: [{ type: "text" as const, text: lines.join("\n") }],
+        isError: result.errors.length > 0,
+      };
+    } catch (e: any) {
+      return {
+        content: [{ type: "text" as const, text: `Migration failed: ${e?.message ?? String(e)}` }],
+        isError: true,
+      };
     }
   },
 );
