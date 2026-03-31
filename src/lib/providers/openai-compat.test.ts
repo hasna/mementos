@@ -105,6 +105,81 @@ describe("OpenAICompatProvider - extractMemories retry on 429", () => {
   }, 15000);
 });
 
+describe("OpenAICompatProvider - extractMemories with valid response (lines 39-40)", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("returns extracted memories from valid JSON array response (lines 39-40)", async () => {
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "gpt-4o" });
+
+    const mockMemories = [
+      {
+        content: "User prefers TypeScript over JavaScript",
+        category: "preference",
+        importance: 8,
+        tags: ["typescript", "javascript"],
+        suggestedScope: "shared",
+        reasoning: "This is a clear user preference stated explicitly",
+      },
+      {
+        content: "Project uses Bun as the runtime",
+        category: "fact",
+        importance: 9,
+        tags: ["bun", "runtime"],
+        suggestedScope: "shared",
+      },
+    ];
+
+    globalThis.fetch = mock(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify(mockMemories) } }] }),
+        { status: 200 }
+      )
+    ) as unknown as typeof fetch;
+
+    const context: MemoryExtractionContext = { agentId: "test-agent", projectName: "test-project" };
+    const result = await provider.extractMemories("Test conversation text", context);
+
+    // Lines 39-40: parsed array is mapped through normaliseMemory and filtered
+    expect(result.length).toBe(2);
+    expect(result[0]!.content).toBe("User prefers TypeScript over JavaScript");
+    expect(result[0]!.category).toBe("preference");
+    expect(result[0]!.importance).toBe(8);
+    expect(result[1]!.content).toBe("Project uses Bun as the runtime");
+  });
+
+  test("filters out null entries from normaliseMemory (lines 39-41)", async () => {
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "gpt-4o" });
+
+    // Mix of valid and invalid memory objects
+    const mockMemories = [
+      { content: "Valid memory", category: "knowledge", importance: 5, tags: [], suggestedScope: "shared" },
+      null, // normaliseMemory returns null for null
+      { content: "", category: "knowledge", importance: 5, tags: [], suggestedScope: "shared" }, // empty content → null
+      "not an object", // normaliseMemory returns null for non-objects
+    ];
+
+    globalThis.fetch = mock(async () =>
+      new Response(
+        JSON.stringify({ choices: [{ message: { content: JSON.stringify(mockMemories) } }] }),
+        { status: 200 }
+      )
+    ) as unknown as typeof fetch;
+
+    const result = await provider.extractMemories("test text", {});
+    // Only the first entry is valid — null/invalid entries are filtered out
+    expect(result.length).toBe(1);
+    expect(result[0]!.content).toBe("Valid memory");
+  });
+});
+
 describe("OpenAICompatProvider - extractEntities", () => {
   let originalFetch: typeof globalThis.fetch;
 
@@ -173,5 +248,42 @@ describe("OpenAICompatProvider - extractEntities", () => {
     const result = await provider.extractEntities("test");
     expect(result.entities).toEqual([]);
     expect(result.relations).toEqual([]);
+  });
+});
+
+// ============================================================================
+// callAPI: res.text().catch(() => "") on non-ok response when text() throws (line 137)
+// ============================================================================
+
+describe("OpenAICompatProvider - callAPI res.text catch fallback (line 137)", () => {
+  let originalFetch: typeof globalThis.fetch;
+
+  beforeEach(() => {
+    originalFetch = globalThis.fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  test("handles res.text() throwing during error body read (line 137 catch)", async () => {
+    const provider = new OpenAIProvider({ apiKey: "test-key", model: "gpt-4o" });
+
+    // Return a non-ok response where res.text() throws
+    // This triggers the .catch(() => "") fallback at line 137
+    globalThis.fetch = mock(async () => {
+      const res = new Response("", { status: 503 });
+      // Override text() to throw
+      const origText = res.text.bind(res);
+      Object.defineProperty(res, "text", {
+        value: () => Promise.reject(new Error("stream error")),
+        writable: true,
+      });
+      return res;
+    }) as unknown as typeof fetch;
+
+    // extractMemories catches the error and returns []
+    const result = await provider.extractMemories("test", {});
+    expect(result).toEqual([]);
   });
 });

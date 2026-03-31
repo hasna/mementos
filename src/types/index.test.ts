@@ -5,6 +5,8 @@ import {
   MemoryExpiredError,
   InvalidScopeError,
   VersionConflictError,
+  EntityNotFoundError,
+  isAgentConflict,
 } from "./index.js";
 
 describe("MemoryNotFoundError", () => {
@@ -68,5 +70,29 @@ describe("VersionConflictError", () => {
     expect(err.actual).toBe(5);
     expect(err).toBeInstanceOf(Error);
     expect(err).toBeInstanceOf(VersionConflictError);
+  });
+});
+
+describe("EntityNotFoundError", () => {
+  test("has correct message and name (lines 355-356)", () => {
+    const err = new EntityNotFoundError("entity-abc-123");
+    expect(err.message).toBe("Entity not found: entity-abc-123");
+    expect(err.name).toBe("EntityNotFoundError");
+    expect(err).toBeInstanceOf(Error);
+    expect(err).toBeInstanceOf(EntityNotFoundError);
+  });
+});
+
+describe("isAgentConflict", () => {
+  test("returns true for AgentConflictError objects (line 196)", () => {
+    const conflict = { conflict: true };
+    expect(isAgentConflict(conflict)).toBe(true);
+  });
+
+  test("returns false for non-conflict objects", () => {
+    expect(isAgentConflict(null)).toBe(false);
+    expect(isAgentConflict({})).toBe(false);
+    expect(isAgentConflict({ conflict: false })).toBe(false);
+    expect(isAgentConflict("string")).toBe(false);
   });
 });

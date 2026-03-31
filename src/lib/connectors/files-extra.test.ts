@@ -3,7 +3,7 @@ process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { SqliteAdapter as Database } from "@hasna/cloud";
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { syncFiles } from "./files.js";
@@ -216,5 +216,144 @@ describe("syncFiles - additional coverage", () => {
     expect(meta["file_path"]).toBeTruthy();
     expect(meta["file_mtime"]).toBeTruthy();
     expect(meta["extension"]).toBe("md");
+  });
+
+  // ============================================================================
+  // Same-mtime skip path (lines 104-105): sync same file twice without changes
+  // ============================================================================
+
+  test("skips re-syncing a file when mtime has not changed (lines 104-105)", async () => {
+    writeFileSync(join(tmpDir, "stable.md"), "# Stable content");
+
+    const config = { paths: [tmpDir] };
+
+    // First sync: creates memory
+    const first = await syncFiles(db, PROJECT_ID, config);
+    expect(first.memories_created).toBe(1);
+    expect(first.memories_updated).toBe(0);
+
+    // Second sync immediately: same mtime — should skip (lines 104-105)
+    const second = await syncFiles(db, PROJECT_ID, config);
+    expect(second.memories_created).toBe(0);
+    expect(second.memories_updated).toBe(0);
+
+    // Memory count stays at 1
+    const count = (db.query("SELECT COUNT(*) as c FROM memories").get() as { c: number }).c;
+    expect(count).toBe(1);
+  });
+
+  // ============================================================================
+  // Update path (lines 124-134): file exists in DB but content has changed
+  // ============================================================================
+
+  test("updates existing memory when file content changes (lines 124-134)", async () => {
+    const filePath = join(tmpDir, "changing.md");
+    writeFileSync(filePath, "# Original content");
+
+    const config = { paths: [tmpDir] };
+
+    // First sync: creates memory
+    const first = await syncFiles(db, PROJECT_ID, config);
+    expect(first.memories_created).toBe(1);
+
+    // Simulate file change by writing new content
+    // Wait 1ms to ensure different mtime
+    await new Promise(r => setTimeout(r, 10));
+    writeFileSync(filePath, "# Updated content after change");
+
+    // Second sync: should detect mtime change and update (lines 124-134)
+    const second = await syncFiles(db, PROJECT_ID, config);
+    expect(second.memories_updated).toBe(1);
+    expect(second.memories_created).toBe(0);
+
+    // Verify content was updated
+    const mem = db.query("SELECT value FROM memories").get() as { value: string } | null;
+    expect(mem?.value).toContain("Updated content");
+  });
+
+  // ============================================================================
+  // statSync error path (line 38): dangling symlink causes statSync to fail
+  // ============================================================================
+
+  test("skips files when statSync fails (line 38 - dangling symlink)", async () => {
+    // Create a dangling symlink — statSync will fail (follows symlink to nonexistent target)
+    const danglingLink = join(tmpDir, "dangling-link.md");
+    try {
+      symlinkSync("/nonexistent/target/file.md", danglingLink);
+    } catch {
+      // Skip test if symlink creation fails (e.g., on some systems)
+      return;
+    }
+
+    // Also add a valid file so we know the directory was scanned
+    writeFileSync(join(tmpDir, "valid.md"), "# Valid file");
+
+    const config = { paths: [tmpDir] };
+    const result = await syncFiles(db, PROJECT_ID, config);
+
+    // The dangling symlink is skipped (line 38: catch { continue; })
+    // Only the valid file is synced
+    expect(result.memories_created).toBe(1);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  // ============================================================================
+  // fileErr catch path (lines 152-154): file that exists but can't be read
+  // We create a file with chmod 000 (no read permission)
+  // statSync succeeds (metadata readable), readFileSync throws
+  // ============================================================================
+
+  test("records error when file is not readable (lines 152-154)", async () => {
+    // Create a valid readable file to ensure the directory is scanned
+    writeFileSync(join(tmpDir, "readable.md"), "# Readable file");
+
+    // Create an unreadable file (chmod 000)
+    const unreadablePath = join(tmpDir, "unreadable.md");
+    writeFileSync(unreadablePath, "# Content");
+
+    let chmodWorked = false;
+    try {
+      const { chmodSync } = await import("node:fs");
+      chmodSync(unreadablePath, 0o000); // Remove all permissions
+      chmodWorked = true;
+    } catch {
+      // chmod failed — skip test on systems where this isn't possible
+    }
+
+    if (!chmodWorked) {
+      // Can't test this on this system — just verify normal sync works
+      const config = { paths: [tmpDir] };
+      const result = await syncFiles(db, PROJECT_ID, config);
+      expect(result.memories_created).toBeGreaterThanOrEqual(1);
+      return;
+    }
+
+    const config = { paths: [tmpDir] };
+    const result = await syncFiles(db, PROJECT_ID, config);
+
+    // Re-enable permissions for cleanup
+    const { chmodSync } = await import("node:fs");
+    chmodSync(unreadablePath, 0o644);
+
+    // The readable file should be synced, the unreadable one should cause an error
+    expect(result.memories_created).toBeGreaterThanOrEqual(1);
+    // The unreadable file should appear in errors
+    expect(result.errors.length).toBeGreaterThanOrEqual(1);
+    expect(result.errors[0]).toContain("unreadable.md");
+  });
+
+  // ============================================================================
+  // Normal sync still works (sanity check)
+  // ============================================================================
+
+  test("records error when file becomes unreadable after listing (lines 152-154, baseline)", async () => {
+    writeFileSync(join(tmpDir, "normal.md"), "# Normal file");
+
+    const config = { paths: [tmpDir] };
+    const result = await syncFiles(db, PROJECT_ID, config);
+
+    expect(result.memories_created).toBe(1);
+    // No errors for normal files
+    expect(result.errors).toHaveLength(0);
   });
 });

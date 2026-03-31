@@ -66,6 +66,11 @@ describe("parseDuration", () => {
   it("throws on mixed invalid", () => {
     expect(() => parseDuration("1d foo")).toThrow("Invalid duration format");
   });
+
+  it("throws when duration resolves to 0ms (line 61)", () => {
+    // "0s" matches the regex pattern but resolves to 0 * 1000 = 0ms → throws
+    expect(() => parseDuration("0s")).toThrow("resolves to 0ms");
+  });
 });
 
 describe("formatDuration", () => {

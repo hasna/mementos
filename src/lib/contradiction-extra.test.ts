@@ -5,6 +5,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { SqliteAdapter as Database } from "@hasna/cloud";
 import { detectContradiction } from "./contradiction.js";
 import { createMemory } from "../db/memories.js";
+import { providerRegistry } from "./providers/registry.js";
 
 // ============================================================================
 // detectContradiction — additional tests for uncovered branches
@@ -174,5 +175,54 @@ describe("detectContradiction - LLM and edge cases", () => {
     );
     // Should find at least one conflict
     expect(typeof result.confidence).toBe("number");
+  });
+
+  // ============================================================================
+  // llmContradictionCheck internal path (lines 128-141) AND LLM block (228-229)
+  // Covered by calling detectContradiction with use_llm=true AND a mocked
+  // provider so getAvailable() returns non-null → lines 133-141 execute
+  // The 0.3-0.7 confidence range is also hit → line 228 executes
+  // ============================================================================
+
+  it("llmContradictionCheck executes with non-null provider (lines 128-141, 228-229)", async () => {
+    const originalGetAvailable = providerRegistry.getAvailable.bind(providerRegistry);
+
+    // Make getAvailable return a non-null provider → enters lines 138-141
+    providerRegistry.getAvailable = () => ({
+      name: "anthropic" as const,
+      config: { apiKey: "fake", model: "claude-3-haiku-20240307" },
+      extractMemories: async () => [],
+      extractEntities: async () => ({ entities: [], relations: [] }),
+      scoreImportance: async () => 5,
+    });
+
+    // Insert a high-importance memory with 0.3-0.5 word overlap ratio
+    // existing value: "use Redis caching data storage" (5 words)
+    // new value: "use Memcached caching sessions" (4 words)
+    // overlap: {use, caching} = 2; totalUnique = {use, redis, caching, data, storage, memcached, sessions} = 7
+    // overlapRatio = 2/7 ≈ 0.28 < 0.3 → score = 0.7 (too high)
+    // Try: existing "use Redis database" (3 words), new "use Postgres database performance" (4 words)
+    // overlap: {use, database} = 2; totalUnique = {use, redis, database, postgres, performance} = 5
+    // overlapRatio = 2/5 = 0.4 → score = 0.4 ✓ (in [0.3, 0.7))
+    db.run(`
+      INSERT INTO memories (id, key, value, category, scope, tags, importance, source, status, pinned, access_count, version, created_at, updated_at)
+      VALUES ('llm-cov-1', 'db-choice', 'use Redis database', 'fact', 'private', '[]', 9, 'agent', 'active', 0, 0, 1, datetime('now'), datetime('now'))
+    `);
+
+    const result = await detectContradiction(
+      "db-choice",
+      "use Postgres database performance", // overlapRatio = 0.4 → heuristic score = 0.4 (in [0.3, 0.7))
+      { min_importance: 7, use_llm: true },
+      db
+    );
+
+    providerRegistry.getAvailable = originalGetAvailable;
+
+    // llmContradictionCheck: provider non-null → executes lines 138-141, returns confidence=0
+    // Line 229: llmResult.confidence(0) > bestContradiction.confidence(0.4) → false
+    // Lines 230-235 remain uncovered (unreachable given stub implementation)
+    // But lines 128-141 and 228-229 are now covered
+    expect(typeof result.contradicts).toBe("boolean");
+    expect(result.confidence).toBeGreaterThanOrEqual(0.3);
   });
 });

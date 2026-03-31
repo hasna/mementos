@@ -1,7 +1,7 @@
 process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync, renameSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { getActiveModel, setActiveModel, clearActiveModel, DEFAULT_MODEL } from "./model-config.js";
@@ -181,5 +181,40 @@ describe("roundtrip", () => {
     setActiveModel("model-2");
     setActiveModel("model-3");
     expect(getActiveModel()).toBe("model-3");
+  });
+});
+
+describe("writeConfig - mkdirSync branch (line 30)", () => {
+  // Covers the branch where CONFIG_DIR does not exist and mkdirSync is called
+  const backupDir = join(homedir(), ".hasna", "mementos.test-backup");
+
+  test("creates CONFIG_DIR via mkdirSync when it does not exist (line 30)", () => {
+    // Rename CONFIG_DIR so it temporarily doesn't exist
+    const dirExists = existsSync(CONFIG_DIR);
+    if (dirExists) {
+      renameSync(CONFIG_DIR, backupDir);
+    }
+
+    try {
+      // Now CONFIG_DIR does not exist — writeConfig (called by setActiveModel)
+      // will hit the mkdirSync branch at line 30
+      setActiveModel("mkdirSync-coverage-model");
+
+      // Verify the directory was created and config was written
+      expect(existsSync(CONFIG_DIR)).toBe(true);
+      expect(existsSync(CONFIG_PATH)).toBe(true);
+      const raw = readFileSync(CONFIG_PATH, "utf-8");
+      const config = JSON.parse(raw);
+      expect(config.activeModel).toBe("mkdirSync-coverage-model");
+    } finally {
+      // Cleanup: remove the newly created dir
+      if (existsSync(CONFIG_DIR)) {
+        rmSync(CONFIG_DIR, { recursive: true, force: true });
+      }
+      // Restore the original dir if it existed
+      if (dirExists && existsSync(backupDir)) {
+        renameSync(backupDir, CONFIG_DIR);
+      }
+    }
   });
 });

@@ -111,4 +111,41 @@ describe("AnthropicProvider - scoreImportance", () => {
       delete process.env["ANTHROPIC_API_KEY"];
     }
   });
+
+  test("handles res.text() throwing during error body read (line 124 catch)", async () => {
+    const provider = new AnthropicProvider({ apiKey: "test-key" });
+
+    // Return a non-ok response where res.text() throws
+    // This triggers the .catch(() => "") fallback at line 124 of anthropic.ts
+    globalThis.fetch = mock(async () => {
+      const res = new Response("", { status: 503 });
+      Object.defineProperty(res, "text", {
+        value: () => Promise.reject(new Error("stream error")),
+        writable: true,
+      });
+      return res;
+    }) as unknown as typeof fetch;
+
+    // scoreImportance catches the error from callAPI and returns 5
+    const score = await provider.scoreImportance("test content", {});
+    expect(score).toBe(5);
+  });
+
+  test("abort controller fires on timeout (line 101 timeout callback)", async () => {
+    // Use a very short timeout so the abort fires quickly
+    const provider = new AnthropicProvider({ apiKey: "test-key", timeoutMs: 5 });
+
+    // Fetch that never resolves (hangs forever)
+    globalThis.fetch = mock(async () => {
+      await new Promise((_, reject) => {
+        // Listen for abort
+        setTimeout(() => reject(new DOMException("aborted", "AbortError")), 50);
+      });
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+
+    // The timeout fires after 5ms → aborts → catch in scoreImportance → returns 5
+    const score = await provider.scoreImportance("test content", {});
+    expect(score).toBe(5);
+  }, 3000);
 });

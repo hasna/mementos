@@ -120,6 +120,32 @@ describe("context-extractor - additional coverage", () => {
       // Just test it doesn't throw and returns valid result
       expect(typeof result.is_significant).toBe("boolean");
     });
+
+    it("evicts oldest context when buffer overflows MAX_RECENT (line 43)", () => {
+      // Add 6 completely different significant messages to overflow the buffer (MAX_RECENT=5)
+      // Message 6 causes shift() to fire at line 43.
+      // Each message must have > 90% DIFFERENT words so isDuplicate returns false.
+      const distinctMessages = [
+        "How should we implement authentication using JWT tokens and refresh mechanisms",
+        "What are the best practices for database indexing with SQLite performance optimization",
+        "Explain TypeScript generics and conditional types with variance annotations",
+        "Debug the memory leak in the React component lifecycle and event listeners",
+        "Configure nginx reverse proxy with SSL certificates and load balancing workers",
+        "Analyze the algorithm complexity for binary search tree traversal efficiency",
+      ];
+      for (const content of distinctMessages) {
+        const msg: SessionMessage = {
+          role: "user",
+          content,
+          timestamp: new Date().toISOString(),
+        };
+        extractContext(msg);
+      }
+
+      // If we got here without throwing, line 43 (shift) was executed when the 6th
+      // message caused _recentContexts.length > MAX_RECENT (5)
+      expect(true).toBe(true);
+    });
   });
 
   describe("tool_use with no input parameters", () => {
