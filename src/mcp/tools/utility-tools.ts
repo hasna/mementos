@@ -802,58 +802,6 @@ export function registerUtilityTools(server: McpServer): void {
   );
 
   server.tool(
-    "session_extract",
-    "Extract memories from a session summary. Auto-creates structured memories from title, topics, notes.",
-    {
-      session_id: z.string(),
-      title: z.string().optional(),
-      project: z.string().optional(),
-      model: z.string().optional(),
-      messages: z.coerce.number().optional(),
-      key_topics: z.array(z.string()).optional(),
-      summary: z.string().optional(),
-      agent_id: z.string().optional(),
-      project_id: z.string().optional(),
-    },
-    async (args) => {
-      try {
-        const { session_id, title, project, model, messages, key_topics, summary, agent_id, project_id } = args;
-        const created: string[] = [];
-
-        function saveExtracted(key: string, value: string, category: MemoryCategory, importance: number): void {
-          try {
-            const mem = createMemory({
-              key, value, category, scope: "shared", importance,
-              source: "auto", agent_id, project_id, session_id,
-            } as unknown as CreateMemoryInput);
-            created.push(mem.id);
-          } catch { /* duplicate = already extracted */ }
-        }
-
-        if (title) {
-          const meta = [project && `project: ${project}`, model && `model: ${model}`, messages && `messages: ${messages}`].filter(Boolean).join(", ");
-          saveExtracted(`session-${session_id}-summary`, `${title}${meta ? ` (${meta})` : ""}`, "history", 6);
-        }
-        if (key_topics?.length) {
-          saveExtracted(`session-${session_id}-topics`, `Key topics: ${key_topics.join(", ")}`, "knowledge", 5);
-        }
-        if (summary) {
-          saveExtracted(`session-${session_id}-notes`, summary, "knowledge", 7);
-        }
-
-        return {
-          content: [{
-            type: "text" as const,
-            text: `Extracted ${created.length} memor${created.length === 1 ? "y" : "ies"} from session ${session_id}.${created.length > 0 ? `\nIDs: ${created.join(", ")}` : ""}`,
-          }],
-        };
-      } catch (e) {
-        return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
-      }
-    }
-  );
-
-  server.tool(
     "memory_briefing",
     "Lightweight delta briefing: what memories changed since an agent's last session. Use at session start instead of memory_context to avoid re-reading everything.",
     {

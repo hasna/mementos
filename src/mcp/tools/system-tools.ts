@@ -272,29 +272,6 @@ export function registerSystemTools(server: McpServer): void {
   );
 
   server.tool(
-    "entity_disambiguate",
-    "Find potential duplicate entities by name similarity (trigram). Returns pairs above the threshold within same type+project.",
-    {
-      threshold: z.coerce.number().min(0).max(1).optional().describe("Similarity threshold 0-1 (default 0.8)"),
-    },
-    async (args) => {
-      try {
-        const { findDuplicateEntities } = await import("../../db/entities.js");
-        const pairs = findDuplicateEntities(args.threshold ?? 0.8);
-        if (pairs.length === 0) {
-          return { content: [{ type: "text" as const, text: "No duplicate entities found." }] };
-        }
-        const lines = pairs.map((p) =>
-          `${p.entity_a.name} <-> ${p.entity_b.name} [${p.entity_a.type}] similarity=${p.similarity.toFixed(2)}`
-        );
-        return { content: [{ type: "text" as const, text: `Found ${pairs.length} potential duplicate(s):\n${lines.join("\n")}` }] };
-      } catch (e) {
-        return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
-      }
-    }
-  );
-
-  server.tool(
     "memory_compress",
     "Compress multiple memories into a single summary memory. Uses LLM if available, otherwise truncates.",
     {
