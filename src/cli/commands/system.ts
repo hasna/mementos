@@ -1630,7 +1630,7 @@ compdef _mementos mementos`);
         const { fileURLToPath: _ftu } = await import("node:url");
         const { dirname: _dir, join: _join } = await import("node:path");
         const { readFileSync: _rfs } = await import("node:fs");
-        const pkg = JSON.parse(_rfs(_join(_dir(_ftu(import.meta.url)), "../../../package.json"), "utf-8"));
+        const pkg = JSON.parse(_rfs(_join(_dir(_ftu(import.meta.url)), "../../package.json"), "utf-8"));
         db.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [
           message, opts.email || null, opts.category || "general", pkg.version,
         ]);

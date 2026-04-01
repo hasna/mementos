@@ -88,7 +88,7 @@ export function registerIoCommands(program: Command): void {
           throw new Error("JSON file must contain an array of memories");
         }
 
-        const dedupeMode = opts.overwrite ? ("merge" as const) : ("create" as const);
+        const dedupeMode = opts.overwrite ? ("create" as const) : ("merge" as const);
         let imported = 0;
 
         for (const mem of memories) {
