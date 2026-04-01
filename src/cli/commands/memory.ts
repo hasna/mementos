@@ -16,6 +16,7 @@ import {
   getMemoryVersions,
 } from "../../db/memories.js";
 import { getProject } from "../../db/projects.js";
+import { getAgent } from "../../db/agents.js";
 import { searchMemories, getSearchHistory, getPopularSearches } from "../../lib/search.js";
 import { parseDuration } from "../../lib/duration.js";
 import type {
@@ -138,6 +139,13 @@ export function registerMemoryCommands(program: Command): void {
             ? templateDefaults.tags
             : undefined;
 
+        // Resolve agent name/partial-id → actual agent ID (avoids FK violation)
+        let resolvedAgentId: string | undefined;
+        if (globalOpts.agent) {
+          const ag = getAgent(globalOpts.agent);
+          resolvedAgentId = ag?.id; // undefined if agent not found — don't store unresolvable IDs
+        }
+
         const input: CreateMemoryInput = {
           key,
           value,
@@ -153,7 +161,7 @@ export function registerMemoryCommands(program: Command): void {
           summary: opts.summary as string | undefined,
           ttl_ms: opts.ttl ? parseDuration(opts.ttl) : undefined,
           source: opts.source as MemorySource | undefined,
-          agent_id: globalOpts.agent,
+          agent_id: resolvedAgentId,
           session_id: globalOpts.session,
         };
 
