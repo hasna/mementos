@@ -21,6 +21,13 @@ cd "$REPO"
   # Pull latest from GitHub
   git pull --rebase
   echo "Pulled latest from GitHub"
+
+  # Checkpoint mementos WAL to prevent corruption from long-running MCP processes
+  DB_PATH="$HOME/.hasna/mementos/mementos.db"
+  if [ -f "$DB_PATH" ]; then
+    sqlite3 "$DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);" 2>/dev/null && echo "WAL checkpointed" || echo "WAL checkpoint failed (DB may be busy)"
+  fi
+
   echo "=== done ==="
   echo ""
 } >> "$LOG" 2>&1
