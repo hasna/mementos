@@ -27,11 +27,41 @@ import "./routes/system.js";
 
 const DEFAULT_PORT = 19428;
 
+function hasFlag(...flags: string[]): boolean {
+  return process.argv.some((arg) => flags.includes(arg));
+}
+
+function printHelp(): void {
+  process.stdout.write(
+    `Usage: mementos-serve [options]
+
+Mementos REST API server.
+
+Options:
+  --port <number>  Port to bind (default: 19428)
+  -h, --help       Show help
+  -V, --version    Show version
+`
+  );
+}
+
+function parsePortNumber(raw: string, source: string): number {
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`Invalid ${source} value "${raw}". Expected an integer between 1 and 65535.`);
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new Error(`Invalid ${source} value "${raw}". Expected an integer between 1 and 65535.`);
+  }
+
+  return parsed;
+}
+
 function parsePort(): number {
   const envPort = process.env["PORT"];
   if (envPort) {
-    const p = parseInt(envPort, 10);
-    if (!Number.isNaN(p)) return p;
+    return parsePortNumber(envPort, "PORT");
   }
 
   const portArg = process.argv.find(
@@ -39,10 +69,18 @@ function parsePort(): number {
   );
   if (portArg) {
     if (portArg.includes("=")) {
-      return parseInt(portArg.split("=")[1]!, 10) || DEFAULT_PORT;
+      const raw = portArg.split("=")[1] ?? "";
+      if (!raw) throw new Error("Missing value for --port. Example: --port 19428");
+      return parsePortNumber(raw, "--port");
     }
+
     const idx = process.argv.indexOf(portArg);
-    return parseInt(process.argv[idx + 1]!, 10) || DEFAULT_PORT;
+    const raw = process.argv[idx + 1];
+    if (!raw || raw.startsWith("-")) {
+      throw new Error("Missing value for --port. Example: --port 19428");
+    }
+
+    return parsePortNumber(raw, "--port");
   }
 
   return DEFAULT_PORT;
@@ -194,6 +232,19 @@ export function startServer(port: number): void {
 }
 
 async function main(): Promise<void> {
+  if (hasFlag("--help", "-h")) {
+    printHelp();
+    return;
+  }
+
+  if (hasFlag("--version", "-V")) {
+    const { createRequire } = await import("node:module");
+    const req = createRequire(import.meta.url);
+    const pkg = req("../../package.json") as { version: string };
+    process.stdout.write(`${pkg.version}\n`);
+    return;
+  }
+
   const requestedPort = parsePort();
   const port = await findFreePort(requestedPort);
   if (port !== requestedPort) {
@@ -202,4 +253,8 @@ async function main(): Promise<void> {
   startServer(port);
 }
 
-main();
+main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(`[mementos-serve] ${message}`);
+  process.exit(1);
+});

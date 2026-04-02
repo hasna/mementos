@@ -48,6 +48,23 @@ When running with --dangerously-load-development-channels, mementos will proacti
 
 mcpServer = server;
 
+function hasFlag(...flags: string[]): boolean {
+  return process.argv.some((arg) => flags.includes(arg));
+}
+
+function printHelp(): void {
+  process.stdout.write(
+    `Usage: mementos-mcp [options]
+
+Mementos MCP server (stdio transport)
+
+Options:
+  -h, --help       Show help
+  -V, --version    Show version
+`
+  );
+}
+
 // Register all tool groups
 registerMemoryTools(server);
 registerGraphTools(server);
@@ -136,6 +153,16 @@ async function ensureRestServerRunning(): Promise<void> {
 }
 
 async function main(): Promise<void> {
+  if (hasFlag("--help", "-h")) {
+    printHelp();
+    return;
+  }
+
+  if (hasFlag("--version", "-V")) {
+    process.stdout.write(`${_pkg.version}\n`);
+    return;
+  }
+
   await ensureRestServerRunning();
 
   // Load persisted webhooks into the in-memory registry
