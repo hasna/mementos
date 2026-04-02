@@ -47,11 +47,11 @@ program
   .name("mementos")
   .description("Universal memory system for AI agents")
   .version(getPackageVersion())
-  .option("--project <path>", "Project path for scoping")
-  .option("--json", "Output as JSON")
-  .option("--format <fmt>", "Output format: compact, json, csv, yaml")
-  .option("--agent <name>", "Agent name or ID")
-  .option("--session <id>", "Session ID");
+  .option("-p, --project <path>", "Project path for scoping")
+  .option("-j, --json", "Output as JSON")
+  .option("-f, --format <fmt>", "Output format: compact, json, csv, yaml")
+  .option("-a, --agent <name>", "Agent name or ID")
+  .option("-s, --session <id>", "Session ID");
 
 // ============================================================================
 // Register all command groups

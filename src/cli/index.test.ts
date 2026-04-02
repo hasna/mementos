@@ -62,6 +62,15 @@ describe("CLI", () => {
     expect(stdout).toContain("mcp");
   });
 
+  test("--help shows short global option aliases", async () => {
+    const { stdout } = await runCli("--help");
+    expect(stdout).toContain("-j, --json");
+    expect(stdout).toContain("-f, --format");
+    expect(stdout).toContain("-p, --project");
+    expect(stdout).toContain("-a, --agent");
+    expect(stdout).toContain("-s, --session");
+  });
+
   test("save creates a memory", async () => {
     const { stdout, exitCode } = await runCli("save", "cli-test-key", "cli-test-value");
     expect(exitCode).toBe(0);
@@ -112,6 +121,20 @@ describe("CLI", () => {
     const parsed = JSON.parse(stdout);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed.length).toBeGreaterThan(0);
+  });
+
+  test("-j short alias outputs parseable JSON", async () => {
+    const { stdout, exitCode } = await runCli("-j", "list");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(Array.isArray(parsed)).toBe(true);
+  });
+
+  test("-f short alias sets JSON output format", async () => {
+    const { stdout, exitCode } = await runCli("-f", "json", "list");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(Array.isArray(parsed)).toBe(true);
   });
 
   test("search finds matching memories", async () => {
