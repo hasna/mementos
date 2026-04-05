@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { resolve, dirname } from "node:path";
-import { readFileSync, writeFileSync, existsSync, statSync, copyFileSync, mkdirSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, statSync, copyFileSync, mkdirSync, readdirSync } from "node:fs";
 import { getDatabase, getDbPath } from "../../db/database.js";
 import { createMemory, listMemories } from "../../db/memories.js";
 import { getProject } from "../../db/projects.js";

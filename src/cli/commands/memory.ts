@@ -39,7 +39,6 @@ import {
   resolveKeyOrId,
   colorScope,
   colorCategory,
-  colorImportance,
   diffMemory,
   formatWatchLine,
   sendNotification,

@@ -180,6 +180,9 @@ addRoute("GET", "/api/activity", (_req: Request, url: URL) => {
   if (projectId) { conditions.push("project_id = ?"); params.push(projectId); }
   const where = conditions.map(c => `AND ${c}`).join(" ");
 
+  const cutoffDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  params.push(cutoffDate);
+
   const rows = db.query(`
     SELECT
       date(created_at) AS date,
@@ -189,7 +192,7 @@ addRoute("GET", "/api/activity", (_req: Request, url: URL) => {
       SUM(CASE WHEN scope = 'private' THEN 1 ELSE 0 END) AS private_count,
       AVG(importance) AS avg_importance
     FROM memories
-    WHERE date(created_at) >= date('now', '-${days} days') ${where}
+    WHERE date(created_at) >= ? ${where}
     GROUP BY date(created_at)
     ORDER BY date ASC
   `).all(...params) as { date: string; memories_created: number; global_count: number; shared_count: number; private_count: number; avg_importance: number }[];
@@ -206,12 +209,13 @@ addRoute("GET", "/api/memories/stale", (_req: Request, url: URL) => {
   const limit = Math.min(parseInt(q["limit"] || "20", 10), 100);
   const db = getDatabase();
 
+  const cutoffDate = new Date(Date.now() - days * 86400000).toISOString();
   const conds = [
     "status = 'active'",
-    `(accessed_at IS NULL OR accessed_at < datetime('now', '-${days} days'))`,
+    "(accessed_at IS NULL OR accessed_at < ?)",
     "pinned = 0",
   ];
-  const params: string[] = [];
+  const params: string[] = [cutoffDate];
   if (projectId) { conds.push("project_id = ?"); params.push(projectId); }
   if (agentId) { conds.push("agent_id = ?"); params.push(agentId); }
 
@@ -230,18 +234,19 @@ addRoute("GET", "/api/report", (_req: Request, url: URL) => {
   const agentId = q["agent_id"];
   const db = getDatabase();
 
+  const cutoffDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   const cond = [
     projectId ? "AND project_id = ?" : "",
     agentId ? "AND agent_id = ?" : "",
   ].filter(Boolean).join(" ");
-  const params: string[] = [...(projectId ? [projectId] : []), ...(agentId ? [agentId] : [])];
+  const params: (string | number)[] = [cutoffDate, ...(projectId ? [projectId] : []), ...(agentId ? [agentId] : [])];
 
-  const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${cond}`).get(...params) as { c: number }).c;
-  const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${cond}`).get(...params) as { c: number }).c;
+  const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${cond}`).get(...params.slice(1)) as { c: number }).c;
+  const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${cond}`).get(...params.slice(1)) as { c: number }).c;
 
   const actRows = db.query(`
     SELECT date(created_at) AS date, COUNT(*) AS memories_created
-    FROM memories WHERE status = 'active' AND date(created_at) >= date('now', '-${days} days') ${cond}
+    FROM memories WHERE status = 'active' AND date(created_at) >= ? ${cond}
     GROUP BY date(created_at) ORDER BY date(created_at) ASC
   `).all(...params) as { date: string; memories_created: number }[];
   const recentTotal = actRows.reduce((s, r) => s + r.memories_created, 0);

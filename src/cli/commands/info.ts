@@ -20,7 +20,6 @@ import {
   makeHandleError,
   colorScope,
   colorCategory,
-  colorImportance,
   type GlobalOpts,
 } from "../helpers.js";
 

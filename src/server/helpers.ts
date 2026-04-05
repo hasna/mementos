@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 // ============================================================================
 
 export const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": process.env["MEMENTOS_CORS_ORIGIN"] ?? "http://localhost:19428",
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
   "Access-Control-Max-Age": "86400",
@@ -56,6 +56,46 @@ export async function readJson(req: Request): Promise<unknown> {
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// Authentication
+// ============================================================================
+
+export function getCorsHeaders(req?: Request): Record<string, string> {
+  const allowedOrigin = process.env["MEMENTOS_CORS_ORIGIN"] ?? "http://localhost:19428";
+  const origin = req?.headers.get("origin");
+  // If origin matches, echo it; otherwise use the configured default
+  const finalOrigin = origin === allowedOrigin ? origin : allowedOrigin;
+  return {
+    "Access-Control-Allow-Origin": finalOrigin,
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Max-Age": "86400",
+  };
+}
+
+export function authenticateRequest(req: Request): Response | null {
+  const requiredKey = process.env["MEMENTOS_API_KEY"];
+  if (!requiredKey) return null; // no key configured, allow all
+
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return new Response(JSON.stringify({ error: "Unauthorized. Provide a Bearer token in the Authorization header." }), {
+      status: 401,
+      headers: { "Content-Type": "application/json", ...getCorsHeaders(req) },
+    });
+  }
+
+  const provided = authHeader.slice("Bearer ".length);
+  if (provided !== requiredKey) {
+    return new Response(JSON.stringify({ error: "Forbidden. Invalid API key." }), {
+      status: 403,
+      headers: { "Content-Type": "application/json", ...getCorsHeaders(req) },
+    });
+  }
+
+  return null; // authenticated
 }
 
 export function getSearchParams(url: URL): Record<string, string> {

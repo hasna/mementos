@@ -12,7 +12,7 @@ import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startSessionQueueWorker } from "../lib/session-queue.js";
 
 import { routes, matchRoute } from "./router.js";
-import { CORS_HEADERS, json, errorResponse, resolveDashboardDir, serveStaticFile } from "./helpers.js";
+import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile, authenticateRequest } from "./helpers.js";
 
 // Self-registering route modules — importing them causes addRoute() calls to execute
 import "./routes/memories.js";
@@ -86,36 +86,37 @@ function parsePort(): number {
   return DEFAULT_PORT;
 }
 
-async function findFreePort(start: number): Promise<number> {
-  for (let port = start; port < start + 100; port++) {
-    try {
-      const server = Bun.serve({ port, fetch: () => new Response("") });
-      server.stop(true);
-      return port;
-    } catch {
-      // Port in use, try next
-    }
-  }
-  return start;
+
+let _serverInitialized = false;
+
+function initServer(): void {
+  if (_serverInitialized) return;
+  _serverInitialized = true;
+  loadWebhooksFromDb();
+  startSessionQueueWorker();
 }
 
-export function startServer(port: number): void {
-  // Load persisted webhooks into the in-memory hook registry
-  loadWebhooksFromDb();
-  // Start the session memory job background worker
-  startSessionQueueWorker();
+export function startServer(port: number, attempt = 0): void {
+  const maxRetries = 100;
+  initServer();
 
   const hostname = process.env["MEMENTOS_HOST"] ?? "127.0.0.1";
-  Bun.serve({
-    port,
-    hostname,
+  try {
+    Bun.serve({
+      port,
+      hostname,
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const { pathname } = url;
 
-      // CORS preflight
+      // CORS preflight — only allow configured origin
       if (req.method === "OPTIONS") {
-        return new Response(null, { status: 204, headers: CORS_HEADERS });
+        const origin = req.headers.get("origin");
+        const allowedOrigin = process.env["MEMENTOS_CORS_ORIGIN"] ?? "http://localhost:19428";
+        if (!origin || origin !== allowedOrigin) {
+          return new Response(null, { status: 403 });
+        }
+        return new Response(null, { status: 204, headers: getCorsHeaders(req) });
       }
 
       // Health check
@@ -133,6 +134,12 @@ export function startServer(port: number): void {
         const projects = (db.query("SELECT COUNT(*) as c FROM projects").get() as { c: number }).c;
         const status = expired > 50 ? "warn" : "ok";
         return json({ status, version: pkg.version, profile: profile ?? "default", db_path: getDbPath(), hostname, memories: { total, expired, pinned }, agents, projects });
+      }
+
+      // Auth gate for all /api/* routes (except health)
+      if (pathname.startsWith("/api/") && pathname !== "/api/health") {
+        const authError = authenticateRequest(req);
+        if (authError) return authError;
       }
 
       // Profile info
@@ -221,14 +228,22 @@ export function startServer(port: number): void {
         return await matched.handler(req, url, matched.params);
       } catch (e) {
         console.error(`[mementos-serve] ${req.method} ${pathname}:`, e);
-        const message =
-          e instanceof Error ? e.message : "Internal server error";
-        return errorResponse(message, 500);
+        return errorResponse("Internal server error", 500);
       }
     },
   });
 
   console.log(`Mementos server listening on http://${hostname}:${port}`);
+  } catch (e: unknown) {
+    const err = e as { code?: string };
+    if (err.code === "EADDRINUSE" && attempt < maxRetries) {
+      const nextPort = port + attempt + 1;
+      console.log(`Port ${port} in use, trying ${nextPort}`);
+      startServer(nextPort, attempt + 1);
+    } else {
+      throw e;
+    }
+  }
 }
 
 async function main(): Promise<void> {

@@ -654,12 +654,13 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         const days = args.days || 30;
         const db = getDatabase();
+        const cutoffDate = new Date(Date.now() - days * 86400000).toISOString();
         const conditions = [
           "status = 'active'",
-          `(accessed_at IS NULL OR accessed_at < datetime('now', '-${days} days'))`,
+          "(accessed_at IS NULL OR accessed_at < ?)",
           "pinned = 0",
         ];
-        const params: string[] = [];
+        const params: (string | number)[] = [cutoffDate];
         if (args.project_id) { conditions.push("project_id = ?"); params.push(args.project_id); }
         if (args.agent_id) { conditions.push("agent_id = ?"); params.push(args.agent_id); }
         const limit = args.limit || 20;
@@ -732,7 +733,10 @@ export function registerMemoryTools(server: McpServer): void {
           ...(args.project_id ? ["project_id = ?"] : []),
           ...(args.agent_id ? ["agent_id = ?"] : []),
         ].join(" AND ");
-        const extraParams: string[] = [
+        const staleCutoff = new Date(Date.now() - staleDays * 86400000).toISOString();
+        const forgottenCutoff = new Date(Date.now() - forgottenDays * 86400000).toISOString();
+        const extraParams: (string | number)[] = [
+          staleCutoff,
           ...(args.project_id ? [args.project_id] : []),
           ...(args.agent_id ? [args.agent_id] : []),
         ];
@@ -741,17 +745,22 @@ export function registerMemoryTools(server: McpServer): void {
         // 1. Stale: never accessed or not accessed in staleDays, access_count == 0
         const stale = db.prepare(
           `SELECT id, key, value, importance, scope, created_at FROM memories
-           WHERE ${base} AND access_count = 0 AND created_at < datetime('now', '-${staleDays} days')
+           WHERE ${base} AND access_count = 0 AND created_at < ?
            ORDER BY created_at ASC LIMIT ?`
         ).all(...extraParams, limit) as Array<{id: string; key: string; value: string; importance: number; scope: string; created_at: string}>;
 
+        const forgottenParams: (string | number)[] = [
+          forgottenCutoff,
+          ...(args.project_id ? [args.project_id] : []),
+          ...(args.agent_id ? [args.agent_id] : []),
+        ];
         // 2. High-importance forgotten: importance >= 7, not accessed in forgottenDays
         const forgotten = db.prepare(
           `SELECT id, key, value, importance, scope, accessed_at FROM memories
            WHERE ${base} AND importance >= 7
-             AND (accessed_at IS NULL OR accessed_at < datetime('now', '-${forgottenDays} days'))
+             AND (accessed_at IS NULL OR accessed_at < ?)
            ORDER BY importance DESC, COALESCE(accessed_at, created_at) ASC LIMIT ?`
-        ).all(...extraParams, limit) as Array<{id: string; key: string; value: string; importance: number; scope: string; accessed_at: string|null}>;
+        ).all(...forgottenParams, limit) as Array<{id: string; key: string; value: string; importance: number; scope: string; accessed_at: string|null}>;
 
         // 3. Possibly superseded: multiple active memories with same key prefix (similar key)
         const dupes = db.prepare(
@@ -1453,13 +1462,14 @@ export function registerMemoryTools(server: McpServer): void {
       try {
         const days = Math.min(args.days || 7, 365);
         const db = getDatabase();
+        const cutoffDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
         const cond = [args.project_id ? "AND project_id = ?" : "", args.agent_id ? "AND agent_id = ?" : ""].filter(Boolean).join(" ");
-        const params: string[] = [...(args.project_id ? [args.project_id] : []), ...(args.agent_id ? [args.agent_id] : [])];
+        const params: (string | number)[] = [cutoffDate, ...(args.project_id ? [args.project_id] : []), ...(args.agent_id ? [args.agent_id] : [])];
 
-        const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${cond}`).get(...params) as { c: number }).c;
-        const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${cond}`).get(...params) as { c: number }).c;
+        const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${cond}`).get(...params.slice(1)) as { c: number }).c;
+        const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${cond}`).get(...params.slice(1)) as { c: number }).c;
 
-        const actRows = db.query(`SELECT date(created_at) AS d, COUNT(*) AS cnt FROM memories WHERE status = 'active' AND date(created_at) >= date('now', '-${days} days') ${cond} GROUP BY d ORDER BY d`).all(...params) as { d: string; cnt: number }[];
+        const actRows = db.query(`SELECT date(created_at) AS d, COUNT(*) AS cnt FROM memories WHERE status = 'active' AND date(created_at) >= ? ${cond} GROUP BY d ORDER BY d`).all(...params) as { d: string; cnt: number }[];
         const recentTotal = actRows.reduce((s, r) => s + r.cnt, 0);
         const sparkline = actRows.length > 0 ? actRows.map(r => { const bars = "▁▂▃▄▅▆▇█"; const max = Math.max(...actRows.map(x => x.cnt), 1); return bars[Math.round((r.cnt / max) * 7)] || "▁"; }).join("") : "—";
 

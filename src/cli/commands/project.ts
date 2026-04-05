@@ -6,7 +6,6 @@ import { listMemories, touchMemory } from "../../db/memories.js";
 import type {
   Memory,
   MemoryCategory,
-  MemoryScope,
 } from "../../types/index.js";
 import {
   outputJson,

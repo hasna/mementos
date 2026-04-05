@@ -80,11 +80,19 @@ function ensureDir(filePath: string): void {
 // ============================================================================
 
 let _db: Database | null = null;
+let _dbPath: string | null = null;
 
 export function getDatabase(dbPath?: string): Database {
-  if (_db) return _db;
-
   const path = dbPath || getDbPath();
+
+  if (_db) {
+    if (_dbPath === path) return _db;
+    // Path changed — close old instance and reopen
+    _db.close();
+    _db = null;
+  }
+
+  _dbPath = path;
   ensureDir(path);
 
   _db = new Database(path, { create: true });
@@ -119,16 +127,16 @@ function runMigrations(db: Database): void {
     for (let i = currentLevel; i < MIGRATIONS.length; i++) {
       try {
         db.exec(MIGRATIONS[i]!);
-      } catch {
-        // Partial failure handled gracefully
+      } catch (e) {
+        console.warn(`[mementos] Migration ${i + 1} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   } catch {
-    for (const migration of MIGRATIONS) {
+    for (let i = 0; i < MIGRATIONS.length; i++) {
       try {
-        db.exec(migration);
-      } catch {
-        // Partial failure handled gracefully
+        db.exec(MIGRATIONS[i]!);
+      } catch (e) {
+        console.warn(`[mementos] Migration ${i + 1} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
@@ -161,11 +169,21 @@ export function shortUuid(): string {
   return crypto.randomUUID().slice(0, 8);
 }
 
+const ALLOWED_TABLES = new Set([
+  "memories", "agents", "entities", "projects", "relations",
+  "memory_audit_log", "locks", "sessions", "session_memory_jobs",
+  "synthesis_runs", "synthesis_proposals", "tool_events",
+  "webhook_hooks",
+]);
+
 export function resolvePartialId(
   db: Database,
   table: string,
   partialId: string
 ): string | null {
+  if (!ALLOWED_TABLES.has(table)) {
+    throw new Error(`Invalid table name: ${table}`);
+  }
   if (partialId.length >= 36) {
     const row = db
       .query(`SELECT id FROM ${table} WHERE id = ?`)

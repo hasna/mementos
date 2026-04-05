@@ -4,14 +4,11 @@ import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import {
   readFileSync,
-  writeFileSync,
   existsSync,
   accessSync,
   statSync,
   constants as fsConstants,
-  mkdirSync,
 } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { getDatabase, getDbPath } from "../../db/database.js";
 import { listMemories } from "../../db/memories.js";
 import { listAgents } from "../../db/agents.js";
