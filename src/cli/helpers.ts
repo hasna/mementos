@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDatabase, resolvePartialId } from "../db/database.js";
-import { getMemory, getMemoryByKey, touchMemory } from "../db/memories.js";
+import { getMemory, getMemoryByKey } from "../db/memories.js";
 import { getProject } from "../db/projects.js";
 import { getEntityByName, getEntity } from "../db/entities.js";
 import type { Command } from "commander";

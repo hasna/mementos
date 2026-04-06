@@ -54,7 +54,7 @@ function getDb(): Database {
   const dir = dirname(DB_PATH);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
 
-  _db = new Database(DB_PATH, { create: true });
+  _db = new Database(DB_PATH);
   _db.run("PRAGMA journal_mode = WAL");
   _db.run("PRAGMA busy_timeout = 3000");
 

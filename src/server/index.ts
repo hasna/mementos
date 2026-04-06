@@ -11,8 +11,27 @@ import { getDatabase } from "../db/database.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startSessionQueueWorker } from "../lib/session-queue.js";
 
-import { routes, matchRoute } from "./router.js";
+import { matchRoute } from "./router.js";
 import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile, authenticateRequest } from "./helpers.js";
+
+async function findFreePort(start: number): Promise<number> {
+  const net = await import("node:net");
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.unref();
+    server.on("error", () => {
+      resolve(findFreePort(start + 1));
+    });
+    server.listen(start, () => {
+      const address = server.address();
+      if (address && typeof address === "object") {
+        server.close(() => resolve(address.port));
+      } else {
+        resolve(start);
+      }
+    });
+  });
+}
 
 // Self-registering route modules — importing them causes addRoute() calls to execute
 import "./routes/memories.js";

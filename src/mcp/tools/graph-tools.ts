@@ -5,7 +5,7 @@ import { createRelation, getRelation, listRelations, deleteRelation, getEntityGr
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import { getDatabase, resolvePartialId } from "../../db/database.js";
 import { buildFileDependencyGraph } from "../../lib/file-deps.js";
-import { saveToolEvent, getToolStats, getToolLessons, getToolEvents } from "../../db/tool-events.js";
+import { getToolStats, getToolLessons, getToolEvents } from "../../db/tool-events.js";
 import type { Entity, EntityType } from "../../types/index.js";
 
 function formatError(error: unknown): string {
@@ -432,8 +432,8 @@ export function registerGraphTools(server: McpServer): void {
         ];
 
         for (const path of result.paths) {
-          const pathStr = path.entities.map((e: Entity) => e.name).join(" -> ");
-          const relStr = path.relations.map((r: { relation_type: string }) => r.relation_type).join(", ");
+          const pathStr = path.entities.map((e) => e.name).join(" -> ");
+          const relStr = path.relations.map((r) => r.relation_type).join(", ");
           lines.push(`  [depth ${path.depth}] ${pathStr} (${relStr})`);
         }
 

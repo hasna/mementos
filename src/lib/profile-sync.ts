@@ -49,8 +49,8 @@ export function syncProfiles(
     throw new Error(`Target profile "${targetProfile}" not found at ${targetPath}`);
   }
 
-  const sourceDb = new Database(sourcePath, { readonly: true });
-  const targetDb = new Database(targetPath, { create: true });
+  const sourceDb = new Database(sourcePath);
+  const targetDb = new Database(targetPath);
 
   try {
     const memories = listMemories(filter, sourceDb);

@@ -1022,7 +1022,7 @@ compdef _mementos mementos`);
       const { createWebhookHook } = await import("../../db/webhook_hooks.js");
       const { reloadWebhooks } = await import("../../lib/built-in-hooks.js");
       const wh = createWebhookHook({
-        type,
+        type: type as import("../../types/hooks.js").HookType,
         handlerUrl: url,
         blocking: opts.blocking ?? false,
         priority: parseInt(opts.priority, 10),

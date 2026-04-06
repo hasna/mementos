@@ -5,7 +5,7 @@ import {
 } from "../../lib/auto-memory.js";
 import { providerRegistry } from "../../lib/providers/registry.js";
 import { hookRegistry } from "../../lib/hooks.js";
-import { loadWebhooksFromDb, reloadWebhooks } from "../../lib/built-in-hooks.js";
+import { reloadWebhooks } from "../../lib/built-in-hooks.js";
 import { runSynthesis, rollbackSynthesis, getSynthesisStatus } from "../../lib/synthesis/index.js";
 import { listSynthesisRuns } from "../../db/synthesis.js";
 import { createSessionJob, getSessionJob, listSessionJobs } from "../../db/session-jobs.js";

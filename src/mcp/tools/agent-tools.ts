@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent, touchAgent } from "../../db/agents.js";
+import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../../db/agents.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;

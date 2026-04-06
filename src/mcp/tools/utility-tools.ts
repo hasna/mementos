@@ -1,18 +1,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import {
-  createMemory,
   cleanExpiredMemories,
 } from "../../db/memories.js";
 import { getAgent } from "../../db/agents.js";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { getDatabase } from "../../db/database.js";
 import { detectProject } from "../../lib/project-detect.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
 import { synthesizeProfile } from "../../lib/profile-synthesizer.js";
 import type {
-  MemoryCategory,
   MemoryFilter,
-  CreateMemoryInput,
 } from "../../types/index.js";
 
 function formatError(error: unknown): string {

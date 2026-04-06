@@ -95,7 +95,7 @@ export function getDatabase(dbPath?: string): Database {
   _dbPath = path;
   ensureDir(path);
 
-  _db = new Database(path, { create: true });
+  _db = new Database(path);
 
   _db.run("PRAGMA journal_mode = WAL");
   _db.run("PRAGMA busy_timeout = 5000");

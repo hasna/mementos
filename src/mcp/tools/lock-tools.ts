@@ -7,11 +7,6 @@ import {
 } from "../../lib/memory-lock.js";
 import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocksWithInfo } from "../../db/locks.js";
 
-function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
 export function registerLockTools(server: McpServer): void {
   server.tool(
     "memory_lock",

@@ -20,7 +20,6 @@ import { searchMemories, hybridSearch, searchWithBm25 } from "../../lib/search.j
 import { detectProject } from "../../lib/project-detect.js";
 import { hookRegistry } from "../../lib/hooks.js";
 import { getCurrentMachineId } from "../../db/machines.js";
-import { saveToolEvent, getToolStats, getToolLessons, getToolEvents } from "../../db/tool-events.js";
 import {
   MemoryNotFoundError,
   VersionConflictError,
