@@ -12,6 +12,7 @@ import { startAutoInject, stopAutoInject } from "../lib/auto-inject-orchestrator
 import { registerMemoryTools } from "./tools/memory-tools.js";
 import { registerMemorySearchTools } from "./tools/memory-search.js";
 import { registerMemoryLifecycleTools } from "./tools/memory-lifecycle.js";
+import { registerMemorySyncTools } from "./tools/memory-sync.js";
 import { registerGraphTools } from "./tools/graph-tools.js";
 import { registerAgentTools } from "./tools/agent-tools.js";
 import { registerProjectTools } from "./tools/project-tools.js";
@@ -71,6 +72,7 @@ Options:
 registerMemoryTools(server);
 registerMemorySearchTools(server);
 registerMemoryLifecycleTools(server);
+registerMemorySyncTools(server);
 registerGraphTools(server);
 registerAgentTools(server);
 registerProjectTools(server);
