@@ -9,7 +9,10 @@ import { detectProject } from "../lib/project-detect.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startAutoInject, stopAutoInject } from "../lib/auto-inject-orchestrator.js";
 
-import { registerMemoryTools } from "./tools/memory-tools.js";
+import { registerMemoryCrudTools } from "./tools/memory-crud.js";
+import { registerMemoryHistoryTools } from "./tools/memory-history.js";
+import { registerMemoryHealthTools } from "./tools/memory-health.js";
+import { registerMemoryValidationTools } from "./tools/memory-validation.js";
 import { registerMemorySearchTools } from "./tools/memory-search.js";
 import { registerMemoryLifecycleTools } from "./tools/memory-lifecycle.js";
 import { registerMemorySyncTools } from "./tools/memory-sync.js";
@@ -75,7 +78,10 @@ Options:
 }
 
 // Register all tool groups
-registerMemoryTools(server);
+registerMemoryCrudTools(server);
+registerMemoryHistoryTools(server);
+registerMemoryHealthTools(server);
+registerMemoryValidationTools(server);
 registerMemorySearchTools(server);
 registerMemoryLifecycleTools(server);
 registerMemorySyncTools(server);
