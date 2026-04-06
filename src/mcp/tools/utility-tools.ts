@@ -5,29 +5,13 @@ import {
 } from "../../db/memories.js";
 import { getAgent } from "../../db/agents.js";
 import { getDatabase } from "../../db/database.js";
-import { detectProject } from "../../lib/project-detect.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
 import { synthesizeProfile } from "../../lib/profile-synthesizer.js";
 import type {
   MemoryFilter,
 } from "../../types/index.js";
 
-function formatError(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-let _autoProjectInitialized = false;
-
-function ensureAutoProject(): void {
-  if (_autoProjectInitialized) return;
-  _autoProjectInitialized = true;
-  try {
-    detectProject();
-  } catch {
-    // Silently ignore — auto-detection is best-effort
-  }
-}
+import { ensureAutoProject, formatError } from "./memory-utils.js";
 
 type ToolParam = {
   type: string;
