@@ -10,6 +10,7 @@ import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startAutoInject, stopAutoInject } from "../lib/auto-inject-orchestrator.js";
 
 import { registerMemoryTools } from "./tools/memory-tools.js";
+import { registerMemorySearchTools } from "./tools/memory-search.js";
 import { registerGraphTools } from "./tools/graph-tools.js";
 import { registerAgentTools } from "./tools/agent-tools.js";
 import { registerProjectTools } from "./tools/project-tools.js";
@@ -67,6 +68,7 @@ Options:
 
 // Register all tool groups
 registerMemoryTools(server);
+registerMemorySearchTools(server);
 registerGraphTools(server);
 registerAgentTools(server);
 registerProjectTools(server);
