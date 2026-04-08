@@ -1,11 +1,19 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { getCloudConfig } from "@hasna/cloud";
 import { z } from "zod";
 import {
   registerProject,
   listProjects,
   getProject,
 } from "../../db/projects.js";
-import { registerMachine, listMachines, getMachine, renameMachine } from "../../db/machines.js";
+import {
+  registerMachine,
+  listMachines,
+  getMachine,
+  renameMachine,
+  setPrimaryMachine,
+} from "../../db/machines.js";
+import { pullCloudChanges, pushCloudChanges } from "../../lib/cloud-sync.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
@@ -23,6 +31,23 @@ function formatError(error: unknown): string {
     return msg;
   }
   return String(error);
+}
+
+function cloudSyncEnabled(): boolean {
+  const mode = getCloudConfig().mode;
+  return mode === "hybrid" || mode === "cloud";
+}
+
+function syncMachinesTable(direction: "push" | "pull", currentMachineId?: string): void {
+  if (!cloudSyncEnabled()) return;
+
+  const result = direction === "push"
+    ? pushCloudChanges({ tables: ["machines"], current_machine_id: currentMachineId ?? null })
+    : pullCloudChanges({ tables: ["machines"], current_machine_id: currentMachineId ?? null });
+
+  if (result.errors.length > 0) {
+    throw new Error(`Cloud ${direction} for machines failed: ${result.errors.join("; ")}`);
+  }
 }
 
 export function registerProjectTools(server: McpServer): void {
@@ -100,7 +125,9 @@ export function registerProjectTools(server: McpServer): void {
     { name: z.string().optional().describe("Human-readable name (e.g. 'apple01'). Defaults to hostname.") },
     async (args) => {
       try {
+        syncMachinesTable("pull");
         const machine = registerMachine(args.name);
+        syncMachinesTable("push", machine.id);
         return { content: [{ type: "text" as const, text: `Machine: ${machine.name} | ${machine.id.slice(0, 8)} | hostname:${machine.hostname} | platform:${machine.platform}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -110,10 +137,11 @@ export function registerProjectTools(server: McpServer): void {
 
   server.tool(
     "list_machines",
-    "List all registered machines with their hostname, platform, and last seen time.",
+    "List all registered machines with their hostname, platform, primary status, and last seen time.",
     {},
     async () => {
       try {
+        syncMachinesTable("pull");
         const machines = listMachines();
         return { content: [{ type: "text" as const, text: JSON.stringify(machines) }] };
       } catch (e) {
@@ -128,10 +156,33 @@ export function registerProjectTools(server: McpServer): void {
     { id: z.string().describe("Machine ID or name"), new_name: z.string() },
     async (args) => {
       try {
+        syncMachinesTable("pull");
         const machine = getMachine(args.id);
         if (!machine) return { content: [{ type: "text" as const, text: `Machine not found: ${args.id}` }], isError: true };
         const updated = renameMachine(machine.id, args.new_name);
+        syncMachinesTable("push", updated.id);
         return { content: [{ type: "text" as const, text: `Renamed: ${machine.name} → ${updated.name}` }] };
+      } catch (e) {
+        return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+      }
+    }
+  );
+
+  server.tool(
+    "set_primary_machine",
+    "Mark a machine as the primary machine. Only one primary machine is allowed at a time.",
+    { id: z.string().describe("Machine ID or name") },
+    async (args) => {
+      try {
+        syncMachinesTable("pull");
+        const updated = setPrimaryMachine(args.id);
+        syncMachinesTable("push", updated.id);
+        return {
+          content: [{
+            type: "text" as const,
+            text: `Primary machine: ${updated.name} | ${updated.id.slice(0, 8)} | hostname:${updated.hostname}`,
+          }],
+        };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

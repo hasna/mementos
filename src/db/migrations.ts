@@ -817,4 +817,34 @@ ALTER TABLE memories ADD COLUMN sequence_order INTEGER DEFAULT NULL;
 CREATE INDEX IF NOT EXISTS idx_memories_sequence_group ON memories(sequence_group) WHERE sequence_group IS NOT NULL;
 INSERT OR IGNORE INTO _migrations (id) VALUES (32);
 `,
+  // Migration 33: primary machine designation and delete protection
+  `
+ALTER TABLE machines ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_machines_primary ON machines(is_primary);
+CREATE TRIGGER IF NOT EXISTS machines_single_primary_insert
+AFTER INSERT ON machines
+WHEN NEW.is_primary = 1
+BEGIN
+  UPDATE machines
+  SET is_primary = 0,
+      last_seen_at = COALESCE(NEW.last_seen_at, datetime('now'))
+  WHERE id != NEW.id AND is_primary = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS machines_single_primary_update
+AFTER UPDATE OF is_primary ON machines
+WHEN NEW.is_primary = 1
+BEGIN
+  UPDATE machines
+  SET is_primary = 0,
+      last_seen_at = COALESCE(NEW.last_seen_at, datetime('now'))
+  WHERE id != NEW.id AND is_primary = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS machines_prevent_delete_primary
+BEFORE DELETE ON machines
+WHEN OLD.is_primary = 1
+BEGIN
+  SELECT RAISE(ABORT, 'Primary machine cannot be deleted');
+END;
+INSERT OR IGNORE INTO _migrations (id) VALUES (33);
+`,
 ];

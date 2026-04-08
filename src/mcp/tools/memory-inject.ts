@@ -3,6 +3,11 @@ import { z } from "zod";
 import { listMemories, touchMemory, semanticSearch } from "../../db/memories.js";
 import { hookRegistry } from "../../lib/hooks.js";
 import { getDatabase } from "../../db/database.js";
+import {
+  isMemoryVisibleToMachine,
+  resolveVisibleMachineId,
+  visibleToMachineFilter,
+} from "../../lib/machine-visibility.js";
 import { formatError } from "./memory-utils.js";
 import type { Memory, MemoryCategory } from "../../types/index.js";
 
@@ -23,6 +28,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
       query: z.string().optional().describe("Query for smart injection relevance scoring. Required when strategy='smart'."),
       task_context: z.string().optional().describe("What the agent is about to do. When provided, activates intent-based retrieval — matches against when_to_use fields for situationally relevant memories."),
       mode: z.enum(["full", "hints"]).optional().default("full").describe("'full' = inject complete memory content (default), 'hints' = inject lightweight topic summary with counts, saving 60-70% tokens. Agent uses memory_recall to pull details as needed."),
+      machine_id: z.string().optional().describe("Current machine ID for machine-local memory visibility. Defaults to the current machine."),
     },
     async (args) => {
       try {
@@ -36,6 +42,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
             session_id: args.session_id,
             max_tokens: args.max_tokens,
             min_importance: args.min_importance,
+            machine_id: args.machine_id,
           });
           return { content: [{ type: "text" as const, text: result.output }] };
         }
@@ -43,6 +50,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
         const maxTokens = args.max_tokens || 500;
         const minImportance = args.min_importance || 3;
         const categories = args.categories || ["preference", "fact", "knowledge"];
+        const visibleMachineId = resolveVisibleMachineId(args.machine_id);
 
         // Collect memories from all visible scopes
         const allMemories: Memory[] = [];
@@ -54,6 +62,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
           min_importance: minImportance,
           status: "active",
           project_id: args.project_id,
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 50,
         });
         allMemories.push(...globalMems);
@@ -66,6 +75,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
             min_importance: minImportance,
             status: "active",
             project_id: args.project_id,
+            ...visibleToMachineFilter(visibleMachineId),
             limit: 50,
           });
           allMemories.push(...sharedMems);
@@ -79,6 +89,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
             min_importance: minImportance,
             status: "active",
             agent_id: args.agent_id,
+            ...visibleToMachineFilter(visibleMachineId),
             limit: 50,
           });
           allMemories.push(...privateMems);
@@ -92,6 +103,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
             ...(args.session_id ? { session_id: args.session_id } : {}),
             ...(args.agent_id ? { agent_id: args.agent_id } : {}),
             ...(args.project_id ? { project_id: args.project_id } : {}),
+            ...visibleToMachineFilter(visibleMachineId),
             limit: 50,
           });
           allMemories.push(...workingMems);
@@ -118,6 +130,7 @@ export function registerMemoryInjectTools(server: McpServer): void {
               project_id: args.project_id,
             });
             for (const r of activationResults) {
+              if (!isMemoryVisibleToMachine(r.memory, visibleMachineId)) continue;
               activationBoostedIds.add(r.memory.id);
               // Merge activation-matched memories not already in unique
               if (!seen.has(r.memory.id)) {

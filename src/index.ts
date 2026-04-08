@@ -121,6 +121,23 @@ export {
   listProjects,
 } from "./db/projects.js";
 
+// Machines
+export {
+  registerMachine,
+  listMachines,
+  getMachine,
+  renameMachine,
+  deleteMachine,
+  touchMachine,
+  getCurrentMachineId,
+  getPrimaryMachine,
+  getPrimaryMachineCandidate,
+  setPrimaryMachine,
+  getFallbackSyncTargetMachine,
+  getPrimaryMachineStartupWarning,
+} from "./db/machines.js";
+export type { Machine } from "./db/machines.js";
+
 // Search
 export { searchMemories } from "./lib/search.js";
 

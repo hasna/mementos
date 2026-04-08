@@ -55,8 +55,8 @@ export function parseMemoryRow(row: Record<string, unknown>): Memory {
     agent_id: (row["agent_id"] as string) || null,
     project_id: (row["project_id"] as string) || null,
     session_id: (row["session_id"] as string) || null,
-  machine_id: (row["machine_id"] as string) || null,
-  flag: (row["flag"] as string) || null,
+    machine_id: (row["machine_id"] as string) || null,
+    flag: (row["flag"] as string) || null,
     when_to_use: (row["when_to_use"] as string) || null,
     sequence_group: (row["sequence_group"] as string) || null,
     sequence_order: (row["sequence_order"] as number) ?? null,
@@ -457,6 +457,22 @@ export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
     if (filter.session_id) {
       conditions.push("session_id = ?");
       params.push(filter.session_id);
+    }
+    if ("machine_id" in filter) {
+      if (filter.machine_id === null) {
+        conditions.push("machine_id IS NULL");
+      } else if (filter.machine_id) {
+        conditions.push("machine_id = ?");
+        params.push(filter.machine_id);
+      }
+    }
+    if ("visible_to_machine_id" in filter) {
+      if (filter.visible_to_machine_id === null) {
+        conditions.push("machine_id IS NULL");
+      } else if (filter.visible_to_machine_id !== undefined) {
+        conditions.push("(machine_id IS NULL OR machine_id = ?)");
+        params.push(filter.visible_to_machine_id);
+      }
     }
     if (filter.min_importance) {
       conditions.push("importance >= ?");

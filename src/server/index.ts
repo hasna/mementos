@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { join, resolve, sep } from "node:path";
 import { getActiveProfile, listProfiles, getDbPath } from "../lib/config.js";
 import { getDatabase } from "../db/database.js";
+import { getPrimaryMachineStartupWarning } from "../db/machines.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startSessionQueueWorker } from "../lib/session-queue.js";
 
@@ -108,9 +109,21 @@ function parsePort(): number {
 
 let _serverInitialized = false;
 
+function warnIfPrimaryMachineUnset(): void {
+  try {
+    const warning = getPrimaryMachineStartupWarning(getDatabase());
+    if (warning) {
+      console.warn(`[mementos-serve] ${warning}`);
+    }
+  } catch {
+    // Best-effort warning only — startup should continue.
+  }
+}
+
 function initServer(): void {
   if (_serverInitialized) return;
   _serverInitialized = true;
+  warnIfPrimaryMachineUnset();
   loadWebhooksFromDb();
   startSessionQueueWorker();
 }

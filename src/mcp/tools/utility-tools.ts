@@ -7,6 +7,10 @@ import { getAgent } from "../../db/agents.js";
 import { getDatabase } from "../../db/database.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
 import { synthesizeProfile } from "../../lib/profile-synthesizer.js";
+import {
+  isMemoryVisibleToMachine,
+  resolveVisibleMachineId,
+} from "../../lib/machine-visibility.js";
 import type {
   MemoryFilter,
 } from "../../types/index.js";
@@ -30,6 +34,7 @@ const UTILITY_TOOL_SCHEMAS = {
       since: { type: "string", description: "ISO 8601 timestamp. Defaults to agent's last_seen_at if agent_id provided, otherwise 24h ago." },
       project_id: { type: "string", description: "Project UUID filter" },
       scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
+      machine_id: { type: "string", description: "Current machine ID for machine-local memory visibility. Defaults to the current machine." },
       limit: { type: "number", description: "Max memories per category (default: 20)" },
     },
     example: '{"agent_id":"maximus","since":"2024-01-01T00:00:00Z"}',
@@ -46,6 +51,7 @@ const UTILITY_TOOL_SCHEMAS = {
       no_decay: { type: "boolean", description: "Set true to disable decay and sort purely by importance." },
       task_context: { type: "string", description: "What the agent is about to do. When provided, activates intent-based retrieval — matches against when_to_use fields." },
       strategy: { type: "string", description: "Injection strategy: 'default' = decay-scored, 'smart' = activation-matched + layered + tool-aware", enum: ["default", "smart"] },
+      machine_id: { type: "string", description: "Current machine ID for machine-local memory visibility. Defaults to the current machine." },
     },
     example: '{"scope":"global","limit":20,"strategy":"smart","task_context":"deploying to production"}',
   },
@@ -58,6 +64,7 @@ const UTILITY_TOOL_SCHEMAS = {
       scope: { type: "string", description: "Scope filter", enum: ["global", "shared", "private", "working"] },
       query: { type: "string", description: "Query to find relevant knowledge (populates Relevant Knowledge section)" },
       max_per_section: { type: "number", description: "Max memories per section (default: 10)" },
+      machine_id: { type: "string", description: "Current machine ID for machine-local memory visibility. Defaults to the current machine." },
     },
     example: '{"project_id":"proj-uuid","max_per_section":5}',
   },
@@ -117,12 +124,14 @@ export function registerUtilityTools(server: McpServer): void {
       since: z.string().optional().describe("ISO 8601 timestamp. Defaults to agent's last_seen_at if agent_id provided, otherwise 24h ago."),
       project_id: z.string().optional(),
       scope: z.enum(["global", "shared", "private", "working"]).optional(),
+      machine_id: z.string().optional().describe("Current machine ID for machine-local memory visibility. Defaults to the current machine."),
       limit: z.coerce.number().optional().describe("Max memories per category (default: 20)"),
     },
     async (args) => {
       try {
         const db = getDatabase();
         const limit = args.limit || 20;
+        const visibleMachineId = resolveVisibleMachineId(args.machine_id, db);
 
         // Resolve 'since': agent's last_seen_at → explicit param → 24h ago
         let since = args.since;
@@ -136,29 +145,33 @@ export function registerUtilityTools(server: McpServer): void {
 
         const scopeClause = args.scope ? `AND scope = ?` : "";
         const projectClause = args.project_id ? `AND project_id = ?` : "";
+        const machineClause = visibleMachineId === null
+          ? "AND machine_id IS NULL"
+          : "AND (machine_id IS NULL OR machine_id = ?)";
         const extraParams = [
           ...(args.scope ? [args.scope] : []),
           ...(args.project_id ? [args.project_id] : []),
+          ...(visibleMachineId === null ? [] : [visibleMachineId]),
         ];
 
         // New memories
         const newMems = db.prepare(
           `SELECT id, key, value, summary, importance, scope, category, agent_id, created_at
-           FROM memories WHERE status = 'active' AND created_at > ? ${scopeClause} ${projectClause}
+           FROM memories WHERE status = 'active' AND created_at > ? ${scopeClause} ${projectClause} ${machineClause}
            ORDER BY importance DESC, created_at DESC LIMIT ?`
         ).all(since, ...extraParams, limit) as Array<{id: string; key: string; value: string; summary: string|null; importance: number; scope: string; category: string; agent_id: string|null; created_at: string}>;
 
         // Updated memories (updated_at > since but created before since)
         const updatedMems = db.prepare(
           `SELECT id, key, value, summary, importance, scope, category, agent_id, updated_at
-           FROM memories WHERE status = 'active' AND updated_at > ? AND created_at <= ? ${scopeClause} ${projectClause}
+           FROM memories WHERE status = 'active' AND updated_at > ? AND created_at <= ? ${scopeClause} ${projectClause} ${machineClause}
            ORDER BY importance DESC, updated_at DESC LIMIT ?`
         ).all(since, since, ...extraParams, limit) as Array<{id: string; key: string; summary: string|null; importance: number; scope: string; value: string; agent_id: string|null; updated_at: string}>;
 
         // Expired/archived memories
         const expiredMems = db.prepare(
           `SELECT id, key, scope, category, updated_at, status
-           FROM memories WHERE status != 'active' AND updated_at > ? ${scopeClause} ${projectClause}
+           FROM memories WHERE status != 'active' AND updated_at > ? ${scopeClause} ${projectClause} ${machineClause}
            ORDER BY updated_at DESC LIMIT ?`
         ).all(since, ...extraParams, Math.min(limit, 10)) as Array<{id: string; key: string; scope: string; category: string; updated_at: string; status: string}>;
 
@@ -205,6 +218,7 @@ export function registerUtilityTools(server: McpServer): void {
       no_decay: z.coerce.boolean().optional().describe("Set true to disable decay and sort purely by importance."),
       task_context: z.string().optional().describe("What the agent is about to do. When provided, activates intent-based retrieval — matches against when_to_use fields for situationally relevant memories."),
       strategy: z.enum(["default", "smart"]).optional().default("default").describe("Injection strategy: 'default' = decay-scored, 'smart' = activation-matched + layered + tool-aware (requires task_context)"),
+      machine_id: z.string().optional().describe("Current machine ID for machine-local memory visibility. Defaults to the current machine."),
     },
     async (args) => {
       try {
@@ -215,16 +229,19 @@ export function registerUtilityTools(server: McpServer): void {
             task_context: args.task_context,
             project_id: args.project_id,
             agent_id: args.agent_id,
+            machine_id: args.machine_id,
             max_tokens: args.limit ? args.limit * 20 : undefined,
           });
           return { content: [{ type: "text" as const, text: result.output }] };
         }
 
+        const visibleMachineId = resolveVisibleMachineId(args.machine_id);
         const filter: MemoryFilter = {
           scope: args.scope,
           agent_id: args.agent_id,
           project_id: args.project_id,
           status: "active",
+          visible_to_machine_id: visibleMachineId,
           limit: (args.limit || 30) * 2, // fetch 2x, then rerank by effective score
         };
         const memories = listMemories(filter);
@@ -244,6 +261,7 @@ export function registerUtilityTools(server: McpServer): void {
             });
             const seenIds = new Set(memories.map((m) => m.id));
             for (const r of activationResults) {
+              if (!isMemoryVisibleToMachine(r.memory, visibleMachineId)) continue;
               activationBoostedIds.add(r.memory.id);
               // Merge activation-matched memories not already in the list
               if (!seenIds.has(r.memory.id)) {
@@ -307,6 +325,7 @@ export function registerUtilityTools(server: McpServer): void {
       scope: z.enum(["global", "shared", "private", "working"]).optional(),
       query: z.string().optional().describe("Query to find relevant knowledge (populates Relevant Knowledge section)"),
       max_per_section: z.coerce.number().optional().describe("Max memories per section (default: 10)"),
+      machine_id: z.string().optional().describe("Current machine ID for machine-local memory visibility. Defaults to the current machine."),
     },
     async (args) => {
       try {
@@ -314,6 +333,7 @@ export function registerUtilityTools(server: McpServer): void {
         const ctx = assembleContext({
           project_id: args.project_id,
           agent_id: args.agent_id,
+          machine_id: args.machine_id,
           scope: args.scope,
           query: args.query,
           max_per_section: args.max_per_section,

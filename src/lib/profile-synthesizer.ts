@@ -48,12 +48,14 @@ export async function synthesizeProfile(options: {
   const prefMemories = listMemories({
     category: "preference",
     project_id: options.project_id,
+    machine_id: null,
     status: "active",
     limit: 30,
   });
   const factMemories = listMemories({
     category: "fact",
     project_id: options.project_id,
+    machine_id: null,
     status: "active",
     limit: 30,
   });

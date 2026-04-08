@@ -1,5 +1,9 @@
 import { listMemories, createMemory, cleanExpiredMemories, touchMemory } from "../../db/memories.js";
 import { getDbPath } from "../../lib/config.js";
+import {
+  resolveVisibleMachineId,
+  visibleToMachineFilter,
+} from "../../lib/machine-visibility.js";
 import type { Memory, MemoryCategory, CreateMemoryInput } from "../../types/index.js";
 import { addRoute } from "../router.js";
 import { json, readJson, getSearchParams } from "../helpers.js";
@@ -109,6 +113,7 @@ addRoute("GET", "/api/inject", (_req, url) => {
     "fact",
     "knowledge",
   ];
+  const visibleMachineId = resolveVisibleMachineId(q["machine_id"]);
 
   // Collect memories from all visible scopes
   const allMemories: Memory[] = [];
@@ -120,6 +125,7 @@ addRoute("GET", "/api/inject", (_req, url) => {
     min_importance: minImportance,
     status: "active",
     project_id: q["project_id"],
+    ...visibleToMachineFilter(visibleMachineId),
     limit: 50,
   });
   allMemories.push(...globalMems);
@@ -132,6 +138,7 @@ addRoute("GET", "/api/inject", (_req, url) => {
       min_importance: minImportance,
       status: "active",
       project_id: q["project_id"],
+      ...visibleToMachineFilter(visibleMachineId),
       limit: 50,
     });
     allMemories.push(...sharedMems);
@@ -145,6 +152,7 @@ addRoute("GET", "/api/inject", (_req, url) => {
       min_importance: minImportance,
       status: "active",
       agent_id: q["agent_id"],
+      ...visibleToMachineFilter(visibleMachineId),
       limit: 50,
     });
     allMemories.push(...privateMems);

@@ -4,6 +4,11 @@ import { listMemories, touchMemory, semanticSearch } from "../db/memories.js";
 import { loadConfig } from "./config.js";
 import { generateEmbedding, cosineSimilarity, deserializeEmbedding } from "./embeddings.js";
 import { computeDecayScore } from "./decay.js";
+import {
+  isMemoryVisibleToMachine,
+  resolveVisibleMachineId,
+  visibleToMachineFilter,
+} from "./machine-visibility.js";
 import { synthesizeProfile } from "./profile-synthesizer.js";
 import { getToolStats, getToolLessons } from "../db/tool-events.js";
 
@@ -22,6 +27,7 @@ export interface InjectionOptions {
   min_importance?: number;
   strategy?: InjectionStrategy;
   query?: string; // required when strategy='smart'
+  machine_id?: string | null;
   db?: Database;
 }
 
@@ -42,6 +48,8 @@ export interface SmartInjectionOptions {
   max_tokens?: number;
   /** Minimum importance threshold (before decay) */
   min_importance?: number;
+  /** Current machine ID for machine-local memory visibility */
+  machine_id?: string | null;
   /** Force profile resynthesis even if cached */
   force_profile_refresh?: boolean;
   /** Optional DB handle */
@@ -95,6 +103,7 @@ export class MemoryInjector {
       options.min_importance || this.config.injection.min_importance;
     const categories = options.categories || this.config.injection.categories;
     const db = options.db;
+    const visibleMachineId = resolveVisibleMachineId(options.machine_id, db);
 
     // Collect memories from all visible scopes
     const allMemories: Memory[] = [];
@@ -106,6 +115,7 @@ export class MemoryInjector {
         category: categories,
         min_importance: minImportance,
         status: "active",
+        ...visibleToMachineFilter(visibleMachineId),
         limit: 100,
       },
       db
@@ -121,6 +131,7 @@ export class MemoryInjector {
           min_importance: minImportance,
           status: "active",
           project_id: options.project_id,
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 100,
         },
         db
@@ -137,6 +148,7 @@ export class MemoryInjector {
           min_importance: minImportance,
           status: "active",
           agent_id: options.agent_id,
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 100,
         },
         db
@@ -153,6 +165,7 @@ export class MemoryInjector {
           ...(options.session_id ? { session_id: options.session_id } : {}),
           ...(options.agent_id ? { agent_id: options.agent_id } : {}),
           ...(options.project_id ? { project_id: options.project_id } : {}),
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 100,
         },
         db
@@ -290,6 +303,7 @@ export class MemoryInjector {
       options.min_importance || this.config.injection.min_importance;
     const categories = options.categories || this.config.injection.categories;
     const db = options.db;
+    const visibleMachineId = resolveVisibleMachineId(options.machine_id, db);
 
     // Collect candidate memories from all visible scopes (same as default)
     const allMemories: Memory[] = [];
@@ -300,6 +314,7 @@ export class MemoryInjector {
         category: categories,
         min_importance: minImportance,
         status: "active",
+        ...visibleToMachineFilter(visibleMachineId),
         limit: 100,
       },
       db
@@ -314,6 +329,7 @@ export class MemoryInjector {
           min_importance: minImportance,
           status: "active",
           project_id: options.project_id,
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 100,
         },
         db
@@ -329,6 +345,7 @@ export class MemoryInjector {
           min_importance: minImportance,
           status: "active",
           agent_id: options.agent_id,
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 100,
         },
         db
@@ -345,6 +362,7 @@ export class MemoryInjector {
           ...(options.session_id ? { session_id: options.session_id } : {}),
           ...(options.agent_id ? { agent_id: options.agent_id } : {}),
           ...(options.project_id ? { project_id: options.project_id } : {}),
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 100,
         },
         db
@@ -555,15 +573,26 @@ function collectVisibleMemories(
     agent_id?: string;
     session_id?: string;
     min_importance?: number;
+    machine_id?: string | null;
   },
   db?: Database
 ): Memory[] {
   const allMemories: Memory[] = [];
   const minImportance = options.min_importance ?? 1;
+  const visibleMachineId = resolveVisibleMachineId(options.machine_id, db);
 
   // Global memories
   allMemories.push(
-    ...listMemories({ scope: "global", min_importance: minImportance, status: "active", limit: 100 }, db)
+    ...listMemories(
+      {
+        scope: "global",
+        min_importance: minImportance,
+        status: "active",
+        ...visibleToMachineFilter(visibleMachineId),
+        limit: 100,
+      },
+      db
+    )
   );
 
   // Shared memories (project-scoped)
@@ -574,6 +603,7 @@ function collectVisibleMemories(
         min_importance: minImportance,
         status: "active",
         project_id: options.project_id,
+        ...visibleToMachineFilter(visibleMachineId),
         limit: 100,
       }, db)
     );
@@ -587,6 +617,7 @@ function collectVisibleMemories(
         min_importance: minImportance,
         status: "active",
         agent_id: options.agent_id,
+        ...visibleToMachineFilter(visibleMachineId),
         limit: 100,
       }, db)
     );
@@ -601,6 +632,7 @@ function collectVisibleMemories(
         ...(options.session_id ? { session_id: options.session_id } : {}),
         ...(options.agent_id ? { agent_id: options.agent_id } : {}),
         ...(options.project_id ? { project_id: options.project_id } : {}),
+        ...visibleToMachineFilter(visibleMachineId),
         limit: 100,
       }, db)
     );
@@ -674,6 +706,7 @@ export async function smartInject(options: SmartInjectionOptions): Promise<Smart
       agent_id: options.agent_id,
       session_id: options.session_id,
       min_importance: minImportance,
+      machine_id: options.machine_id,
     },
     db
   );
@@ -693,6 +726,7 @@ export async function smartInject(options: SmartInjectionOptions): Promise<Smart
       db
     );
     for (const result of semanticResults) {
+      if (!isMemoryVisibleToMachine(result.memory, options.machine_id, db)) continue;
       activationMap.set(result.memory.id, result.score);
     }
   } catch {

@@ -47,3 +47,36 @@ Committed local changes
 error: cannot pull with rebase: You have unstaged changes.
 error: Please commit or stash them.
 === 2026-04-08 00:02:02 ===
+[main f56275f] chore: auto-commit uncommitted changes before sync
+ 35 files changed, 2572 insertions(+), 2519 deletions(-)
+ create mode 100644 src/cli/commands/memory-cmd-bulk.ts
+ create mode 100644 src/cli/commands/memory-cmd-chain.ts
+ create mode 100644 src/cli/commands/memory-cmd-diff.ts
+ create mode 100644 src/cli/commands/memory-cmd-list.ts
+ create mode 100644 src/cli/commands/memory-cmd-recall.ts
+ create mode 100644 src/cli/commands/memory-cmd-remove.ts
+ create mode 100644 src/cli/commands/memory-cmd-search.ts
+ create mode 100644 src/cli/commands/memory-cmd-tail.ts
+ create mode 100644 src/cli/commands/memory-cmd-when-to-use.ts
+ create mode 100644 src/cli/commands/system-completions.ts
+ create mode 100644 src/cli/commands/system-mcp.ts
+ create mode 100644 src/cli/commands/system-watch.ts
+ create mode 100644 src/mcp/tools/system-tools-events.ts
+ create mode 100644 src/mcp/tools/system-tools-memory-admin.ts
+ create mode 100644 src/mcp/tools/system-tools-shared.ts
+ create mode 100644 src/server/routes/memories-bulk.ts
+ create mode 100644 src/server/routes/memories-crud.ts
+ create mode 100644 src/server/routes/memories-io.ts
+ create mode 100644 src/server/routes/memories-misc.ts
+ create mode 100644 src/server/routes/memories-search.ts
+ create mode 100644 src/server/routes/memories-stats.ts
+ create mode 100644 src/server/routes/system-auto-memory.ts
+ create mode 100644 src/server/routes/system-chain.ts
+ create mode 100644 src/server/routes/system-hooks.ts
+ create mode 100644 src/server/routes/system-sessions.ts
+ create mode 100644 src/server/routes/system-synthesis.ts
+ create mode 100644 src/server/routes/system-tools.ts
+Committed local changes
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
+=== 2026-04-09 00:02:01 ===

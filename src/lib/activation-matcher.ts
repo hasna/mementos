@@ -5,6 +5,10 @@
 
 import { semanticSearch, listMemories } from "../db/memories.js";
 import { computeDecayScore } from "./decay.js";
+import {
+  isMemoryVisibleToMachine,
+  visibleToMachineFilter,
+} from "./machine-visibility.js";
 import type { Memory } from "../types/index.js";
 
 // Recently pushed memory IDs — don't push the same memory twice within the window
@@ -35,6 +39,7 @@ export async function findActivatedMemories(
   options?: {
     project_id?: string;
     agent_id?: string;
+    machine_id?: string | null;
     min_similarity?: number;
     max_results?: number;
   }
@@ -62,6 +67,7 @@ export async function findActivatedMemories(
     cleanRecentlyPushed();
     let filtered = results
       .map(r => r.memory)
+      .filter(m => isMemoryVisibleToMachine(m, options?.machine_id))
       .filter(m => !_recentlyPushed.has(m.id))
       .filter(m => m.status === "active");
 
@@ -90,13 +96,14 @@ export async function findActivatedMemories(
 
 function fallbackKeywordMatch(
   contextText: string,
-  options?: { project_id?: string; max_results?: number }
+  options?: { project_id?: string; machine_id?: string | null; max_results?: number }
 ): Memory[] {
   try {
     // Get memories that have when_to_use set and do simple keyword overlap
     const allMemories = listMemories({
       project_id: options?.project_id,
       status: "active",
+      ...visibleToMachineFilter(options?.machine_id),
       limit: 100,
     });
 

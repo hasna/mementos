@@ -5,6 +5,7 @@
 
 import { listMemories } from "../db/memories.js";
 import { pushRawNotification, formatBriefing } from "./channel-pusher.js";
+import { visibleToMachineFilter } from "./machine-visibility.js";
 import type { Memory } from "../types/index.js";
 
 export async function pushSessionBriefing(options: {
@@ -16,6 +17,8 @@ export async function pushSessionBriefing(options: {
   if (!options.project_id) return false;
 
   try {
+    const machineFilter = visibleToMachineFilter();
+
     // 1. Load synthesized profile (if available)
     let profile: string | null = null;
     try {
@@ -34,6 +37,7 @@ export async function pushSessionBriefing(options: {
       project_id: options.project_id,
       pinned: true,
       status: "active",
+      ...machineFilter,
       limit: 5,
     });
 
@@ -41,6 +45,7 @@ export async function pushSessionBriefing(options: {
       project_id: options.project_id,
       status: "active",
       min_importance: 7,
+      ...machineFilter,
       limit: 10,
     });
 
@@ -62,6 +67,7 @@ export async function pushSessionBriefing(options: {
         project_id: options.project_id,
         category: "history",
         status: "active",
+        ...machineFilter,
         limit: 5,
       });
       const summary = sessionMemories.find(m => m.key.includes("summary"));
@@ -74,6 +80,7 @@ export async function pushSessionBriefing(options: {
     const allMemories = listMemories({
       project_id: options.project_id,
       status: "active",
+      ...machineFilter,
       limit: 100,
     });
     const flagged = allMemories.filter(m => m.flag && m.flag !== "");
