@@ -5,6 +5,8 @@ import { registerCloudTools } from "@hasna/cloud";
 import { listMemories } from "../db/memories.js";
 import { listAgents } from "../db/agents.js";
 import { listProjects } from "../db/projects.js";
+import { getDatabase } from "../db/database.js";
+import { getPrimaryMachineStartupWarning } from "../db/machines.js";
 import { detectProject } from "../lib/project-detect.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startAutoInject, stopAutoInject } from "../lib/auto-inject-orchestrator.js";
@@ -185,6 +187,15 @@ async function main(): Promise<void> {
   if (hasFlag("--version", "-V")) {
     process.stdout.write(`${_pkg.version}\n`);
     return;
+  }
+
+  try {
+    const warning = getPrimaryMachineStartupWarning(getDatabase());
+    if (warning) {
+      console.warn(`[mementos-mcp] ${warning}`);
+    }
+  } catch {
+    // Best-effort warning only — startup should continue.
   }
 
   await ensureRestServerRunning();

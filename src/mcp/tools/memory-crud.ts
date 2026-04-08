@@ -14,7 +14,6 @@ import { touchAgent } from "../../db/agents.js";
 import { resolveProjectId } from "../../lib/focus.js";
 import { getDatabase } from "../../db/database.js";
 import { searchMemories } from "../../lib/search.js";
-import { getCurrentMachineId } from "../../db/machines.js";
 import { parseDuration } from "../../lib/duration.js";
 import { ensureAutoProject, formatError, resolveId, formatMemory } from "./memory-utils.js";
 import type { MemoryFilter, CreateMemoryInput } from "../../types/index.js";
@@ -41,7 +40,7 @@ export function registerMemoryCrudTools(server: McpServer): void {
         .describe("Conflict strategy: merge=upsert(default), overwrite=same as merge, error=fail if key exists, version-fork=always create new"),
       conflict_strategy: z.enum(["last_writer_wins", "reject"]).optional()
         .describe("Vector clock conflict strategy: last_writer_wins (default) proceeds even if diverged, reject returns error on divergence"),
-      machine_id: z.string().optional().describe("Machine ID (from register_machine). If omitted, auto-detected from current hostname."),
+      machine_id: z.string().optional().describe("Machine ID (from register_machine). Set this only for explicitly machine-local memories."),
       when_to_use: z.string().optional().describe("Activation context — describes WHEN this memory should be retrieved. Used for intent-based retrieval. Example: 'when deploying to production' or 'when debugging database issues'. If set, semantic search matches against this instead of the value."),
       sequence_group: z.string().optional().describe("Chain/sequence group ID — links memories into an ordered procedural sequence. Use memory_chain_get to retrieve the full chain."),
       sequence_order: z.coerce.number().optional().describe("Position within the sequence group (1-based). Memories in a chain are returned ordered by this field."),
@@ -59,10 +58,6 @@ export function registerMemoryCrudTools(server: McpServer): void {
         if (!input.project_id && input.agent_id) {
           const focusedProject = resolveProjectId(input.agent_id as string, null);
           if (focusedProject) input.project_id = focusedProject;
-        }
-        // Auto-detect machine_id if not provided
-        if (!input.machine_id) {
-          try { input.machine_id = getCurrentMachineId(); } catch { /* ignore — machine registry optional */ }
         }
         const dedupeMode = (conflict as import("../../types/index.js").DedupeMode | undefined) ?? "merge";
         const conflictStrategy = (args as Record<string, unknown>).conflict_strategy as string | undefined ?? "last_writer_wins";

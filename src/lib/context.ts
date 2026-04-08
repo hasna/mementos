@@ -11,6 +11,7 @@
 import { listMemories } from "../db/memories.js";
 import type { MemoryFilter, Memory } from "../types/index.js";
 import { SqliteAdapter as Database } from "@hasna/cloud";
+import { resolveVisibleMachineId } from "./machine-visibility.js";
 
 export interface ContextSection {
   title: string;
@@ -30,17 +31,19 @@ export function assembleContext(
   options: {
     project_id?: string;
     agent_id?: string;
+    machine_id?: string | null;
     scope?: string;
     query?: string;
     max_per_section?: number;
   } = {},
   db?: Database
 ): LayeredContext {
-  const { project_id, agent_id, scope, max_per_section = 10 } = options;
+  const { project_id, agent_id, machine_id, scope, max_per_section = 10 } = options;
   const baseFilter: MemoryFilter = {
     project_id,
     agent_id,
     scope: scope as MemoryFilter["scope"],
+    visible_to_machine_id: resolveVisibleMachineId(machine_id, db),
   };
 
   const sections: ContextSection[] = [];

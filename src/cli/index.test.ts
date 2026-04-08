@@ -123,6 +123,11 @@ describe("CLI", () => {
     expect(parsed.length).toBeGreaterThan(0);
   });
 
+  test("warns on startup when no primary machine is configured", async () => {
+    const { stderr } = await runCli("list", "--json");
+    expect(stderr).toContain("No primary machine configured");
+  });
+
   test("-j short alias outputs parseable JSON", async () => {
     const { stdout, exitCode } = await runCli("-j", "list");
     expect(exitCode).toBe(0);

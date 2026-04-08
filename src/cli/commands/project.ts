@@ -3,6 +3,10 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { registerProject, getProject, listProjects } from "../../db/projects.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
+import {
+  resolveVisibleMachineId,
+  visibleToMachineFilter,
+} from "../../lib/machine-visibility.js";
 import type {
   Memory,
   MemoryCategory,
@@ -101,6 +105,7 @@ export function registerProjectCommands(program: Command): void {
     .option("--agent <name>", "Agent ID for scope filtering")
     .option("--project <path>", "Project path for scope filtering")
     .option("--session <id>", "Session ID for scope filtering")
+    .option("--machine <id>", "Machine ID for machine-local memory visibility")
     .option(
       "--max-tokens <n>",
       "Max approximate token budget",
@@ -130,6 +135,7 @@ export function registerProjectCommands(program: Command): void {
           (opts.project as string | undefined) || globalOpts.project;
         const sessionId =
           (opts.session as string | undefined) || globalOpts.session;
+        const visibleMachineId = resolveVisibleMachineId(opts.machine as string | undefined);
 
         let projectId: string | undefined;
         if (projectPath) {
@@ -147,6 +153,7 @@ export function registerProjectCommands(program: Command): void {
           min_importance: minImportance,
           status: "active",
           project_id: projectId,
+          ...visibleToMachineFilter(visibleMachineId),
           limit: 50,
         });
         allMemories.push(...globalMems);
@@ -159,6 +166,7 @@ export function registerProjectCommands(program: Command): void {
             min_importance: minImportance,
             status: "active",
             project_id: projectId,
+            ...visibleToMachineFilter(visibleMachineId),
             limit: 50,
           });
           allMemories.push(...sharedMems);
@@ -173,6 +181,7 @@ export function registerProjectCommands(program: Command): void {
             status: "active",
             agent_id: agentId,
             session_id: sessionId,
+            ...visibleToMachineFilter(visibleMachineId),
             limit: 50,
           });
           allMemories.push(...privateMems);

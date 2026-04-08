@@ -3,6 +3,11 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { getProject } from "../../db/projects.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
+import {
+  isMemoryVisibleToMachine,
+  resolveVisibleMachineId,
+  visibleToMachineFilter,
+} from "../../lib/machine-visibility.js";
 import { searchMemories } from "../../lib/search.js";
 import type { MemoryCategory, MemoryScope, MemoryFilter } from "../../types/index.js";
 import {
@@ -25,6 +30,7 @@ export function registerContextCommand(program: Command): void {
     .option("--categories <cats>", "Comma-separated categories to include")
     .option("--agent <name>", "Agent ID for scope filtering")
     .option("--project <path>", "Project path for scope filtering")
+    .option("--machine <id>", "Machine ID for machine-local memory visibility")
     .action((query: string | undefined, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
@@ -37,6 +43,7 @@ export function registerContextCommand(program: Command): void {
           : undefined;
         const agentId = (opts.agent as string | undefined) || globalOpts.agent;
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
+        const visibleMachineId = resolveVisibleMachineId(opts.machine as string | undefined);
 
         let projectId: string | undefined;
         if (projectPath) {
@@ -58,7 +65,9 @@ export function registerContextCommand(program: Command): void {
           if (projectId) filter.project_id = projectId;
 
           const results = searchMemories(query, filter);
-          memories = results.map((r: { memory: import("../../types/index.js").Memory }) => r.memory);
+          memories = results
+            .map((r: { memory: import("../../types/index.js").Memory }) => r.memory)
+            .filter((memory) => isMemoryVisibleToMachine(memory, visibleMachineId));
         } else {
           // No query — gather all relevant memories like inject
           memories = [];
@@ -71,18 +80,33 @@ export function registerContextCommand(program: Command): void {
 
           if (!scope || scope === "global") {
             memories.push(
-              ...listMemories({ ...baseFilter, scope: "global", project_id: projectId })
+              ...listMemories({
+                ...baseFilter,
+                scope: "global",
+                project_id: projectId,
+                ...visibleToMachineFilter(visibleMachineId),
+              })
             );
           }
           if (!scope || scope === "shared") {
             memories.push(
-              ...listMemories({ ...baseFilter, scope: "shared", project_id: projectId })
+              ...listMemories({
+                ...baseFilter,
+                scope: "shared",
+                project_id: projectId,
+                ...visibleToMachineFilter(visibleMachineId),
+              })
             );
           }
           if (!scope || scope === "private") {
             if (agentId) {
               memories.push(
-                ...listMemories({ ...baseFilter, scope: "private", agent_id: agentId })
+                ...listMemories({
+                  ...baseFilter,
+                  scope: "private",
+                  agent_id: agentId,
+                  ...visibleToMachineFilter(visibleMachineId),
+                })
               );
             }
           }

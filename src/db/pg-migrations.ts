@@ -582,6 +582,55 @@ export const PG_MIGRATIONS: string[] = [
   // Migration 32: sequence columns (already on main table)
   `INSERT INTO _migrations (id) VALUES (32) ON CONFLICT DO NOTHING;`,
 
+  // Migration 33: primary machine designation and delete protection
+  `
+  ALTER TABLE machines ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE;
+  CREATE INDEX IF NOT EXISTS idx_machines_primary ON machines(is_primary);
+
+  CREATE OR REPLACE FUNCTION enforce_single_primary_machine() RETURNS trigger AS $$
+  BEGIN
+    IF NEW.is_primary THEN
+      UPDATE machines
+      SET is_primary = FALSE,
+          last_seen_at = COALESCE(NEW.last_seen_at, NOW())
+      WHERE id <> NEW.id AND is_primary = TRUE;
+    END IF;
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  DROP TRIGGER IF EXISTS machines_single_primary_insert ON machines;
+  CREATE TRIGGER machines_single_primary_insert
+    AFTER INSERT ON machines
+    FOR EACH ROW
+    WHEN (NEW.is_primary = TRUE)
+    EXECUTE FUNCTION enforce_single_primary_machine();
+
+  DROP TRIGGER IF EXISTS machines_single_primary_update ON machines;
+  CREATE TRIGGER machines_single_primary_update
+    AFTER UPDATE OF is_primary ON machines
+    FOR EACH ROW
+    WHEN (NEW.is_primary = TRUE)
+    EXECUTE FUNCTION enforce_single_primary_machine();
+
+  CREATE OR REPLACE FUNCTION prevent_delete_primary_machine() RETURNS trigger AS $$
+  BEGIN
+    IF OLD.is_primary THEN
+      RAISE EXCEPTION 'Primary machine cannot be deleted';
+    END IF;
+    RETURN OLD;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  DROP TRIGGER IF EXISTS machines_prevent_delete_primary ON machines;
+  CREATE TRIGGER machines_prevent_delete_primary
+    BEFORE DELETE ON machines
+    FOR EACH ROW
+    EXECUTE FUNCTION prevent_delete_primary_machine();
+
+  INSERT INTO _migrations (id) VALUES (33) ON CONFLICT DO NOTHING;
+  `,
+
   // Feedback table (created outside migrations in SQLite, included here)
   `
   CREATE TABLE IF NOT EXISTS feedback (

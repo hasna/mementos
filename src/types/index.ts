@@ -127,6 +127,8 @@ export interface MemoryFilter {
   project_id?: string;
   agent_id?: string;
   session_id?: string;
+  machine_id?: string | null;
+  visible_to_machine_id?: string | null;
   tags?: string[];
   min_importance?: number;
   pinned?: boolean;
