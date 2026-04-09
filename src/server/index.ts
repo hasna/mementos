@@ -145,7 +145,7 @@ export function startServer(port: number, attempt = 0): void {
       if (req.method === "OPTIONS") {
         const origin = req.headers.get("origin");
         const allowedOrigin = process.env["MEMENTOS_CORS_ORIGIN"] ?? "http://localhost:19428";
-        if (!origin || origin !== allowedOrigin) {
+        if (origin && origin !== allowedOrigin) {
           return new Response(null, { status: 403 });
         }
         return new Response(null, { status: 204, headers: getCorsHeaders(req) });

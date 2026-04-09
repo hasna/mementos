@@ -64,7 +64,9 @@ function seedMachine(
   id: string,
   name: string,
   hostname: string,
-  isPrimary = false
+  isPrimary = false,
+  createdAt = "2026-04-08T00:00:00.000Z",
+  lastSeenAt = createdAt
 ): void {
   db.run(
     `INSERT INTO machines (id, name, hostname, platform, is_primary, created_at, last_seen_at)
@@ -75,8 +77,8 @@ function seedMachine(
       hostname,
       "darwin",
       isPrimary ? 1 : 0,
-      "2026-04-08T00:00:00.000Z",
-      "2026-04-08T00:00:00.000Z",
+      createdAt,
+      lastSeenAt,
     ]
   );
 }
@@ -85,7 +87,18 @@ describe("machine primary protection", () => {
   it("keeps the first machine as a candidate until a primary is explicitly set", () => {
     const db = freshDb();
     const alpha = registerMachine("alpha", db as any);
-    seedMachine(db, "machine-beta", "beta", "beta-host");
+    const betaTimestamp = new Date(
+      new Date(alpha.created_at).getTime() + 1000
+    ).toISOString();
+    seedMachine(
+      db,
+      "machine-beta",
+      "beta",
+      "beta-host",
+      false,
+      betaTimestamp,
+      betaTimestamp
+    );
 
     expect(getPrimaryMachine(db as any)).toBeNull();
     expect(getPrimaryMachineCandidate(db as any)?.id).toBe(alpha.id);

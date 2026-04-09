@@ -172,26 +172,30 @@ addRoute("GET", "/api/report", (_req: Request, url: URL) => {
   const db = getDatabase();
 
   const cutoffDate = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const cond = [
+  const scopedCond = [
     projectId ? "AND project_id = ?" : "",
     agentId ? "AND agent_id = ?" : "",
   ].filter(Boolean).join(" ");
-  const params: (string | number)[] = [cutoffDate, ...(projectId ? [projectId] : []), ...(agentId ? [agentId] : [])];
+  const scopedParams: (string | number)[] = [
+    ...(projectId ? [projectId] : []),
+    ...(agentId ? [agentId] : []),
+  ];
+  const recentParams: (string | number)[] = [cutoffDate, ...scopedParams];
 
-  const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${cond}`).get(...params.slice(1)) as { c: number }).c;
-  const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${cond}`).get(...params.slice(1)) as { c: number }).c;
+  const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${scopedCond}`).get(...scopedParams) as { c: number }).c;
+  const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${scopedCond}`).get(...scopedParams) as { c: number }).c;
 
   const actRows = db.query(`
     SELECT date(created_at) AS date, COUNT(*) AS memories_created
-    FROM memories WHERE status = 'active' AND date(created_at) >= ? ${cond}
+    FROM memories WHERE status = 'active' AND date(created_at) >= ? ${scopedCond}
     GROUP BY date(created_at) ORDER BY date(created_at) ASC
-  `).all(...params) as { date: string; memories_created: number }[];
+  `).all(...recentParams) as { date: string; memories_created: number }[];
   const recentTotal = actRows.reduce((s, r) => s + r.memories_created, 0);
 
-  const byScopeRows = db.query(`SELECT scope, COUNT(*) as c FROM memories WHERE status = 'active' ${cond} GROUP BY scope`).all(...params) as { scope: string; c: number }[];
-  const byCatRows = db.query(`SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' ${cond} GROUP BY category`).all(...params) as { category: string; c: number }[];
-  const topMems = db.query(`SELECT id, key, value, importance, scope, category FROM memories WHERE status = 'active' ${cond} ORDER BY importance DESC, access_count DESC LIMIT 5`).all(...params) as { id: string; key: string; value: string; importance: number; scope: string; category: string }[];
-  const topAgents = db.query(`SELECT agent_id, COUNT(*) as c FROM memories WHERE status = 'active' AND agent_id IS NOT NULL ${cond} GROUP BY agent_id ORDER BY c DESC LIMIT 5`).all(...params) as { agent_id: string; c: number }[];
+  const byScopeRows = db.query(`SELECT scope, COUNT(*) as c FROM memories WHERE status = 'active' ${scopedCond} GROUP BY scope`).all(...scopedParams) as { scope: string; c: number }[];
+  const byCatRows = db.query(`SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' ${scopedCond} GROUP BY category`).all(...scopedParams) as { category: string; c: number }[];
+  const topMems = db.query(`SELECT id, key, value, importance, scope, category FROM memories WHERE status = 'active' ${scopedCond} ORDER BY importance DESC, access_count DESC LIMIT 5`).all(...scopedParams) as { id: string; key: string; value: string; importance: number; scope: string; category: string }[];
+  const topAgents = db.query(`SELECT agent_id, COUNT(*) as c FROM memories WHERE status = 'active' AND agent_id IS NOT NULL ${scopedCond} GROUP BY agent_id ORDER BY c DESC LIMIT 5`).all(...scopedParams) as { agent_id: string; c: number }[];
 
   return json({
     total,

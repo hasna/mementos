@@ -16,6 +16,30 @@ import { listProjects } from "../../db/projects.js";
 import { loadConfig, getActiveProfile, listProfiles } from "../../lib/config.js";
 import { outputJson, getPackageVersion, type GlobalOpts } from "../helpers.js";
 
+async function runCommandWithTimeout(
+  args: string[],
+  timeoutMs: number
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; timedOut: boolean }> {
+  const proc = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+  const stdoutPromise = new Response(proc.stdout).text().catch(() => "");
+  const stderrPromise = new Response(proc.stderr).text().catch(() => "");
+
+  let timedOut = false;
+  const exitCode = await Promise.race([
+    proc.exited,
+    new Promise<null>((resolve) =>
+      setTimeout(() => {
+        timedOut = true;
+        proc.kill();
+        resolve(null);
+      }, timeoutMs)
+    ),
+  ]);
+
+  const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise]);
+  return { stdout, stderr, exitCode, timedOut };
+}
+
 export function registerDoctorCommand(program: Command): void {
   program
     .command("doctor")
@@ -201,13 +225,13 @@ export function registerDoctorCommand(program: Command): void {
 
       // 12. MCP registered with Claude Code
       try {
-        const mcpProc = Bun.spawn(["claude", "mcp", "list"], { stdout: "pipe", stderr: "pipe" });
-        const [mcpOut, , mcpExit] = await Promise.all([
-          new Response(mcpProc.stdout).text(),
-          new Response(mcpProc.stderr).text(),
-          mcpProc.exited,
-        ]);
-        if (mcpExit === 0 && mcpOut.includes("mementos")) {
+        const { stdout: mcpOut, exitCode: mcpExit, timedOut } = await runCommandWithTimeout(
+          ["claude", "mcp", "list"],
+          1500
+        );
+        if (timedOut) {
+          checks.push({ name: "MCP server", status: "warn", detail: "health check timed out" });
+        } else if (mcpExit === 0 && mcpOut.includes("mementos")) {
           checks.push({ name: "MCP server", status: "ok", detail: "registered with Claude Code" });
         } else if (mcpExit !== 0) {
           checks.push({ name: "MCP server", status: "warn", detail: "claude not installed or not accessible" });
