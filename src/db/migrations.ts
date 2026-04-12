@@ -817,34 +817,45 @@ ALTER TABLE memories ADD COLUMN sequence_order INTEGER DEFAULT NULL;
 CREATE INDEX IF NOT EXISTS idx_memories_sequence_group ON memories(sequence_group) WHERE sequence_group IS NOT NULL;
 INSERT OR IGNORE INTO _migrations (id) VALUES (32);
 `,
-  // Migration 33: primary machine designation and delete protection
+  // Migration 34: tasks — granular task management for agent coordination.
   `
-ALTER TABLE machines ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;
-CREATE INDEX IF NOT EXISTS idx_machines_primary ON machines(is_primary);
-CREATE TRIGGER IF NOT EXISTS machines_single_primary_insert
-AFTER INSERT ON machines
-WHEN NEW.is_primary = 1
-BEGIN
-  UPDATE machines
-  SET is_primary = 0,
-      last_seen_at = COALESCE(NEW.last_seen_at, datetime('now'))
-  WHERE id != NEW.id AND is_primary = 1;
-END;
-CREATE TRIGGER IF NOT EXISTS machines_single_primary_update
-AFTER UPDATE OF is_primary ON machines
-WHEN NEW.is_primary = 1
-BEGIN
-  UPDATE machines
-  SET is_primary = 0,
-      last_seen_at = COALESCE(NEW.last_seen_at, datetime('now'))
-  WHERE id != NEW.id AND is_primary = 1;
-END;
-CREATE TRIGGER IF NOT EXISTS machines_prevent_delete_primary
-BEFORE DELETE ON machines
-WHEN OLD.is_primary = 1
-BEGIN
-  SELECT RAISE(ABORT, 'Primary machine cannot be deleted');
-END;
-INSERT OR IGNORE INTO _migrations (id) VALUES (33);
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  subject TEXT NOT NULL,
+  description TEXT DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'in_progress', 'completed', 'failed', 'cancelled')),
+  priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('critical', 'high', 'medium', 'low')),
+  tags TEXT NOT NULL DEFAULT '[]',
+  assigned_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  session_id TEXT,
+  parent_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  progress REAL NOT NULL DEFAULT 0 CHECK(progress >= 0 AND progress <= 1),
+  due_at TEXT,
+  started_at TEXT,
+  completed_at TEXT,
+  failed_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(assigned_agent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+
+CREATE TABLE IF NOT EXISTS task_comments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_comments_agent ON task_comments(agent_id);
+INSERT OR IGNORE INTO _migrations (id) VALUES (34);
 `,
 ];

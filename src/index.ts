@@ -233,3 +233,33 @@ export {
   clearActiveModel,
   DEFAULT_MODEL,
 } from "./lib/model-config.js";
+
+// Tasks
+export {
+  createTask,
+  getTask,
+  listTasks,
+  updateTask,
+  deleteTask,
+  addTaskComment,
+  listTaskComments,
+  deleteTaskComment,
+  getTaskStats,
+} from "./db/tasks.js";
+export type {
+  Task,
+  TaskComment,
+  TaskStatus,
+  TaskPriority,
+  CreateTaskInput,
+  UpdateTaskInput,
+} from "./db/tasks.js";
+
+// Task runner
+export {
+  startTaskRunner,
+  registerTaskHandler,
+  setDefaultTaskHandler,
+  getTaskRunnerStats,
+} from "./lib/task-runner.js";
+export type { TaskHandlerContext, TaskHandler, TaskRunnerStats } from "./lib/task-runner.js";

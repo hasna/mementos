@@ -11,6 +11,7 @@ import { getDatabase } from "../db/database.js";
 import { getPrimaryMachineStartupWarning } from "../db/machines.js";
 import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startSessionQueueWorker } from "../lib/session-queue.js";
+import { startTaskRunner } from "../lib/task-runner.js";
 
 import { matchRoute } from "./router.js";
 import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile, authenticateRequest } from "./helpers.js";
@@ -39,6 +40,7 @@ import "./routes/memories.js";
 import "./routes/agents.js";
 import "./routes/projects.js";
 import "./routes/entities.js";
+import "./routes/tasks.js";
 import "./routes/system.js";
 
 // ============================================================================
@@ -126,6 +128,7 @@ function initServer(): void {
   warnIfPrimaryMachineUnset();
   loadWebhooksFromDb();
   startSessionQueueWorker();
+  startTaskRunner();
 }
 
 export function startServer(port: number, attempt = 0): void {
