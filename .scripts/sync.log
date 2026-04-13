@@ -60,3 +60,13 @@ Committed local changes
 error: cannot pull with rebase: You have unstaged changes.
 error: Please commit or stash them.
 === 2026-04-13 00:02:01 ===
+[main 954b682] chore: auto-commit uncommitted changes before sync
+ 9 files changed, 1741 insertions(+), 30 deletions(-)
+ create mode 100644 src/db/tasks.ts
+ create mode 100644 src/lib/task-runner.ts
+ create mode 100644 src/sdk/index.ts
+ create mode 100644 src/server/routes/tasks.ts
+Committed local changes
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
+=== 2026-04-14 00:02:01 ===
