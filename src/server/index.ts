@@ -131,15 +131,14 @@ function initServer(): void {
   startTaskRunner();
 }
 
-export function startServer(port: number, attempt = 0): void {
-  const maxRetries = 100;
+export function startServer(port: number): void {
   initServer();
 
   const hostname = process.env["MEMENTOS_HOST"] ?? "127.0.0.1";
-  try {
-    Bun.serve({
-      port,
-      hostname,
+  Bun.serve({
+    port,
+    hostname,
+    maxRequestBodySize: 1 * 1024 * 1024, // 1 MB
     async fetch(req: Request): Promise<Response> {
       const url = new URL(req.url);
       const { pathname } = url;
@@ -269,16 +268,6 @@ export function startServer(port: number, attempt = 0): void {
   });
 
   console.log(`Mementos server listening on http://${hostname}:${port}`);
-  } catch (e: unknown) {
-    const err = e as { code?: string };
-    if (err.code === "EADDRINUSE" && attempt < maxRetries) {
-      const nextPort = port + attempt + 1;
-      console.log(`Port ${port} in use, trying ${nextPort}`);
-      startServer(nextPort, attempt + 1);
-    } else {
-      throw e;
-    }
-  }
 }
 
 async function main(): Promise<void> {

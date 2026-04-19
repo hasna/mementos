@@ -129,6 +129,34 @@ describe("searchMemories", () => {
     expect(results[0]!.memory.key).toBe("tagged");
   });
 
+  test("with session and namespace filters", () => {
+    createMemory({
+      key: "episode-a",
+      value: "brain episode relevant to the current session",
+      session_id: "sess-a",
+      namespace: "takumi.brain.episodes",
+    });
+    createMemory({
+      key: "episode-b",
+      value: "brain episode in a different session",
+      session_id: "sess-b",
+      namespace: "takumi.brain.episodes",
+    });
+    createMemory({
+      key: "non-episode",
+      value: "brain episode but different namespace",
+      session_id: "sess-a",
+      namespace: "other.namespace",
+    });
+
+    const results = searchMemories("brain episode", {
+      session_id: "sess-a",
+      namespace: "takumi.brain.episodes",
+    });
+    expect(results.length).toBe(1);
+    expect(results[0]!.memory.key).toBe("episode-a");
+  });
+
   test("respects limit", () => {
     for (let i = 0; i < 10; i++) {
       createMemory({

@@ -13,6 +13,7 @@ import {
 import { touchAgent } from "../../db/agents.js";
 import { resolveProjectId } from "../../lib/focus.js";
 import { getDatabase } from "../../db/database.js";
+import { getCurrentMachineId } from "../../db/machines.js";
 import { searchMemories } from "../../lib/search.js";
 import { parseDuration } from "../../lib/duration.js";
 import { ensureAutoProject, formatError, resolveId, formatMemory } from "./memory-utils.js";
@@ -61,6 +62,15 @@ export function registerMemoryCrudTools(server: McpServer): void {
         }
         const dedupeMode = (conflict as import("../../types/index.js").DedupeMode | undefined) ?? "merge";
         const conflictStrategy = (args as Record<string, unknown>).conflict_strategy as string | undefined ?? "last_writer_wins";
+
+        // Auto-tag with current machine ID if not explicitly set
+        if (!input.machine_id) {
+          try {
+            input.machine_id = getCurrentMachineId();
+          } catch {
+            // Best-effort — machine not registered yet
+          }
+        }
 
         // Vector clock conflict detection
         // Before creating/updating, check if existing memory has a diverged vector clock

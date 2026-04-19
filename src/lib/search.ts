@@ -401,6 +401,10 @@ function buildFilterConditions(filter?: MemoryFilter): FilterResult {
       params.push(tag);
     }
   }
+  if (filter.namespace) {
+    conditions.push("m.namespace = ?");
+    params.push(filter.namespace);
+  }
 
   return { conditions, params };
 }

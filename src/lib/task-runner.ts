@@ -107,7 +107,7 @@ export async function _tick(): Promise<void> {
     const db = getDatabase();
     const result = listTasks(db, { status: "pending", limit: 1 });
     if (result.tasks.length === 0) return;
-    task = result.tasks[0];
+    task = result.tasks[0] ?? null;
   } catch (e) {
     console.error("[task-runner] Failed to list pending tasks:", e);
     return;

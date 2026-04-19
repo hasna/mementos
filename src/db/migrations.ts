@@ -400,6 +400,7 @@ CREATE TABLE IF NOT EXISTS machines (
   name TEXT NOT NULL UNIQUE,
   hostname TEXT NOT NULL,
   platform TEXT NOT NULL DEFAULT 'unknown',
+  is_primary INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

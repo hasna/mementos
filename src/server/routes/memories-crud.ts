@@ -33,6 +33,7 @@ addRoute("GET", "/api/memories", (_req: Request, url: URL) => {
   if (q["agent_id"]) filter.agent_id = q["agent_id"];
   if (q["project_id"]) filter.project_id = q["project_id"];
   if (q["session_id"]) filter.session_id = q["session_id"];
+  if (q["namespace"]) filter.namespace = q["namespace"];
   if (q["status"]) filter.status = q["status"] as import("../../types/index.js").MemoryStatus;
   if (q["limit"]) filter.limit = parseInt(q["limit"], 10);
   if (q["offset"]) filter.offset = parseInt(q["offset"], 10);

@@ -14,6 +14,8 @@ addRoute("POST", "/api/memories/search", async (req) => {
   if (body["scope"]) filter.scope = body["scope"] as MemoryScope;
   if (body["category"]) filter.category = body["category"] as MemoryCategory;
   if (body["tags"]) filter.tags = body["tags"] as string[];
+  if (body["session_id"]) filter.session_id = body["session_id"] as string;
+  if (body["namespace"]) filter.namespace = body["namespace"] as string;
   if (body["limit"]) filter.limit = body["limit"] as number;
 
   const results = searchMemories(body["query"] as string, filter);
@@ -33,6 +35,8 @@ addRoute("POST", "/api/memories/search/hybrid", async (req) => {
   if (body["tags"]) filter.tags = body["tags"] as string[];
   if (body["agent_id"]) filter.agent_id = body["agent_id"] as string;
   if (body["project_id"]) filter.project_id = body["project_id"] as string;
+  if (body["session_id"]) filter.session_id = body["session_id"] as string;
+  if (body["namespace"]) filter.namespace = body["namespace"] as string;
 
   const results = await hybridSearch(body["query"] as string, {
     filter,
@@ -55,6 +59,8 @@ addRoute("POST", "/api/memories/search/bm25", async (req) => {
   if (body["tags"]) filter.tags = body["tags"] as string[];
   if (body["agent_id"]) filter.agent_id = body["agent_id"] as string;
   if (body["project_id"]) filter.project_id = body["project_id"] as string;
+  if (body["session_id"]) filter.session_id = body["session_id"] as string;
+  if (body["namespace"]) filter.namespace = body["namespace"] as string;
   if (body["limit"]) filter.limit = body["limit"] as number;
 
   const results = searchWithBm25(body["query"] as string, filter);

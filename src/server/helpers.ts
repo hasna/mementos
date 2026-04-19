@@ -50,8 +50,15 @@ export function errorResponse(
   return json(body, status);
 }
 
+// Maximum POST body size: 1 MB
+const MAX_BODY_BYTES = 1 * 1024 * 1024;
+
 export async function readJson(req: Request): Promise<unknown> {
   try {
+    const contentLength = req.headers.get("content-length");
+    if (contentLength && Number(contentLength) > MAX_BODY_BYTES) {
+      throw Object.assign(new Error("Payload too large"), { status: 413 });
+    }
     return await req.json();
   } catch {
     return null;

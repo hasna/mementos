@@ -23,8 +23,14 @@ function parseMachine(row: RawMachineRow | null): Machine | null {
   };
 }
 
+/** Normalize hostname by stripping common suffixes like .local */
+function normalizeHostname(host: string): string {
+  return host.replace(/\.(local|lan|home|internal)$/i, "");
+}
+
 export function registerMachine(name?: string, db = getDatabase()): Machine {
-  const host = hostname();
+  const rawHost = hostname();
+  const host = normalizeHostname(rawHost);
   const plat = platform();
   const machineName = name?.trim() || host;
 
@@ -142,7 +148,7 @@ export function touchMachine(id: string, db = getDatabase()): void {
 
 /** Get or auto-register the current machine and return its ID. */
 export function getCurrentMachineId(db = getDatabase()): string {
-  const host = hostname();
+  const host = normalizeHostname(hostname());
   const m = db.query("SELECT id FROM machines WHERE hostname = ?").get(host) as { id: string } | null;
   if (m) {
     touchMachine(m.id, db);

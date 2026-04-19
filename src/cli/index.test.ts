@@ -19,7 +19,7 @@ async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env: { ...process.env, MEMENTOS_DB_PATH: DB_PATH },
+    env: { ...process.env, MEMENTOS_DB_PATH: DB_PATH, HASNA_MEMENTOS_DB_PATH: DB_PATH },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -32,6 +32,11 @@ async function runCli(
 }
 
 describe("CLI", () => {
+  test("warns on startup when no primary machine is configured", async () => {
+    const { stderr } = await runCli("list", "--json");
+    expect(stderr).toContain("No primary machine configured");
+  });
+
   test("--version outputs version", async () => {
     const { stdout } = await runCli("--version");
     expect(stdout).toMatch(/^\d+\.\d+\.\d+$/);
@@ -121,11 +126,6 @@ describe("CLI", () => {
     const parsed = JSON.parse(stdout);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed.length).toBeGreaterThan(0);
-  });
-
-  test("warns on startup when no primary machine is configured", async () => {
-    const { stderr } = await runCli("list", "--json");
-    expect(stderr).toContain("No primary machine configured");
   });
 
   test("-j short alias outputs parseable JSON", async () => {

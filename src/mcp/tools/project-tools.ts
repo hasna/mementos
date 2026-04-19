@@ -145,7 +145,13 @@ export function registerProjectTools(server: McpServer): void {
         const machines = listMachines();
         return { content: [{ type: "text" as const, text: JSON.stringify(machines) }] };
       } catch (e) {
-        return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+        // Fallback to local machines when cloud sync is unavailable
+        try {
+          const machines = listMachines();
+          return { content: [{ type: "text" as const, text: JSON.stringify(machines) + "\n\n(Note: Cloud pull failed, showing local data only)" }] };
+        } catch {
+          return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
+        }
       }
     }
   );

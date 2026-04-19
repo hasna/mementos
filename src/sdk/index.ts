@@ -241,6 +241,7 @@ export interface ListMemoriesFilter {
   agent_id?: string;
   project_id?: string;
   session_id?: string;
+  namespace?: string;
   status?: MemoryStatus;
   limit?: number;
   offset?: number;
@@ -252,6 +253,8 @@ export interface SearchMemoriesInput {
   scope?: MemoryScope;
   category?: MemoryCategory;
   tags?: string[];
+  session_id?: string;
+  namespace?: string;
   limit?: number;
 }
 
@@ -509,6 +512,7 @@ export class MementosClient {
     if (filter.agent_id) q["agent_id"] = filter.agent_id;
     if (filter.project_id) q["project_id"] = filter.project_id;
     if (filter.session_id) q["session_id"] = filter.session_id;
+    if (filter.namespace) q["namespace"] = filter.namespace;
     if (filter.status) q["status"] = filter.status;
     if (filter.limit !== undefined) q["limit"] = filter.limit;
     if (filter.offset !== undefined) q["offset"] = filter.offset;
