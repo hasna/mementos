@@ -226,7 +226,7 @@ export function createMemory(
     [
       id,
       input.key,
-      input.value,
+      safeValue,
       input.category || "knowledge",
       input.scope || "private",
       input.summary || null,

@@ -7,14 +7,18 @@ import { json, readJson, getSearchParams } from "../helpers.js";
 export function registerSystemSynthesisRoutes(): void {
   addRoute("POST", "/api/synthesis/run", async (req) => {
     const body = ((await readJson(req)) ?? {}) as Record<string, unknown>;
-    const result = await runSynthesis({
-      projectId: body.project_id as string | undefined,
-      agentId: body.agent_id as string | undefined,
-      dryRun: body.dry_run as boolean | undefined,
-      maxProposals: body.max_proposals as number | undefined,
-      provider: body.provider as string | undefined,
-    });
-    return json(result, result.dryRun ? 200 : 201);
+    try {
+      const result = await runSynthesis({
+        projectId: body.project_id as string | undefined,
+        agentId: body.agent_id as string | undefined,
+        dryRun: body.dry_run as boolean | undefined,
+        maxProposals: body.max_proposals as number | undefined,
+        provider: body.provider as string | undefined,
+      });
+      return json(result, result.dryRun ? 200 : 201);
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
   });
 
   addRoute("GET", "/api/synthesis/runs", (_req, url) => {
@@ -31,22 +35,30 @@ export function registerSystemSynthesisRoutes(): void {
   });
 
   addRoute("POST", "/api/synthesis/rollback/:run_id", async (_req, _url, params) => {
-    const result = await rollbackSynthesis(params["run_id"]!);
-    return json(result);
+    try {
+      const result = await rollbackSynthesis(params["run_id"]!);
+      return json(result);
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
   });
 
   addRoute("GET", "/api/profile/synthesize", async (_req: Request, url: URL) => {
     const q = getSearchParams(url);
-    const result = await synthesizeProfile({
-      project_id: q["project_id"] || undefined,
-      agent_id: q["agent_id"] || undefined,
-      force_refresh: q["force_refresh"] === "true",
-    });
+    try {
+      const result = await synthesizeProfile({
+        project_id: q["project_id"] || undefined,
+        agent_id: q["agent_id"] || undefined,
+        force_refresh: q["force_refresh"] === "true",
+      });
 
-    if (!result) {
-      return json({ profile: null, message: "No preference/fact memories found to synthesize" });
+      if (!result) {
+        return json({ profile: null, message: "No preference/fact memories found to synthesize" });
+      }
+
+      return json(result);
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
     }
-
-    return json(result);
   });
 }

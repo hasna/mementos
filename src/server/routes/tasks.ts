@@ -22,7 +22,8 @@ import { json, errorResponse, readJson, getSearchParams } from "../helpers.js";
 // ============================================================================
 
 addRoute("POST", "/api/tasks", async (req, _url) => {
-  const body = (await readJson(req)) as Record<string, unknown>;
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body) return errorResponse("Invalid JSON body", 400);
   if (!body.subject) return errorResponse("subject is required", 400);
   const task = createTask(getDatabase(), body as any);
   return json(task, 201);
@@ -56,7 +57,8 @@ addRoute("GET", "/api/tasks/:id", async (_req, _url, params) => {
 });
 
 addRoute("PATCH", "/api/tasks/:id", async (req, _url, params) => {
-  const body = (await readJson(req)) as Record<string, unknown>;
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body) return errorResponse("Invalid JSON body", 400);
   const task = updateTask(getDatabase(), params.id!, body);
   if (!task) return errorResponse("Task not found", 404);
   return json(task);
@@ -77,7 +79,8 @@ addRoute("GET", "/api/tasks/:id/comments", async (_req, _url, params) => {
 });
 
 addRoute("POST", "/api/tasks/:id/comments", async (req, _url, params) => {
-  const body = (await readJson(req)) as Record<string, unknown>;
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body) return errorResponse("Invalid JSON body", 400);
   if (!body.body) return errorResponse("body is required", 400);
   const comment = addTaskComment(getDatabase(), params.id!, body.body as string, body.agent_id as string | undefined);
   return json(comment, 201);

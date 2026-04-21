@@ -68,7 +68,7 @@ export interface UpdateTaskInput {
 // Helpers
 // ============================================================================
 
-function parseTask(row: Record<string, unknown>): Task {
+function parseTask(row: Record<string, unknown> | null | undefined): Task {
   return {
     id: row.id as string,
     subject: row.subject as string,
@@ -118,7 +118,8 @@ export function createTask(db: Database, input: CreateTaskInput): Task {
       ts,
     ]
   );
-  return db.query("SELECT * FROM tasks WHERE id = ?").get(id) as unknown as Task;
+  const row = db.query("SELECT * FROM tasks WHERE id = ?").get(id);
+  return parseTask(row as Record<string, unknown>);
 }
 
 export function getTask(db: Database, id: string): Task | null {
@@ -184,10 +185,11 @@ export function listTasks(db: Database, filter?: {
     }
   }
   if (filter?.tags?.length) {
-    sql += " AND json_overlap(tags, ?)";
-    countSql += " AND json_overlap(tags, ?)";
-    params.push(JSON.stringify(filter.tags));
-    countParams.push(JSON.stringify(filter.tags));
+    const placeholders = filter.tags.map(() => "?").join(", ");
+    sql += ` AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value IN (${placeholders}))`;
+    countSql += ` AND EXISTS (SELECT 1 FROM json_each(tags) WHERE value IN (${placeholders}))`;
+    params.push(...filter.tags);
+    countParams.push(...filter.tags);
   }
 
   sql += " ORDER BY CASE priority WHEN 'critical' THEN 1 WHEN 'high' THEN 2 WHEN 'medium' THEN 3 WHEN 'low' THEN 4 END, created_at ASC";
@@ -269,14 +271,24 @@ export function addTaskComment(db: Database, taskId: string, body: string, agent
     [id, taskId, agentId ?? null, body]
   );
   const row = db.query("SELECT * FROM task_comments WHERE id = ?").get(id);
-  return row as unknown as TaskComment;
+  return parseTaskComment(row as Record<string, unknown>);
+}
+
+function parseTaskComment(row: Record<string, unknown>): TaskComment {
+  return {
+    id: row.id as string,
+    task_id: row.task_id as string,
+    agent_id: (row.agent_id as string) ?? null,
+    body: row.body as string,
+    created_at: row.created_at as string,
+  };
 }
 
 export function listTaskComments(db: Database, taskId: string): { comments: TaskComment[]; count: number } {
   const rows = db.query(
     "SELECT * FROM task_comments WHERE task_id = ? ORDER BY created_at ASC"
   ).all(taskId) as Record<string, unknown>[];
-  return { comments: rows as unknown as TaskComment[], count: rows.length };
+  return { comments: rows.map(parseTaskComment), count: rows.length };
 }
 
 export function deleteTaskComment(db: Database, id: string): boolean {

@@ -52,13 +52,17 @@ export function registerSystemAutoMemoryRoutes(): void {
 
     if (!provider) return errorResponse("No LLM provider configured. Set an API key (ANTHROPIC_API_KEY, OPENAI_API_KEY, CEREBRAS_API_KEY, or XAI_API_KEY).", 503);
 
-    const memories = await provider.extractMemories(turn, { agentId: agent_id, projectId: project_id });
-    return json({
-      provider: provider.name,
-      model: provider.config.model,
-      extracted: memories,
-      count: memories.length,
-      note: "DRY RUN — nothing was saved",
-    });
+    try {
+      const memories = await provider.extractMemories(turn, { agentId: agent_id, projectId: project_id });
+      return json({
+        provider: provider.name,
+        model: provider.config.model,
+        extracted: memories,
+        count: memories.length,
+        note: "DRY RUN — nothing was saved",
+      });
+    } catch (e) {
+      return json({ error: e instanceof Error ? e.message : String(e) }, 500);
+    }
   });
 }
