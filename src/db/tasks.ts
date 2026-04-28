@@ -68,7 +68,7 @@ export interface UpdateTaskInput {
 // Helpers
 // ============================================================================
 
-function parseTask(row: Record<string, unknown> | null | undefined): Task {
+function parseTask(row: Record<string, unknown>): Task {
   return {
     id: row.id as string,
     subject: row.subject as string,
@@ -119,6 +119,9 @@ export function createTask(db: Database, input: CreateTaskInput): Task {
     ]
   );
   const row = db.query("SELECT * FROM tasks WHERE id = ?").get(id);
+  if (!row) {
+    throw new Error(`Failed to load task after create: ${id}`);
+  }
   return parseTask(row as Record<string, unknown>);
 }
 

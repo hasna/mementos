@@ -106,3 +106,8 @@ Committed local changes
 error: cannot pull with rebase: You have unstaged changes.
 error: Please commit or stash them.
 === 2026-04-20 00:02:01 ===
+[main 730b7b2] chore: auto-commit uncommitted changes before sync
+ 16 files changed, 105 insertions(+), 37 deletions(-)
+Committed local changes
+error: cannot pull with rebase: You have unstaged changes.
+error: Please commit or stash them.
