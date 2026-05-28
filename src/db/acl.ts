@@ -30,13 +30,11 @@ export function setAcl(
   db?: Database
 ): MemoryAcl {
   const d = db || getDatabase();
-  const id = uuid();
-
-  // Unique index required before upsert
+  // Need unique index for upsert — create before INSERT
   try {
     d.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_acl_agent_pattern ON memory_acl(agent_id, key_pattern)");
   } catch { /* already exists */ }
-
+  const id = uuid();
   d.run(
     `INSERT INTO memory_acl (id, agent_id, key_pattern, permission, project_id)
      VALUES (?, ?, ?, ?, ?)
