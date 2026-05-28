@@ -658,3 +658,105 @@ describe("CORS", () => {
     expect(res.status).toBe(204);
   });
 });
+
+// ============================================================================
+// Tasks API
+// ============================================================================
+
+describe("Tasks API", () => {
+  test("POST /api/tasks creates a task", async () => {
+    const { status, data } = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ subject: "REST task", priority: "high", tags: ["api"] }),
+    });
+    expect(status).toBe(201);
+    expect(data.subject).toBe("REST task");
+    expect(data.priority).toBe("high");
+    expect(data.status).toBe("pending");
+    expect(data.id).toBeDefined();
+  });
+
+  test("POST /api/tasks requires subject", async () => {
+    const { status } = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ description: "no subject" }),
+    });
+    expect(status).toBe(400);
+  });
+
+  test("GET /api/tasks lists tasks with filters", async () => {
+    await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ subject: "List me", priority: "low" }),
+    });
+
+    const { status, data } = await api("/api/tasks?status=pending&limit=10");
+    expect(status).toBe(200);
+    expect(Array.isArray(data.tasks)).toBe(true);
+    expect(typeof data.count).toBe("number");
+    expect(data.tasks.some((t: { subject: string }) => t.subject === "List me")).toBe(true);
+  });
+
+  test("GET /api/tasks/stats returns aggregates", async () => {
+    const { status, data } = await api("/api/tasks/stats");
+    expect(status).toBe(200);
+    expect(typeof data.total).toBe("number");
+    expect(typeof data.by_status).toBe("object");
+    expect(typeof data.by_priority).toBe("object");
+    expect(typeof data.overdue).toBe("number");
+  });
+
+  test("GET/PATCH/DELETE /api/tasks/:id lifecycle", async () => {
+    const created = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ subject: "Lifecycle task" }),
+    });
+    const id = created.data.id as string;
+
+    const fetched = await api(`/api/tasks/${id}`);
+    expect(fetched.status).toBe(200);
+    expect(fetched.data.id).toBe(id);
+
+    const updated = await api(`/api/tasks/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "in_progress", progress: 0.25 }),
+    });
+    expect(updated.status).toBe(200);
+    expect(updated.data.status).toBe("in_progress");
+
+    const missing = await api("/api/tasks/nonexistent-id");
+    expect(missing.status).toBe(404);
+
+    const deleted = await api(`/api/tasks/${id}`, { method: "DELETE" });
+    expect(deleted.status).toBe(200);
+    expect(deleted.data.deleted).toBe(true);
+
+    const gone = await api(`/api/tasks/${id}`);
+    expect(gone.status).toBe(404);
+  });
+
+  test("task comments CRUD", async () => {
+    const created = await api("/api/tasks", {
+      method: "POST",
+      body: JSON.stringify({ subject: "Commented via API" }),
+    });
+    const id = created.data.id as string;
+
+    const added = await api(`/api/tasks/${id}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body: "Looks good" }),
+    });
+    expect(added.status).toBe(201);
+    expect(added.data.body).toBe("Looks good");
+
+    const listed = await api(`/api/tasks/${id}/comments`);
+    expect(listed.status).toBe(200);
+    expect(listed.data.count).toBeGreaterThanOrEqual(1);
+
+    const deleted = await api(`/api/tasks/${id}/comments/${added.data.id}`, {
+      method: "DELETE",
+    });
+    expect(deleted.status).toBe(200);
+    expect(deleted.data.deleted).toBe(true);
+  });
+});
