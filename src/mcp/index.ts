@@ -36,7 +36,7 @@ import { registerAutoMemoryTools } from "./tools/auto-memory-tools.js";
 import { registerSessionTools } from "./tools/session-tools.js";
 import { registerUtilityTools } from "./tools/utility-tools.js";
 import { registerSystemTools } from "./tools/system-tools.js";
-import { isHttpMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
+import { isStdioMode, resolveMcpHttpPort, startMcpHttpServer } from "./http.js";
 
 // Read version from package.json — never hardcode
 import { createRequire } from "node:module";
@@ -199,33 +199,30 @@ async function main(): Promise<void> {
 
   await prepareMcpRuntime();
 
-  if (isHttpMode()) {
-    const handle = await startMcpHttpServer(buildServer, {
-      port: resolveMcpHttpPort(),
-    });
-    process.on("SIGINT", () => {
-      void handle.close().finally(() => process.exit(0));
-    });
-    process.on("SIGTERM", () => {
-      void handle.close().finally(() => process.exit(0));
-    });
+  if (isStdioMode()) {
+    const server = buildServer();
+    const transport = new StdioServerTransport();
+    await server.connect(transport);
+
+    const autoProject = detectProject();
+    void startAutoInject({
+      server,
+      project_id: autoProject?.id,
+      project_name: autoProject?.name,
+      cwd: process.cwd(),
+    }).catch(() => { /* non-critical — auto-inject is best-effort */ });
+
+    process.on("SIGINT", () => { stopAutoInject(); process.exit(0); });
+    process.on("SIGTERM", () => { stopAutoInject(); process.exit(0); });
     return;
   }
 
-  const server = buildServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
-
-  const autoProject = detectProject();
-  void startAutoInject({
-    server,
-    project_id: autoProject?.id,
-    project_name: autoProject?.name,
-    cwd: process.cwd(),
-  }).catch(() => { /* non-critical — auto-inject is best-effort */ });
-
-  process.on("SIGINT", () => { stopAutoInject(); process.exit(0); });
-  process.on("SIGTERM", () => { stopAutoInject(); process.exit(0); });
+  // Default: shared Streamable HTTP server (one process per MCP, many agents).
+  const handle = await startMcpHttpServer(buildServer, {
+    port: resolveMcpHttpPort(),
+  });
+  process.on("SIGINT", () => { void handle.close().finally(() => process.exit(0)); });
+  process.on("SIGTERM", () => { void handle.close().finally(() => process.exit(0)); });
 }
 
 main().catch((error) => {
