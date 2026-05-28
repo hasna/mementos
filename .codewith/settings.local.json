@@ -1,7 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(grep -rn '\\\\${.*}.*\\\\\\(FROM\\\\|WHERE\\\\|INSERT\\\\|UPDATE\\\\|DELETE\\\\|SELECT\\\\|AND\\\\|OR\\\\|SET\\\\|LIKE\\\\\\)' --include='*.ts' --include='*.tsx')"
-    ]
-  }
-}
