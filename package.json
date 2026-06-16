@@ -1,6 +1,6 @@
 {
   "name": "@hasna/mementos",
-  "version": "0.14.35",
+  "version": "0.14.38",
   "description": "Universal memory system for AI agents - CLI + MCP server + library API",
   "type": "module",
   "main": "dist/index.js",
@@ -66,7 +66,8 @@
   "author": "Andrei Hasna <andrei@hasna.com>",
   "license": "Apache-2.0",
   "dependencies": {
-    "@hasna/cloud": "^0.1.24",
+    "@hasna/cloud": "0.1.24",
+    "@hasna/events": "^0.1.6",
     "@modelcontextprotocol/sdk": "^1.12.1",
     "chalk": "^5.4.1",
     "commander": "^13.1.0",

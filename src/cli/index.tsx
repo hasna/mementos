@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { registerEventsCommands } from "@hasna/events/commander";
 import { Command } from "commander";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -88,5 +89,6 @@ program.addCommand(makeBrainsCommand());
 // ============================================================================
 // Parse and run
 // ============================================================================
+registerEventsCommands(program, { source: "mementos" });
 
 program.parse(process.argv);
