@@ -95,5 +95,4 @@ program.addCommand(makeBrainsCommand());
 // ============================================================================
 registerEventsCommands(program, { source: "mementos" });
 
-
 program.parse(process.argv);

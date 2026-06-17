@@ -25,6 +25,18 @@ mementos-mcp
 
 116 tools available.
 
+## HTTP mode
+
+Run a shared Streamable HTTP MCP server (stateless, `127.0.0.1` only):
+
+```bash
+mementos-mcp --http
+# or: MCP_HTTP=1 mementos-mcp
+# default port: 8824 (override with --port or MCP_HTTP_PORT)
+```
+
+Endpoints: `GET /health`, `POST /mcp` (Streamable HTTP).
+
 ## REST API
 
 ```bash
