@@ -12,6 +12,8 @@ import {
   startMcpHttpServer,
 } from "./http.js";
 
+const nativeFetch: typeof fetch = (input, init) => Bun.fetch(input, init);
+
 describe("mcp http transport", () => {
   test("defaults port to 8867", () => {
     expect(DEFAULT_MCP_HTTP_PORT).toBe(8867);
@@ -56,7 +58,7 @@ describe("mcp streamable http server", () => {
   });
 
   test("GET /health returns ok", async () => {
-    const res = await fetch(`http://${handle.host}:${handle.port}/health`);
+    const res = await nativeFetch(`http://${handle.host}:${handle.port}/health`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ status: "ok", name: "mementos" });
   });
@@ -64,6 +66,7 @@ describe("mcp streamable http server", () => {
   test("initialize and call memory_stats over streamable HTTP", async () => {
     const transport = new StreamableHTTPClientTransport(
       new URL(`http://${handle.host}:${handle.port}/mcp`),
+      { fetch: nativeFetch },
     );
     const client = new Client({ name: "test", version: "0.0.0" });
     await client.connect(transport);
@@ -83,6 +86,7 @@ describe("mcp streamable http server", () => {
       Array.from({ length: 3 }, async () => {
         const transport = new StreamableHTTPClientTransport(
           new URL(`http://${handle.host}:${handle.port}/mcp`),
+          { fetch: nativeFetch },
         );
         const client = new Client({ name: "test", version: "0.0.0" });
         await client.connect(transport);

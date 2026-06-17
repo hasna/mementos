@@ -227,7 +227,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => { void handle.close().finally(() => process.exit(0)); });
 }
 
-main().catch((error) => {
-  console.error("MCP server error:", error);
-  process.exit(1);
-});
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("MCP server error:", error);
+    process.exit(1);
+  });
+}
