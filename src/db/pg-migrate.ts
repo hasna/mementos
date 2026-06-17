@@ -4,7 +4,7 @@
  * Tracks applied migrations in a `_pg_migrations` table (separate from the
  * `_migrations` table used within individual migration SQL blocks).
  */
-import { PgAdapterAsync } from "@hasna/cloud";
+import { PgAdapterAsync } from "../storage.js";
 import { PG_MIGRATIONS } from "./pg-migrations.js";
 
 export interface PgMigrationResult {

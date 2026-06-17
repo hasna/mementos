@@ -5,7 +5,7 @@ import { describe, it, expect, beforeEach } from "bun:test";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { createMemory, listMemories } from "../db/memories.js";
 import { enforceMemoryBounds } from "./retention.js";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 
 // ============================================================================
 // Helper: build a standalone in-memory DB with full schema (for direct inserts)

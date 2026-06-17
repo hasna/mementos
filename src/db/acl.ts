@@ -5,7 +5,7 @@
  * per agent per key pattern. Default: no ACLs = full access (backward compat).
  */
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase, uuid } from "./database.js";
 
 export type AclPermission = "read" | "readwrite" | "admin";

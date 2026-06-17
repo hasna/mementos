@@ -820,7 +820,6 @@ INSERT OR IGNORE INTO _migrations (id) VALUES (32);
 `,
   // Migration 33: primary machine designation and delete protection
   `
-ALTER TABLE machines ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_machines_primary ON machines(is_primary);
 CREATE TRIGGER IF NOT EXISTS machines_single_primary_insert
 AFTER INSERT ON machines
@@ -888,5 +887,92 @@ CREATE TABLE IF NOT EXISTS task_comments (
 CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_comments_agent ON task_comments(agent_id);
 INSERT OR IGNORE INTO _migrations (id) VALUES (34);
+`,
+  // Migration 35: consolidation/reflection audit tables and memory-to-memory links.
+  `
+CREATE TABLE IF NOT EXISTS memory_links (
+  id TEXT PRIMARY KEY,
+  source_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  target_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+  relation_type TEXT NOT NULL CHECK(relation_type IN ('summarizes','merged_from','promotes','reflects_on','supersedes','related_to')),
+  run_id TEXT,
+  metadata TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_links_unique ON memory_links(source_memory_id, target_memory_id, relation_type, COALESCE(run_id, ''));
+CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_links_relation ON memory_links(relation_type);
+CREATE INDEX IF NOT EXISTS idx_memory_links_run ON memory_links(run_id);
+
+CREATE TABLE IF NOT EXISTS memory_consolidation_runs (
+  id TEXT PRIMARY KEY,
+  scope TEXT,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  dry_run INTEGER NOT NULL DEFAULT 1,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed')),
+  summary TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_project ON memory_consolidation_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_agent ON memory_consolidation_runs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_status ON memory_consolidation_runs(status);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_started ON memory_consolidation_runs(started_at);
+
+CREATE TABLE IF NOT EXISTS memory_consolidation_actions (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES memory_consolidation_runs(id) ON DELETE CASCADE,
+  action_type TEXT NOT NULL CHECK(action_type IN ('merge_duplicate','promote_semantic','summarize_cluster','decay_forget')),
+  memory_ids TEXT NOT NULL DEFAULT '[]',
+  target_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+  created_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+  reason TEXT NOT NULL,
+  planned_changes TEXT NOT NULL DEFAULT '{}',
+  applied INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_actions_run ON memory_consolidation_actions(run_id);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_actions_type ON memory_consolidation_actions(action_type);
+CREATE INDEX IF NOT EXISTS idx_memory_consolidation_actions_target ON memory_consolidation_actions(target_memory_id);
+
+CREATE TABLE IF NOT EXISTS memory_reflection_runs (
+  id TEXT PRIMARY KEY,
+  on_type TEXT NOT NULL CHECK(on_type IN ('session','task','range')),
+  source TEXT,
+  project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+  agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+  dry_run INTEGER NOT NULL DEFAULT 1,
+  provider TEXT,
+  model TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed')),
+  trajectory_memory_ids TEXT NOT NULL DEFAULT '[]',
+  summary TEXT,
+  error TEXT,
+  started_at TEXT NOT NULL DEFAULT (datetime('now')),
+  completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_source ON memory_reflection_runs(on_type, source);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_project ON memory_reflection_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_agent ON memory_reflection_runs(agent_id);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_status ON memory_reflection_runs(status);
+
+CREATE TABLE IF NOT EXISTS memory_reflection_lessons (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL REFERENCES memory_reflection_runs(id) ON DELETE CASCADE,
+  memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+  kind TEXT NOT NULL CHECK(kind IN ('worked','failed','do_differently')),
+  lesson TEXT NOT NULL,
+  evidence TEXT NOT NULL DEFAULT '[]',
+  importance INTEGER NOT NULL DEFAULT 6 CHECK(importance >= 1 AND importance <= 10),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_run ON memory_reflection_lessons(run_id);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_memory ON memory_reflection_lessons(memory_id);
+CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_kind ON memory_reflection_lessons(kind);
+
+INSERT OR IGNORE INTO _migrations (id) VALUES (35);
 `,
 ];

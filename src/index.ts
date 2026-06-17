@@ -160,6 +160,43 @@ export { enforceQuotas, archiveStale, archiveUnused, deprioritizeStale, runClean
 
 // Sync
 export { syncMemories, defaultSyncAgents } from "./lib/sync.js";
+export {
+  pushStorageChanges,
+  pullStorageChanges,
+  getStorageSyncStatus,
+  type MementosStorageStatus,
+  type MementosStorageSyncResult,
+  type MemoryStorageSyncMeta,
+  type MemoryStorageSyncStats,
+} from "./lib/storage-sync.js";
+export {
+  SqliteAdapter,
+  PgAdapter,
+  PgAdapterAsync,
+  MEMENTOS_STORAGE_ENV,
+  MEMENTOS_STORAGE_FALLBACK_ENV,
+  MEMENTOS_STORAGE_TABLES,
+  STORAGE_TABLES,
+  getStorageConfig,
+  getStorageMode,
+  getStorageStatus,
+  getMementosStorageStatus,
+  saveStorageConfig,
+  getStorageDatabaseEnv,
+  getStorageDatabaseEnvName,
+  getStorageDatabaseUrl,
+  getStorageConnectionString,
+  listSqliteTables,
+  type DbAdapter,
+  type StorageConfig,
+  type StorageEnv,
+  type StorageEnvStatus,
+  type StorageMode,
+  type NativeStorageStatus,
+  type MementosStorageTable,
+  type SyncMeta,
+  type IncrementalSyncStats,
+} from "./storage.js";
 
 // Redaction
 export { redactSecrets, containsSecrets } from "./lib/redact.js";
@@ -198,6 +235,14 @@ export {
   getEntityMemoryLinks,
 } from "./db/entity-memories.js";
 
+// Memory-to-memory links used by consolidation and reflection provenance
+export {
+  createMemoryLink,
+  getMemoryLinks,
+  getMemoryBacklinks,
+} from "./db/memory-links.js";
+export type { MemoryLink, MemoryLinkRelation } from "./db/memory-links.js";
+
 // Auto-Memory Pipeline (LLM-based — replaces regex extractor)
 export {
   processConversationTurn,
@@ -219,6 +264,31 @@ export { providerRegistry } from "./lib/providers/registry.js";
 
 // Deduplication utilities
 export { dedup, getDedupStats } from "./lib/dedup.js";
+
+// Consolidation and reflection
+export {
+  runConsolidation,
+  type ConsolidationAction,
+  type ConsolidationActionType,
+  type ConsolidationOptions,
+  type ConsolidationResult,
+  type ConsolidationRun,
+} from "./lib/consolidation.js";
+export {
+  reflectOnTrajectory,
+  createAISDKReflectionCritic,
+  heuristicReflectionCritic,
+  DEFAULT_REFLECTION_MODEL,
+  DEFAULT_REFLECTION_PROVIDER,
+  type ReflectionCritic,
+  type ReflectionCriticResult,
+  type ReflectionLesson,
+  type ReflectionOptions,
+  type ReflectionResult,
+  type ReflectionRun,
+  type ReflectionTarget,
+  type ReflectionTrajectory,
+} from "./lib/reflection.js";
 
 // Recall tracking
 export { incrementRecallCount } from "./db/memories.js";

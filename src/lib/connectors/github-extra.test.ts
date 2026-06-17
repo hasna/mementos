@@ -2,7 +2,7 @@
 process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import { syncGithub } from "./github.js";
 import type { GitHubConnectorConfig } from "./types.js";
 

@@ -1,4 +1,5 @@
 import type { SystemToolDeps, CreateMemoryInput } from "./system-tools-shared.js";
+import { getStorageConnectionString } from "../../storage.js";
 
 export function registerSystemEventTools({ server, z, createMemory, getDatabase, saveToolEvent, formatError }: SystemToolDeps): void {
   server.tool(
@@ -137,7 +138,7 @@ export function registerSystemEventTools({ server, z, createMemory, getDatabase,
     "migrate_pg",
     "Apply PostgreSQL schema migrations to the configured RDS instance",
     {
-      connection_string: z.string().optional().describe("PostgreSQL connection string (overrides cloud config)"),
+      connection_string: z.string().optional().describe("PostgreSQL connection string (overrides storage config)"),
     },
     async ({ connection_string }) => {
       try {
@@ -145,8 +146,7 @@ export function registerSystemEventTools({ server, z, createMemory, getDatabase,
         if (connection_string) {
           connStr = connection_string;
         } else {
-          const { getConnectionString } = await import("@hasna/cloud");
-          connStr = getConnectionString("mementos");
+          connStr = getStorageConnectionString("mementos");
         }
 
         const { applyPgMigrations } = await import("../../db/pg-migrate.js");

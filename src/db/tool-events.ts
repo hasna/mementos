@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import type { ToolEvent, CreateToolEventInput, ToolStats } from "../types/index.js";
 import { getDatabase, uuid, now } from "./database.js";
 

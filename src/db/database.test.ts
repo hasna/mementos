@@ -11,7 +11,7 @@ import {
   getDbPath,
   resolvePartialId,
 } from "./database.js";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 
 beforeEach(() => {
   resetDatabase();

@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, shortUuid } from "./database.js";
 import type { WebhookHook, HookType } from "../types/hooks.js";

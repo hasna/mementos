@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import type { Memory, MemoryVersion } from "../../types/index.js";
 import { parseMemoryRow, getMemoryVersions } from "../../db/memories.js";
 import { computeDecayScore } from "../decay.js";

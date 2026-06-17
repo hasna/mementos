@@ -206,6 +206,42 @@ describe("MementosClient", () => {
     });
   });
 
+  describe("consolidateMemories", () => {
+    it("POSTs /api/consolidate with dry-run options", async () => {
+      const body = {
+        dryRun: true,
+        run: { id: "run-1", status: "completed" },
+        actions: [{ type: "merge_duplicate" }],
+        summary: { planned: 1, applied: 0 },
+      };
+      const { calls, fetch } = mockFetch([{ status: 200, body }]);
+      const client = new MementosClient({ fetch });
+      const result = await client.consolidateMemories({ dry_run: true, scope: "shared" });
+      expect(calls[0]!.url).toBe(`${BASE}/api/consolidate`);
+      expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({ dry_run: true, scope: "shared" });
+      expect(result.dryRun).toBe(true);
+      expect(result.actions[0]!.type).toBe("merge_duplicate");
+    });
+  });
+
+  describe("reflect", () => {
+    it("POSTs /api/reflect with trajectory selector", async () => {
+      const body = {
+        dryRun: true,
+        run: { id: "reflect-1", status: "completed" },
+        lessons: [{ kind: "worked", lesson: "Tests first helped.", importance: 8 }],
+        createdMemories: [],
+      };
+      const { calls, fetch } = mockFetch([{ status: 200, body }]);
+      const client = new MementosClient({ fetch });
+      const result = await client.reflect({ on: "session", source: "session-1", dry_run: true });
+      expect(calls[0]!.url).toBe(`${BASE}/api/reflect`);
+      expect(JSON.parse(calls[0]!.init?.body as string)).toEqual({ on: "session", source: "session-1", dry_run: true });
+      expect(result.dryRun).toBe(true);
+      expect(result.lessons[0]!.kind).toBe("worked");
+    });
+  });
+
   describe("saveMemory", () => {
     it("POSTs /api/memories", async () => {
       const mem = makeMemory();

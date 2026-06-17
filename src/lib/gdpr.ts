@@ -5,7 +5,7 @@
  * The audit log entries remain with hashes only (no content).
  */
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase, now } from "../db/database.js";
 
 export interface GdprErasureResult {

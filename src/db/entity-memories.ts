@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase, now } from "./database.js";
 import type { Entity, Memory, EntityMemory, EntityRole } from "../types/index.js";
 import { parseMemoryRow } from "./memories.js";

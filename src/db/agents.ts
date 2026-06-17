@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import type { Agent } from "../types/index.js";
 import { AgentConflictError } from "../types/index.js";
 import { getDatabase, now, shortUuid, resolvePartialId } from "./database.js";

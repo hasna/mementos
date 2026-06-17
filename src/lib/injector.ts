@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import type { Memory, MemoryCategory, MementosConfig } from "../types/index.js";
 import { listMemories, touchMemory, semanticSearch } from "../db/memories.js";
 import { loadConfig } from "./config.js";

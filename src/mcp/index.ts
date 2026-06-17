@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { registerCloudTools } from "@hasna/cloud";
 import { listMemories } from "../db/memories.js";
 import { listAgents } from "../db/agents.js";
 import { listProjects } from "../db/projects.js";
@@ -36,6 +35,8 @@ import { registerAutoMemoryTools } from "./tools/auto-memory-tools.js";
 import { registerSessionTools } from "./tools/session-tools.js";
 import { registerUtilityTools } from "./tools/utility-tools.js";
 import { registerSystemTools } from "./tools/system-tools.js";
+import { registerMementosStorageTools } from "./tools/storage-tools.js";
+import { registerConsolidationTools } from "./tools/consolidation-tools.js";
 
 // Read version from package.json — never hardcode
 import { createRequire } from "node:module";
@@ -105,6 +106,7 @@ registerAutoMemoryTools(server);
 registerSessionTools(server);
 registerUtilityTools(server);
 registerSystemTools(server);
+registerConsolidationTools(server);
 
 // ============================================================================
 // Resources
@@ -204,7 +206,7 @@ async function main(): Promise<void> {
   loadWebhooksFromDb();
 
   const transport = new StdioServerTransport();
-  registerCloudTools(server, "mementos");
+  registerMementosStorageTools(server);
   await server.connect(transport);
 
   // Start auto-inject orchestrator if enabled (non-blocking)

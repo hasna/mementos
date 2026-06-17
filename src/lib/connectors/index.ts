@@ -2,7 +2,7 @@
 // Connectors — barrel export and dispatcher
 // ============================================================================
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import type {
   ConnectorConfig,
   ConnectorSyncResult,

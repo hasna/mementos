@@ -2,7 +2,7 @@
 // Notion connector — syncs pages into memories
 // ============================================================================
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import { createMemory } from "../../db/memories.js";
 import { getMemoryByKey } from "../../db/memories.js";
 import type { ConnectorSyncResult, NotionConnectorConfig } from "./types.js";

@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase } from "../db/database.js";
 import { registerProject, getProject } from "../db/projects.js";
 import type { Project } from "../types/index.js";

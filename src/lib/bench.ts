@@ -3,7 +3,7 @@
  * Measures save/search/recall latency and throughput.
  */
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase } from "../db/database.js";
 import { createMemory, getMemoryByKey, listMemories } from "../db/memories.js";
 import { searchMemories } from "./search.js";

@@ -1,5 +1,5 @@
 /**
- * PostgreSQL migrations for open-mementos cloud sync.
+ * PostgreSQL migrations for open-mementos remote storage sync.
  *
  * Equivalent of the SQLite migrations in database.ts, translated for PostgreSQL.
  * Each element is a standalone SQL string that must be executed in order.
@@ -629,6 +629,94 @@ export const PG_MIGRATIONS: string[] = [
     EXECUTE FUNCTION prevent_delete_primary_machine();
 
   INSERT INTO _migrations (id) VALUES (33) ON CONFLICT DO NOTHING;
+  `,
+
+  // Migration 35: consolidation/reflection audit tables and memory-to-memory links
+  `
+  CREATE TABLE IF NOT EXISTS memory_links (
+    id TEXT PRIMARY KEY,
+    source_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    target_memory_id TEXT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL CHECK(relation_type IN ('summarizes','merged_from','promotes','reflects_on','supersedes','related_to')),
+    run_id TEXT,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_links_unique ON memory_links(source_memory_id, target_memory_id, relation_type, COALESCE(run_id, ''));
+  CREATE INDEX IF NOT EXISTS idx_memory_links_source ON memory_links(source_memory_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_links_target ON memory_links(target_memory_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_links_relation ON memory_links(relation_type);
+  CREATE INDEX IF NOT EXISTS idx_memory_links_run ON memory_links(run_id);
+
+  CREATE TABLE IF NOT EXISTS memory_consolidation_runs (
+    id TEXT PRIMARY KEY,
+    scope TEXT,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    dry_run BOOLEAN NOT NULL DEFAULT TRUE,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed')),
+    summary TEXT NOT NULL DEFAULT '{}',
+    error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_project ON memory_consolidation_runs(project_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_agent ON memory_consolidation_runs(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_status ON memory_consolidation_runs(status);
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_runs_started ON memory_consolidation_runs(started_at);
+
+  CREATE TABLE IF NOT EXISTS memory_consolidation_actions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES memory_consolidation_runs(id) ON DELETE CASCADE,
+    action_type TEXT NOT NULL CHECK(action_type IN ('merge_duplicate','promote_semantic','summarize_cluster','decay_forget')),
+    memory_ids TEXT NOT NULL DEFAULT '[]',
+    target_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+    created_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+    reason TEXT NOT NULL,
+    planned_changes TEXT NOT NULL DEFAULT '{}',
+    applied BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_actions_run ON memory_consolidation_actions(run_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_actions_type ON memory_consolidation_actions(action_type);
+  CREATE INDEX IF NOT EXISTS idx_memory_consolidation_actions_target ON memory_consolidation_actions(target_memory_id);
+
+  CREATE TABLE IF NOT EXISTS memory_reflection_runs (
+    id TEXT PRIMARY KEY,
+    on_type TEXT NOT NULL CHECK(on_type IN ('session','task','range')),
+    source TEXT,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    dry_run BOOLEAN NOT NULL DEFAULT TRUE,
+    provider TEXT,
+    model TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','running','completed','failed')),
+    trajectory_memory_ids TEXT NOT NULL DEFAULT '[]',
+    summary TEXT,
+    error TEXT,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at TIMESTAMPTZ
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_source ON memory_reflection_runs(on_type, source);
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_project ON memory_reflection_runs(project_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_agent ON memory_reflection_runs(agent_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_runs_status ON memory_reflection_runs(status);
+
+  CREATE TABLE IF NOT EXISTS memory_reflection_lessons (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL REFERENCES memory_reflection_runs(id) ON DELETE CASCADE,
+    memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('worked','failed','do_differently')),
+    lesson TEXT NOT NULL,
+    evidence TEXT NOT NULL DEFAULT '[]',
+    importance INTEGER NOT NULL DEFAULT 6 CHECK(importance >= 1 AND importance <= 10),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  );
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_run ON memory_reflection_lessons(run_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_memory ON memory_reflection_lessons(memory_id);
+  CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_kind ON memory_reflection_lessons(kind);
+
+  INSERT INTO _migrations (id) VALUES (35) ON CONFLICT DO NOTHING;
   `,
 
   // Feedback table (created outside migrations in SQLite, included here)

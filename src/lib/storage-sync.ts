@@ -4,20 +4,21 @@ import {
   type IncrementalSyncStats,
   SqliteAdapter,
   PgAdapter,
-  getCloudConfig,
-  getConnectionString,
+  MEMENTOS_STORAGE_TABLES,
+  getStorageConfig,
+  getStorageConnectionString,
   incrementalSyncPull,
   incrementalSyncPush,
   getSyncMetaAll,
   isSyncExcludedTable,
   listSqliteTables,
-} from "@hasna/cloud";
+} from "../storage.js";
 import { getCurrentMachineId } from "../db/machines.js";
 import { uuid } from "../db/database.js";
 import { getDbPath } from "./config.js";
 
 const MEMORY_TABLE = "memories";
-const MEMORY_SYNC_META_TABLE = "_mementos_cloud_sync_meta";
+const MEMORY_SYNC_META_TABLE = "_mementos_storage_sync_meta";
 const SOURCE_MACHINE_METADATA_KEY = "last_synced_source_machine";
 const TABLE_CONFLICT_COLUMNS: Record<string, string> = {
   agents: "last_seen_at",
@@ -25,31 +26,16 @@ const TABLE_CONFLICT_COLUMNS: Record<string, string> = {
   sessions: "last_activity",
 };
 
-const TABLE_SYNC_ORDER = [
-  "projects",
-  "agents",
-  "machines",
-  "sessions",
-  "entities",
-  "memories",
-  "relations",
-  "entity_memories",
-  "memory_tags",
-  "memory_versions",
-  "memory_embeddings",
-  "tool_events",
-  "resource_locks",
-  "memory_ratings",
-];
+const TABLE_SYNC_ORDER: string[] = [...MEMENTOS_STORAGE_TABLES];
 
-export interface MemoryCloudSyncMeta {
+export interface MemoryStorageSyncMeta {
   table_name: string;
   direction: "push" | "pull";
   last_synced_at: string | null;
   last_synced_row_count: number;
 }
 
-export interface MemoryCloudSyncStats {
+export interface MemoryStorageSyncStats {
   table: string;
   total_rows: number;
   synced_rows: number;
@@ -59,26 +45,26 @@ export interface MemoryCloudSyncStats {
   first_sync: boolean;
 }
 
-export interface MementosCloudSyncResult {
+export interface MementosStorageSyncResult {
   direction: "push" | "pull";
   mode: string;
   current_machine_id: string | null;
-  tables: MemoryCloudSyncStats[];
+  tables: MemoryStorageSyncStats[];
   total_synced: number;
   total_conflicts: number;
   errors: string[];
 }
 
-export interface MementosCloudStatus {
+export interface MementosStorageStatus {
   mode: string;
   enabled: boolean;
   db_path: string;
   current_machine_id: string | null;
   generic_sync_meta: SyncMeta[];
-  memory_sync_meta: MemoryCloudSyncMeta[];
+  memory_sync_meta: MemoryStorageSyncMeta[];
 }
 
-interface RunCloudSyncOptions {
+interface RunStorageSyncOptions {
   tables?: string[];
   local?: DbAdapter;
   remote?: DbAdapter;
@@ -89,7 +75,7 @@ interface RawMemoryRow {
   [key: string]: unknown;
 }
 
-interface InternalSyncMeta extends MemoryCloudSyncMeta {}
+interface InternalSyncMeta extends MemoryStorageSyncMeta {}
 
 function ensureMemorySyncMetaTable(db: DbAdapter): void {
   db.exec(`
@@ -156,13 +142,13 @@ function upsertMemorySyncMeta(
   );
 }
 
-function listMemorySyncMeta(db: DbAdapter): MemoryCloudSyncMeta[] {
+function listMemorySyncMeta(db: DbAdapter): MemoryStorageSyncMeta[] {
   ensureMemorySyncMetaTable(db);
   return db.all(
     `SELECT table_name, direction, last_synced_at, last_synced_row_count
      FROM ${MEMORY_SYNC_META_TABLE}
      ORDER BY table_name, direction`
-  ) as MemoryCloudSyncMeta[];
+  ) as MemoryStorageSyncMeta[];
 }
 
 function orderTables(tables: string[]): string[] {
@@ -448,8 +434,8 @@ function syncMemoriesTable(
   local: DbAdapter,
   direction: "push" | "pull",
   currentMachineId: string | null
-): MemoryCloudSyncStats {
-  const stat: MemoryCloudSyncStats = {
+): MemoryStorageSyncStats {
+  const stat: MemoryStorageSyncStats = {
     table: MEMORY_TABLE,
     total_rows: 0,
     synced_rows: 0,
@@ -582,7 +568,7 @@ function syncMemoriesTable(
 
 function wrapIncrementalStat(
   stat: IncrementalSyncStats
-): MemoryCloudSyncStats {
+): MemoryStorageSyncStats {
   return {
     table: stat.table,
     total_rows: stat.total_rows,
@@ -599,7 +585,7 @@ function runGenericTableSync(
   table: string,
   local: DbAdapter,
   remote: DbAdapter
-): MemoryCloudSyncStats {
+): MemoryStorageSyncStats {
   const conflictColumn = TABLE_CONFLICT_COLUMNS[table] ?? "updated_at";
   const results = direction === "push"
     ? incrementalSyncPush(local, remote, [table], { conflictColumn })
@@ -620,16 +606,16 @@ function resolveTables(local: DbAdapter, tables?: string[]): string[] {
 }
 
 function withManagedAdapters<T>(
-  options: RunCloudSyncOptions,
+  options: RunStorageSyncOptions,
   fn: (local: DbAdapter, remote: DbAdapter, currentMachineId: string | null) => T
 ): T {
   const localOwned = !options.local;
   const remoteOwned = !options.remote;
   const local = options.local ?? new SqliteAdapter(getDbPath());
-  const remote = options.remote ?? new PgAdapter(getConnectionString("mementos"));
+  const remote = options.remote ?? new PgAdapter(getStorageConnectionString("mementos"));
 
   try {
-    const currentMachineId = options.current_machine_id ?? getCurrentMachineId(local as any);
+    const currentMachineId = resolveCurrentMachineId(local, options.current_machine_id);
     return fn(local, remote, currentMachineId);
   } finally {
     if (localOwned) {
@@ -641,18 +627,27 @@ function withManagedAdapters<T>(
   }
 }
 
-function runCloudSync(
+function resolveCurrentMachineId(local: DbAdapter, requested?: string | null): string | null {
+  if (requested !== undefined) return requested;
+  try {
+    return getCurrentMachineId(local as any);
+  } catch {
+    return null;
+  }
+}
+
+function runStorageSync(
   direction: "push" | "pull",
-  options: RunCloudSyncOptions = {}
-): MementosCloudSyncResult {
-  const config = getCloudConfig();
+  options: RunStorageSyncOptions = {}
+): MementosStorageSyncResult {
+  const config = getStorageConfig();
   if (config.mode === "local" && !options.remote) {
-    throw new Error("Cloud mode is not configured. Run `cloud setup` or set mode to hybrid/cloud.");
+    throw new Error("Remote storage is not configured. Set HASNA_MEMENTOS_DATABASE_URL or configure ~/.hasna/mementos/storage/config.json.");
   }
 
   return withManagedAdapters(options, (local, remote, currentMachineId) => {
     const tables = resolveTables(local, options.tables);
-    const stats: MemoryCloudSyncStats[] = [];
+    const stats: MemoryStorageSyncStats[] = [];
 
     for (const table of tables) {
       const stat = table === MEMORY_TABLE
@@ -680,30 +675,30 @@ function runCloudSync(
   });
 }
 
-export function pushCloudChanges(
-  options: RunCloudSyncOptions = {}
-): MementosCloudSyncResult {
-  return runCloudSync("push", options);
+export function pushStorageChanges(
+  options: RunStorageSyncOptions = {}
+): MementosStorageSyncResult {
+  return runStorageSync("push", options);
 }
 
-export function pullCloudChanges(
-  options: RunCloudSyncOptions = {}
-): MementosCloudSyncResult {
-  return runCloudSync("pull", options);
+export function pullStorageChanges(
+  options: RunStorageSyncOptions = {}
+): MementosStorageSyncResult {
+  return runStorageSync("pull", options);
 }
 
-export function getCloudSyncStatus(
-  options: Pick<RunCloudSyncOptions, "local" | "current_machine_id"> = {}
-): MementosCloudStatus {
-  const config = getCloudConfig();
+export function getStorageSyncStatus(
+  options: Pick<RunStorageSyncOptions, "local" | "current_machine_id"> = {}
+): MementosStorageStatus {
+  const config = getStorageConfig();
   const localOwned = !options.local;
   const local = options.local ?? new SqliteAdapter(getDbPath());
 
   try {
-    const currentMachineId = options.current_machine_id ?? getCurrentMachineId(local as any);
+    const currentMachineId = resolveCurrentMachineId(local, options.current_machine_id);
     return {
       mode: config.mode,
-      enabled: config.mode === "hybrid" || config.mode === "cloud",
+      enabled: config.mode === "hybrid" || config.mode === "remote",
       db_path: getDbPath(),
       current_machine_id: currentMachineId,
       generic_sync_meta: getSyncMetaAll(local),

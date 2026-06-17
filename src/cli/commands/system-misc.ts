@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { getStorageConnectionString } from "../../storage.js";
 import { getDatabase } from "../../db/database.js";
 
 export function registerMiscCommands(program: Command): void {
@@ -11,7 +12,7 @@ export function registerMiscCommands(program: Command): void {
   program
     .command("migrate-pg")
     .description("Apply PostgreSQL migrations to the configured RDS instance")
-    .option("--connection-string <url>", "PostgreSQL connection string (overrides cloud config)")
+    .option("--connection-string <url>", "PostgreSQL connection string (overrides storage config)")
     .option("--json", "Output as JSON")
     .action(async (opts) => {
       const globalOpts = program.opts();
@@ -22,10 +23,9 @@ export function registerMiscCommands(program: Command): void {
         connStr = opts.connectionString;
       } else {
         try {
-          const { getConnectionString } = await import("@hasna/cloud");
-          connStr = getConnectionString("mementos");
+          connStr = getStorageConnectionString("mementos");
         } catch {
-          const msg = "Cloud RDS not configured. Use --connection-string or run `cloud setup`.";
+          const msg = "Remote storage database is not configured. Use --connection-string or set HASNA_MEMENTOS_DATABASE_URL.";
           if (useJson) {
             console.log(JSON.stringify({ error: msg }));
           } else {

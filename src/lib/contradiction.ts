@@ -6,7 +6,7 @@
  * for deeper analysis.
  */
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase, now } from "../db/database.js";
 import { parseMemoryRow } from "../db/memories.js";
 import type { Memory } from "../types/index.js";

@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import type { Memory, MemoryFilter, MemorySearchResult } from "../types/index.js";
 import { getDatabase } from "../db/database.js";

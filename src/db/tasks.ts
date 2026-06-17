@@ -2,7 +2,7 @@
 // Tasks — granular task management for agent coordination
 // ============================================================================
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { now, uuid } from "./database.js";
 
 export type TaskStatus = "pending" | "in_progress" | "completed" | "failed" | "cancelled";

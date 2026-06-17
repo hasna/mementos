@@ -209,6 +209,72 @@ export interface ImportMemoriesInput {
   overwrite?: boolean;
 }
 
+export interface ConsolidateMemoriesInput {
+  dry_run?: boolean;
+  scope?: MemoryScope;
+  project_id?: string;
+  agent_id?: string;
+  duplicate_threshold?: number;
+  stale_days?: number;
+  decay_threshold?: number;
+  limit?: number;
+}
+
+export interface ConsolidationAction {
+  id: string;
+  runId: string;
+  type: "merge_duplicate" | "promote_semantic" | "summarize_cluster" | "decay_forget";
+  sourceMemoryIds: string[];
+  targetMemoryId: string | null;
+  createdMemoryId: string | null;
+  reason: string;
+  plannedChanges: Record<string, unknown>;
+  applied: boolean;
+}
+
+export interface ConsolidationResult {
+  dryRun: boolean;
+  run: Record<string, unknown>;
+  actions: ConsolidationAction[];
+  summary: {
+    planned: number;
+    applied: number;
+    mergeDuplicates: number;
+    promoteSemantic: number;
+    summarizeClusters: number;
+    decayForget: number;
+  };
+}
+
+export interface ReflectInput {
+  on: "session" | "task" | "range";
+  source?: string;
+  dry_run?: boolean;
+  project_id?: string;
+  agent_id?: string;
+  since?: string;
+  until?: string;
+  provider?: string;
+  model?: string;
+  max_tokens?: number;
+}
+
+export interface ReflectionLesson {
+  kind: "worked" | "failed" | "do_differently";
+  lesson: string;
+  evidence: string[];
+  importance: number;
+  memory_id: string | null;
+}
+
+export interface ReflectionResult {
+  dryRun: boolean;
+  run: Record<string, unknown>;
+  trajectory: { memoryIds: string[]; toolEventCount: number; text: string };
+  lessons: ReflectionLesson[];
+  createdMemories: Memory[];
+}
+
 export interface CreateEntityInput {
   name: string;
   type: EntityType;
@@ -427,6 +493,16 @@ export class MementosClient {
   /** Import memories. */
   importMemories(input: ImportMemoriesInput): Promise<{ imported: number; errors: string[]; total: number }> {
     return this.post("/api/memories/import", input);
+  }
+
+  /** Consolidate memories: dedup, promote semantic facts, summarize clusters, and soft-delete stale low-value entries. */
+  consolidateMemories(input: ConsolidateMemoriesInput = {}): Promise<ConsolidationResult> {
+    return this.post("/api/consolidate", input);
+  }
+
+  /** Reflect on a session, task, or range and save structured lessons as linked memories. */
+  reflect(input: ReflectInput): Promise<ReflectionResult> {
+    return this.post("/api/reflect", input);
   }
 
   /** Clean up expired memories. */

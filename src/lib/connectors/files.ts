@@ -2,7 +2,7 @@
 // Files connector — watches local directories and syncs file content to memories
 // ============================================================================
 
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import { readFileSync, statSync, readdirSync } from "node:fs";
 import { join, relative, extname, resolve } from "node:path";
 import { createMemory } from "../../db/memories.js";

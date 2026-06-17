@@ -1,9 +1,32 @@
 process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
-import { describe, it, expect } from "bun:test";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { afterEach, describe, it, expect } from "bun:test";
+import {
+  MEMENTOS_STORAGE_FALLBACK_ENV,
+  MEMENTOS_STORAGE_TABLES,
+  STORAGE_TABLES,
+  getStorageConfig,
+  getStorageConnectionString,
+  getStorageDatabaseEnv,
+  getStorageDatabaseEnvName,
+  getStorageDatabaseUrl,
+  getStorageMode,
+  getStorageStatus,
+  SqliteAdapter as Database,
+} from "../storage.js";
 import { registerMachine, listMachines } from "../db/machines.js";
-import { getCloudSyncStatus, pullCloudChanges, pushCloudChanges } from "./cloud-sync.js";
+import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "./storage-sync.js";
+
+const STORAGE_ENV = [
+  "HASNA_MEMENTOS_DATABASE_URL",
+  "MEMENTOS_DATABASE_URL",
+  "HASNA_MEMENTOS_STORAGE_MODE",
+  "MEMENTOS_STORAGE_MODE",
+] as const;
+
+afterEach(() => {
+  for (const key of STORAGE_ENV) delete process.env[key];
+});
 
 function freshDb(): Database {
   const db = new Database(":memory:");
@@ -45,13 +68,65 @@ function seedMachine(
   );
 }
 
-describe("cloud machine sync", () => {
+describe("mementos storage configuration", () => {
+  it("prefers the Hasna namespaced storage database env", () => {
+    process.env["MEMENTOS_DATABASE_URL"] = "postgres://fallback";
+    process.env["HASNA_MEMENTOS_DATABASE_URL"] = "postgres://canonical";
+
+    expect(getStorageDatabaseEnv()).toEqual({
+      name: "HASNA_MEMENTOS_DATABASE_URL",
+      deprecated: false,
+    });
+    expect(getStorageDatabaseEnvName()).toBe("HASNA_MEMENTOS_DATABASE_URL");
+    expect(getStorageDatabaseUrl()).toBe("postgres://canonical");
+    expect(getStorageConnectionString()).toBe("postgres://canonical");
+    expect(getStorageConfig().mode).toBe("hybrid");
+    expect(getStorageMode()).toBe("hybrid");
+  });
+
+  it("uses the shorter storage database env as fallback", () => {
+    process.env["MEMENTOS_DATABASE_URL"] = "postgres://fallback";
+
+    expect(getStorageDatabaseEnv()).toEqual({
+      name: "MEMENTOS_DATABASE_URL",
+      deprecated: false,
+    });
+    expect(getStorageDatabaseEnvName()).toBe("MEMENTOS_DATABASE_URL");
+    expect(getStorageDatabaseUrl()).toBe("postgres://fallback");
+  });
+
+  it("uses storage mode overrides", () => {
+    expect(getStorageConfig().mode).toBe("local");
+
+    process.env["MEMENTOS_DATABASE_URL"] = "postgres://remote";
+    expect(getStorageConfig().mode).toBe("hybrid");
+
+    process.env["HASNA_MEMENTOS_STORAGE_MODE"] = "remote";
+    expect(getStorageConfig().mode).toBe("remote");
+  });
+
+  it("publishes stable storage tables, env constants, and redacted status", () => {
+    process.env["MEMENTOS_DATABASE_URL"] = "postgres://user:secret@example.test/mementos";
+
+    const status = getStorageStatus();
+
+    expect(STORAGE_TABLES).toEqual(MEMENTOS_STORAGE_TABLES);
+    expect(MEMENTOS_STORAGE_FALLBACK_ENV.databaseUrl).toBe("MEMENTOS_DATABASE_URL");
+    expect(status.service).toBe("mementos");
+    expect(status.tables).toEqual(MEMENTOS_STORAGE_TABLES);
+    expect(status.env.databaseUrl.name).toBe("HASNA_MEMENTOS_DATABASE_URL");
+    expect(status.env.databaseUrl.active_name).toBe("MEMENTOS_DATABASE_URL");
+    expect(status.database.redacted_url).toBe("postgres://user:***@example.test/mementos");
+  });
+});
+
+describe("storage machine sync", () => {
   it("pushes locally registered machines to the remote registry", () => {
     const local = freshDb();
     const remote = freshDb();
 
     const machine = registerMachine("alpha", local as any);
-    const result = pushCloudChanges({
+    const result = pushStorageChanges({
       tables: ["machines"],
       local,
       remote,
@@ -66,7 +141,7 @@ describe("cloud machine sync", () => {
     expect(remoteMachines[0]?.name).toBe("alpha");
     expect(remoteMachines[0]?.hostname).toBe(machine.hostname);
 
-    const status = getCloudSyncStatus({
+    const status = getStorageSyncStatus({
       local,
       current_machine_id: machine.id,
     });
@@ -94,7 +169,7 @@ describe("cloud machine sync", () => {
       "2026-04-08T01:00:00.000Z"
     );
 
-    const result = pullCloudChanges({
+    const result = pullStorageChanges({
       tables: ["machines"],
       local,
       remote,
@@ -123,7 +198,7 @@ describe("cloud machine sync", () => {
       "machine-beta",
     ]);
 
-    const pushResult = pushCloudChanges({
+    const pushResult = pushStorageChanges({
       tables: ["machines"],
       local,
       remote,

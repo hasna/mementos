@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { getCloudConfig } from "@hasna/cloud";
+import { getStorageConfig } from "../../storage.js";
 import { z } from "zod";
 import {
   registerProject,
@@ -13,7 +13,7 @@ import {
   renameMachine,
   setPrimaryMachine,
 } from "../../db/machines.js";
-import { pullCloudChanges, pushCloudChanges } from "../../lib/cloud-sync.js";
+import { pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
@@ -33,20 +33,20 @@ function formatError(error: unknown): string {
   return String(error);
 }
 
-function cloudSyncEnabled(): boolean {
-  const mode = getCloudConfig().mode;
-  return mode === "hybrid" || mode === "cloud";
+function storageSyncEnabled(): boolean {
+  const mode = getStorageConfig().mode;
+  return mode === "hybrid" || mode === "remote";
 }
 
 function syncMachinesTable(direction: "push" | "pull", currentMachineId?: string): void {
-  if (!cloudSyncEnabled()) return;
+  if (!storageSyncEnabled()) return;
 
   const result = direction === "push"
-    ? pushCloudChanges({ tables: ["machines"], current_machine_id: currentMachineId ?? null })
-    : pullCloudChanges({ tables: ["machines"], current_machine_id: currentMachineId ?? null });
+    ? pushStorageChanges({ tables: ["machines"], current_machine_id: currentMachineId ?? null })
+    : pullStorageChanges({ tables: ["machines"], current_machine_id: currentMachineId ?? null });
 
   if (result.errors.length > 0) {
-    throw new Error(`Cloud ${direction} for machines failed: ${result.errors.join("; ")}`);
+    throw new Error(`Storage ${direction} for machines failed: ${result.errors.join("; ")}`);
   }
 }
 
@@ -145,10 +145,10 @@ export function registerProjectTools(server: McpServer): void {
         const machines = listMachines();
         return { content: [{ type: "text" as const, text: JSON.stringify(machines) }] };
       } catch (e) {
-        // Fallback to local machines when cloud sync is unavailable
+        // Fallback to local machines when remote storage sync is unavailable
         try {
           const machines = listMachines();
-          return { content: [{ type: "text" as const, text: JSON.stringify(machines) + "\n\n(Note: Cloud pull failed, showing local data only)" }] };
+          return { content: [{ type: "text" as const, text: JSON.stringify(machines) + "\n\n(Note: Storage pull failed, showing local data only)" }] };
         } catch {
           return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
         }

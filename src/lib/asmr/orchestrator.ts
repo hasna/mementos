@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import { runFactAgent } from "./fact-agent.js";
 import { runContextAgent } from "./context-agent.js";
 import { runTemporalAgent } from "./temporal-agent.js";

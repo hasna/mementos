@@ -4,7 +4,7 @@
  * try to detect them from available metadata fields.
  */
 
-import type { SqliteAdapter as Database } from "@hasna/cloud";
+import type { SqliteAdapter as Database } from "../storage.js";
 import { getAgent } from "../db/agents.js";
 import { getProject, listProjects } from "../db/projects.js";
 

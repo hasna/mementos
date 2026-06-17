@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations.js";
@@ -126,7 +126,7 @@ function runMigrations(db: Database): void {
 
     for (let i = currentLevel; i < MIGRATIONS.length; i++) {
       try {
-        db.exec(MIGRATIONS[i]!);
+        applyMigration(db, i);
       } catch (e) {
         console.warn(`[mementos] Migration ${i + 1} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
@@ -134,12 +134,29 @@ function runMigrations(db: Database): void {
   } catch {
     for (let i = 0; i < MIGRATIONS.length; i++) {
       try {
-        db.exec(MIGRATIONS[i]!);
+        applyMigration(db, i);
       } catch (e) {
         console.warn(`[mementos] Migration ${i + 1} failed: ${e instanceof Error ? e.message : String(e)}`);
       }
     }
   }
+}
+
+function applyMigration(db: Database, index: number): void {
+  if (index === 32) {
+    ensureMachinePrimaryColumn(db);
+  }
+  db.exec(MIGRATIONS[index]!);
+}
+
+function ensureMachinePrimaryColumn(db: Database): void {
+  const columns = db
+    .query("PRAGMA table_info(machines)")
+    .all() as Array<{ name: string }>;
+  if (columns.length === 0 || columns.some((column) => column.name === "is_primary")) {
+    return;
+  }
+  db.exec("ALTER TABLE machines ADD COLUMN is_primary INTEGER NOT NULL DEFAULT 0");
 }
 
 // ============================================================================

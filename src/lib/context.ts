@@ -10,7 +10,7 @@
 
 import { listMemories } from "../db/memories.js";
 import type { MemoryFilter, Memory } from "../types/index.js";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { resolveVisibleMachineId } from "./machine-visibility.js";
 
 export interface ContextSection {

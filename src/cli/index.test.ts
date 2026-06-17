@@ -65,6 +65,10 @@ describe("CLI", () => {
     expect(stdout).toContain("doctor");
     expect(stdout).toContain("inject");
     expect(stdout).toContain("mcp");
+    expect(stdout).toContain("storage");
+    expect(stdout).toContain("consolidate");
+    expect(stdout).toContain("reflect");
+    expect(stdout).not.toContain("cloud  ");
   });
 
   test("--help shows short global option aliases", async () => {
@@ -74,6 +78,48 @@ describe("CLI", () => {
     expect(stdout).toContain("-p, --project");
     expect(stdout).toContain("-a, --agent");
     expect(stdout).toContain("-s, --session");
+  });
+
+  test("storage status --json reports canonical storage config", async () => {
+    const { stdout, exitCode } = await runCli("storage", "status", "--json");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      mode: string;
+      enabled: boolean;
+      config: { mode: string };
+    };
+    expect(parsed.mode).toBe("local");
+    expect(parsed.enabled).toBe(false);
+    expect(parsed.config.mode).toBe("local");
+  });
+
+  test("consolidate --dry-run --json reports planned actions without applying", async () => {
+    await runCli("save", "consolidate-a", "CLI MCP parity must stay visible across features", "--scope", "shared", "--category", "history");
+    await runCli("save", "consolidate-b", "CLI and MCP parity must stay visible across feature work", "--scope", "shared", "--category", "history");
+
+    const { stdout, exitCode } = await runCli("--json", "consolidate", "--dry-run", "--scope", "shared", "--duplicate-threshold", "0.5");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.dryRun).toBe(true);
+    expect(Array.isArray(parsed.actions)).toBe(true);
+    expect(parsed.actions.some((action: { type: string }) => action.type === "merge_duplicate")).toBe(true);
+
+    const { stdout: listOut } = await runCli("--json", "list", "--scope", "shared");
+    const memories = JSON.parse(listOut);
+    const activeKeys = memories.map((memory: { key: string }) => memory.key);
+    expect(activeKeys).toContain("consolidate-a");
+    expect(activeKeys).toContain("consolidate-b");
+  });
+
+  test("reflect --dry-run --json returns structured lessons", async () => {
+    await runCli("--session", "cli-reflect-session", "save", "reflect-session-step", "The session wrote tests first and kept CLI MCP parity visible.", "--scope", "shared", "--category", "history");
+
+    const { stdout, exitCode } = await runCli("--json", "reflect", "--on", "session", "--source", "cli-reflect-session", "--dry-run");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.dryRun).toBe(true);
+    expect(Array.isArray(parsed.lessons)).toBe(true);
+    expect(parsed.lessons.length).toBeGreaterThan(0);
   });
 
   test("save creates a memory", async () => {

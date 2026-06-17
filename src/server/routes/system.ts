@@ -4,6 +4,7 @@ import { registerSystemSynthesisRoutes } from "./system-synthesis.js";
 import { registerSystemSessionRoutes } from "./system-sessions.js";
 import { registerSystemToolRoutes } from "./system-tools.js";
 import { registerSystemChainRoutes } from "./system-chain.js";
+import { registerSystemConsolidationRoutes } from "./system-consolidation.js";
 
 registerSystemAutoMemoryRoutes();
 registerSystemHookRoutes();
@@ -11,3 +12,4 @@ registerSystemSynthesisRoutes();
 registerSystemSessionRoutes();
 registerSystemToolRoutes();
 registerSystemChainRoutes();
+registerSystemConsolidationRoutes();

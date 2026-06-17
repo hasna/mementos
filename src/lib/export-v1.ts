@@ -7,7 +7,7 @@ import type { Memory, MemoryFilter } from "../types/index.js";
 import { listMemories } from "../db/memories.js";
 import { getEntityMemoryLinks } from "../db/entity-memories.js";
 import { getEntity } from "../db/entities.js";
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase } from "../db/database.js";
 
 export interface ExportV1Entry {

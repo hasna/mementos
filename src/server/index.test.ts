@@ -280,6 +280,72 @@ describe("POST /api/memories/search", () => {
 });
 
 // ============================================================================
+// POST /api/consolidate — memory consolidation
+// ============================================================================
+
+describe("POST /api/consolidate", () => {
+  test("dry-run returns planned consolidation actions", async () => {
+    await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "srv-consolidate-a",
+        value: "Server route should keep CLI and MCP parity visible.",
+        category: "history",
+        scope: "shared",
+      }),
+    });
+    await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "srv-consolidate-b",
+        value: "Server route should keep CLI and MCP parity visible for features.",
+        category: "history",
+        scope: "shared",
+      }),
+    });
+
+    const { status, data } = await api("/api/consolidate", {
+      method: "POST",
+      body: JSON.stringify({ dry_run: true, scope: "shared", duplicate_threshold: 0.5 }),
+    });
+
+    expect(status).toBe(200);
+    expect(data.dryRun).toBe(true);
+    expect(Array.isArray(data.actions)).toBe(true);
+    expect(data.actions.some((action: { type: string }) => action.type === "merge_duplicate")).toBe(true);
+  });
+});
+
+// ============================================================================
+// POST /api/reflect — trajectory reflection
+// ============================================================================
+
+describe("POST /api/reflect", () => {
+  test("dry-run returns structured lessons for a session", async () => {
+    await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "srv-reflect-step",
+        value: "The server reflection test wrote a trajectory memory first.",
+        category: "history",
+        scope: "shared",
+        session_id: "srv-reflect-session",
+      }),
+    });
+
+    const { status, data } = await api("/api/reflect", {
+      method: "POST",
+      body: JSON.stringify({ on: "session", source: "srv-reflect-session", dry_run: true }),
+    });
+
+    expect(status).toBe(200);
+    expect(data.dryRun).toBe(true);
+    expect(Array.isArray(data.lessons)).toBe(true);
+    expect(data.lessons.length).toBeGreaterThan(0);
+  });
+});
+
+// ============================================================================
 // GET /api/memories/stats — statistics
 // ============================================================================
 

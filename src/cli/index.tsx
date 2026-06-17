@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
+import { registerEventsCommands } from "@hasna/events/commander";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,7 +16,9 @@ import { registerEntityCommands } from "./commands/entity.js";
 import { registerRelationCommands } from "./commands/relation.js";
 import { registerGraphCommands } from "./commands/graph.js";
 import { registerSystemCommands } from "./commands/system.js";
+import { registerStorageCommands } from "./commands/storage.js";
 import { registerInitCommand } from "./commands/init.js";
+import { registerConsolidationCommands } from "./commands/consolidation.js";
 import { makeBrainsCommand } from "./brains.js";
 
 // ============================================================================
@@ -83,10 +86,14 @@ registerEntityCommands(program);
 registerRelationCommands(program);
 registerGraphCommands(program);
 registerSystemCommands(program);
+registerStorageCommands(program);
+registerConsolidationCommands(program);
 program.addCommand(makeBrainsCommand());
 
 // ============================================================================
 // Parse and run
 // ============================================================================
+registerEventsCommands(program, { source: "mementos" });
+
 
 program.parse(process.argv);

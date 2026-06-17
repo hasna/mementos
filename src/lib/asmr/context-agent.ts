@@ -1,4 +1,4 @@
-import { SqliteAdapter as Database } from "@hasna/cloud";
+import { SqliteAdapter as Database } from "../../storage.js";
 import type { Memory } from "../../types/index.js";
 import { semanticSearch } from "../../db/memories.js";
 import { listEntities, getEntityByName } from "../../db/entities.js";
