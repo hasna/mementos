@@ -175,11 +175,16 @@ describe("getDbPath", () => {
     expect(p).toContain("custom.db");
   });
 
-  test("returns :memory: path resolved", () => {
+  test("preserves SQLite in-memory path", () => {
     process.env["MEMENTOS_DB_PATH"] = ":memory:";
     const p = getDbPath();
-    // resolve(":memory:") produces an absolute path containing ":memory:"
-    expect(p).toContain(":memory:");
+    expect(p).toBe(":memory:");
+  });
+
+  test("preserves SQLite file in-memory URI", () => {
+    process.env["MEMENTOS_DB_PATH"] = "file::memory:?cache=shared";
+    const p = getDbPath();
+    expect(p).toBe("file::memory:?cache=shared");
   });
 
   test("with MEMENTOS_DB_SCOPE=project and git root found, returns project path", () => {

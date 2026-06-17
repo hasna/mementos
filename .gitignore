@@ -3,6 +3,9 @@ dist/
 *.db
 *.db-wal
 *.db-shm
+:memory:
+:memory:-wal
+:memory:-shm
 .mementos/
 .env
 .DS_Store

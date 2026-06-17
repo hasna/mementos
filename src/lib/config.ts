@@ -8,6 +8,10 @@ import type { MementosConfig, MemoryCategory, MemoryScope } from "../types";
 // Default configuration
 // ============================================================================
 
+function isInMemoryDb(path: string): boolean {
+  return path === ":memory:" || path.startsWith("file::memory:");
+}
+
 export const DEFAULT_CONFIG: MementosConfig = {
   default_scope: "private",
   default_category: "knowledge",
@@ -257,6 +261,9 @@ export function getDbPath(): string {
   // 1. MEMENTOS_DB_PATH env var — highest priority (bypasses profiles)
   const envDbPath = process.env["HASNA_MEMENTOS_DB_PATH"] ?? process.env["MEMENTOS_DB_PATH"];
   if (envDbPath) {
+    if (isInMemoryDb(envDbPath)) {
+      return envDbPath;
+    }
     const resolved = resolve(envDbPath);
     ensureDir(dirname(resolved));
     return resolved;
