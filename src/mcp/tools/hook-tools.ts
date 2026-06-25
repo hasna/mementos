@@ -7,6 +7,7 @@ import {
   updateWebhookHook,
   deleteWebhookHook,
 } from "../../db/webhook_hooks.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -17,7 +18,12 @@ export function registerHookTools(server: McpServer): void {
   server.tool(
     "hook_list",
     "List all registered hooks in the in-memory registry (built-in + webhooks).",
-    { type: z.string().optional() },
+    {
+      type: z.string().optional(),
+      limit: z.coerce.number().optional().describe("Max hooks (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+      full: z.boolean().optional().describe("Return complete hook JSON objects. Defaults to compact lines."),
+    },
     async (args) => {
       try {
         const hooks = hookRegistry.list(args.type as Parameters<typeof hookRegistry.list>[0]);
@@ -31,7 +37,29 @@ export function registerHookTools(server: McpServer): void {
           projectId: h.projectId,
           description: h.description,
         }));
-        return { content: [{ type: "text" as const, text: JSON.stringify(items, null, 2) }] };
+        if (args.full) {
+          return { content: [{ type: "text" as const, text: JSON.stringify(items, null, 2) }] };
+        }
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = items.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        if (visible.length === 0) {
+          return { content: [{ type: "text" as const, text: "No hooks registered." }] };
+        }
+        const lines = visible.map((h, index) =>
+          `${index + 1}. ${h.id} | ${h.type} | ${h.blocking ? "blocking" : "non-blocking"} | priority=${h.priority}${h.description ? ` | ${compactText(h.description, 80)}` : ""}`
+        );
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "hook_list",
+          detailHint: "use full=true for complete hook objects",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} hook(s):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }
@@ -93,14 +121,42 @@ export function registerHookTools(server: McpServer): void {
   server.tool(
     "webhook_list",
     "List all persisted webhook hooks.",
-    { type: z.string().optional(), enabled: z.boolean().optional() },
+    {
+      type: z.string().optional(),
+      enabled: z.boolean().optional(),
+      limit: z.coerce.number().optional().describe("Max webhooks (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+      full: z.boolean().optional().describe("Return complete webhook JSON objects. Defaults to compact lines."),
+    },
     async (args) => {
       try {
         const webhooks = listWebhookHooks({
           type: args.type as import("../../types/hooks.js").HookType | undefined,
           enabled: args.enabled,
         });
-        return { content: [{ type: "text" as const, text: JSON.stringify(webhooks, null, 2) }] };
+        if (args.full) {
+          return { content: [{ type: "text" as const, text: JSON.stringify(webhooks, null, 2) }] };
+        }
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = webhooks.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        if (visible.length === 0) {
+          return { content: [{ type: "text" as const, text: "No webhooks registered." }] };
+        }
+        const lines = visible.map((wh, index) =>
+          `${index + 1}. ${wh.id} | ${wh.enabled ? "enabled" : "disabled"} | ${wh.type} -> ${compactText(wh.handlerUrl, 80)} | failures=${wh.failureCount}`
+        );
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "webhook_list",
+          detailHint: "use full=true for complete webhook objects",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} webhook(s):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

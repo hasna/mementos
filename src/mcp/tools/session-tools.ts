@@ -6,6 +6,7 @@ import {
   createMemory,
 } from "../../db/memories.js";
 import type { MemoryCategory, CreateMemoryInput } from "../../types/index.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -43,12 +44,25 @@ export function registerSessionTools(server: McpServer): void {
   server.tool(
     "memory_session_status",
     "Get the status of a session memory extraction job.",
-    { job_id: z.string() },
+    {
+      job_id: z.string(),
+      full: z.boolean().optional().describe("Return the complete job JSON object. Defaults to compact status."),
+    },
     async (args) => {
       try {
         const job = getSessionJob(args.job_id);
         if (!job) return { content: [{ type: "text" as const, text: `Job not found: ${args.job_id}` }], isError: true };
-        return { content: [{ type: "text" as const, text: JSON.stringify(job, null, 2) }] };
+        if (args.full) {
+          return { content: [{ type: "text" as const, text: JSON.stringify(job, null, 2) }] };
+        }
+        const parts = [
+          `Job ${job.id.slice(0, 8)}: ${job.status}`,
+          `session=${job.session_id}`,
+          job.agent_id ? `agent=${job.agent_id}` : undefined,
+          job.project_id ? `project=${job.project_id}` : undefined,
+          job.error ? `error=${compactText(job.error, 160)}` : undefined,
+        ].filter(Boolean);
+        return { content: [{ type: "text" as const, text: `${parts.join(" | ")}\nHint: call memory_session_status(job_id="${job.id}", full=true) for the complete job object.` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }
@@ -63,11 +77,46 @@ export function registerSessionTools(server: McpServer): void {
       project_id: z.string().optional(),
       status: z.enum(["pending", "processing", "completed", "failed"]).optional(),
       limit: z.coerce.number().optional(),
+      offset: z.coerce.number().optional(),
+      full: z.boolean().optional().describe("Return complete job JSON objects. Defaults to compact lines."),
     },
     async (args) => {
       try {
-        const jobs = listSessionJobs({ agent_id: args.agent_id, project_id: args.project_id, status: args.status, limit: args.limit ?? 20 });
-        return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const jobs = listSessionJobs({
+          agent_id: args.agent_id,
+          project_id: args.project_id,
+          status: args.status,
+          limit: args.full ? limit : limit + 1,
+          offset,
+        });
+        if (args.full) {
+          return { content: [{ type: "text" as const, text: JSON.stringify(jobs, null, 2) }] };
+        }
+        if (jobs.length === 0) {
+          return { content: [{ type: "text" as const, text: "No session extraction jobs found." }] };
+        }
+        const hasMore = jobs.length > limit;
+        const visible = hasMore ? jobs.slice(0, limit) : jobs;
+        const lines = visible.map((job, index) => {
+          const bits = [
+            `${index + 1}. ${job.id.slice(0, 8)} ${job.status}`,
+            `session=${compactText(job.session_id, 40)}`,
+            job.agent_id ? `agent=${compactText(job.agent_id, 24)}` : undefined,
+            job.project_id ? `project=${compactText(job.project_id, 24)}` : undefined,
+          ].filter(Boolean);
+          return bits.join(" | ");
+        });
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "memory_session_list",
+          detailHint: "use full=true for complete job objects",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} session job(s):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

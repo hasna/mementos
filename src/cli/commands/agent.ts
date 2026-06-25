@@ -3,8 +3,13 @@ import chalk from "chalk";
 import { registerAgent, listAgents, updateAgent, getAgent, touchAgent } from "../../db/agents.js";
 import { setFocus, getFocus } from "../../lib/focus.js";
 import {
+  DEFAULT_COMPACT_LIMIT,
   outputJson,
   makeHandleError,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -58,31 +63,50 @@ export function registerAgentCommands(program: Command): void {
   program
     .command("agents")
     .description("List all registered agents")
-    .action(() => {
+    .option("--limit <n>", "Max results (compact default: 20)", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const agents = listAgents();
+        const allAgents = listAgents();
+        const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
+        const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
+        const agents = globalOpts.json
+          ? allAgents
+          : allAgents.slice(offset, offset + limit + 1);
+        const hasMore = !globalOpts.json && agents.length > limit;
+        const displayAgents = hasMore ? agents.slice(0, limit) : agents;
 
         if (globalOpts.json) {
-          outputJson(agents);
+          outputJson(allAgents);
           return;
         }
 
-        if (agents.length === 0) {
+        if (displayAgents.length === 0) {
           console.log(chalk.yellow("No agents registered."));
           return;
         }
 
         console.log(
           chalk.bold(
-            `${agents.length} agent${agents.length === 1 ? "" : "s"}:`
+            `${displayAgents.length}${hasMore ? "+" : ""} agent${displayAgents.length === 1 ? "" : "s"}:`
           )
         );
-        for (const a of agents) {
+        for (const a of displayAgents) {
+          const role = truncateText(a.role || "agent", 24);
           console.log(
-            `  ${chalk.dim(a.id)} ${chalk.bold(a.name)} ${chalk.gray(a.role || "agent")} ${chalk.dim(`last seen: ${a.last_seen_at}`)}`
+            `  ${chalk.dim(a.id)} ${chalk.bold(a.name)} ${chalk.gray(role)} ${chalk.dim(`last seen: ${a.last_seen_at}`)}`
           );
         }
+        printPageHint({
+          shown: displayAgents.length,
+          limit,
+          offset,
+          hasMore,
+          command: "mementos agents",
+          detailHint: "use --json for full objects",
+        });
       } catch (e) {
         handleError(e);
       }

@@ -5,11 +5,16 @@ import { getProject } from "../../db/projects.js";
 import { searchMemories, getSearchHistory, getPopularSearches } from "../../lib/search.js";
 import type { MemoryScope, MemoryCategory, MemoryFilter } from "../../types/index.js";
 import {
+  DEFAULT_SEARCH_LIMIT,
   outputJson,
   outputYaml,
   getOutputFormat,
   formatMemoryLine,
   makeHandleError,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -26,14 +31,24 @@ export function registerSearchCommand(program: Command): void {
     .option("--agent <name>", "Agent filter")
     .option("--session <id>", "Session ID filter")
     .option("--limit <n>", "Max results", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--format <fmt>", "Output format: compact (default), json, csv, yaml")
+    .option("--verbose", "Show match highlights and wider snippets")
     .option("--history", "Show recent search queries instead of searching")
     .option("--popular", "Show most popular search queries")
     .action((query: string, opts) => {
       try {
+        const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const isStructured = fmt === "json" || fmt === "csv" || fmt === "yaml";
+        const limit = positiveIntOrDefault(
+          opts.limit,
+          isStructured ? 20 : DEFAULT_SEARCH_LIMIT
+        );
+        const offset = cursorOrOffset(opts.cursor, opts.offset);
+
         if (opts.history) {
-          const history = getSearchHistory(20);
-          const fmt = getOutputFormat(program, opts.format as string | undefined);
+          const history = getSearchHistory(limit);
           if (fmt === "json") {
             outputJson(history);
             return;
@@ -50,8 +65,7 @@ export function registerSearchCommand(program: Command): void {
         }
 
         if (opts.popular) {
-          const popular = getPopularSearches(10);
-          const fmt = getOutputFormat(program, opts.format as string | undefined);
+          const popular = getPopularSearches(limit);
           if (fmt === "json") {
             outputJson(popular);
             return;
@@ -91,14 +105,16 @@ export function registerSearchCommand(program: Command): void {
           project_id: projectId,
           agent_id: agentId,
           session_id: (opts.session as string | undefined) || globalOpts.session,
-          limit: (opts.limit as number | undefined) || 20,
+          limit: isStructured ? limit : limit + 1,
+          offset,
         };
 
-        const results = searchMemories(query, filter);
-        const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const fetched = searchMemories(query, filter);
+        const hasMore = !isStructured && fetched.length > limit;
+        const results = hasMore ? fetched.slice(0, limit) : fetched;
 
         if (fmt === "json") {
-          outputJson(results);
+          outputJson(fetched);
           return;
         }
 
@@ -121,16 +137,27 @@ export function registerSearchCommand(program: Command): void {
           return;
         }
 
-        console.log(chalk.bold(`${results.length} result${results.length === 1 ? "" : "s"} for "${query}":`));
+        console.log(chalk.bold(`${results.length}${hasMore ? "+" : ""} result${results.length === 1 ? "" : "s"} for "${query}":`));
         for (const r of results) {
           const score = chalk.dim(`(score: ${r.score.toFixed(1)})`);
-          console.log(`${formatMemoryLine(r.memory)} ${score}`);
-          if (r.highlights && r.highlights.length > 0) {
+          console.log(`${formatMemoryLine(r.memory, {
+            valueLength: opts.verbose ? 120 : 64,
+            preferSummary: !opts.verbose,
+          })} ${score}`);
+          if (opts.verbose && r.highlights && r.highlights.length > 0) {
             for (const h of r.highlights) {
-              console.log(chalk.dim(`    ${h.field}: ${h.snippet}`));
+              console.log(chalk.dim(`    ${h.field}: ${truncateText(h.snippet, 120)}`));
             }
           }
         }
+        printPageHint({
+          shown: results.length,
+          limit,
+          offset,
+          hasMore,
+          command: `mementos search "${query.replace(/"/g, '\\"')}"`,
+          detailHint: "add --verbose for highlights, use mementos show <id> for full details, or --json for full objects",
+        });
       } catch (e) {
         handleError(e);
       }

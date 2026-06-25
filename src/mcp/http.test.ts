@@ -1,4 +1,8 @@
 process.env["MEMENTOS_DB_PATH"] = ":memory:";
+delete process.env["ANTHROPIC_API_KEY"];
+delete process.env["OPENAI_API_KEY"];
+delete process.env["CEREBRAS_API_KEY"];
+delete process.env["XAI_API_KEY"];
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -40,6 +44,50 @@ describe("mcp buildServer stdio registration", () => {
 
     const tools = await client.listTools();
     expect(tools.tools.some((tool) => tool.name === "memory_stats")).toBe(true);
+
+    await client.close();
+    await server.close();
+  });
+
+  test("memory_list is compact by default and full on request", async () => {
+    const server = buildServer();
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await server.connect(serverTransport);
+
+    const client = new Client({ name: "test", version: "0.0.0" });
+    await client.connect(clientTransport);
+
+    const tag = `mcp-compact-${Date.now()}`;
+    const longValue = "MCP compact output should truncate this large value ".repeat(8) + "MCP_UNTRUNCATED_SENTINEL";
+    for (let i = 0; i < 12; i++) {
+      await client.callTool({
+        name: "memory_save",
+        arguments: {
+          key: `${tag}-${i}`,
+          value: longValue,
+          tags: [tag],
+          scope: "shared",
+        },
+      });
+    }
+
+    const compact = await client.callTool({
+      name: "memory_list",
+      arguments: { tags: [tag] },
+    });
+    const compactText = compact.content?.[0]?.type === "text" ? compact.content[0].text : "";
+    expect(compactText).toContain("10+ memories");
+    expect(compactText).toContain("Hint:");
+    expect(compactText).not.toContain("MCP_UNTRUNCATED_SENTINEL");
+
+    const full = await client.callTool({
+      name: "memory_list",
+      arguments: { tags: [tag], full: true, limit: 1 },
+    });
+    const fullText = full.content?.[0]?.type === "text" ? full.content[0].text : "";
+    const parsed = JSON.parse(fullText);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].value).toContain("MCP_UNTRUNCATED_SENTINEL");
 
     await client.close();
     await server.close();

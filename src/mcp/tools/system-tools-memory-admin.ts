@@ -1,4 +1,5 @@
 import type { SystemToolDeps, Memory, CreateMemoryInput } from "./system-tools-shared.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
 
 export function registerSystemMemoryAdminTools({ server, z, createMemory, getMemory, getDatabase, formatError, resolveId, ensureAutoProject }: SystemToolDeps): void {
   server.tool(
@@ -7,13 +8,15 @@ export function registerSystemMemoryAdminTools({ server, z, createMemory, getMem
     {
       threshold: z.coerce.number().optional().describe("Trust score threshold (default 0.8). Returns memories below this."),
       project_id: z.string().optional(),
-      limit: z.coerce.number().optional().describe("Max results (default 50)"),
+      limit: z.coerce.number().optional().describe("Max results (default 20)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
     },
     async (args) => {
       try {
         const db = getDatabase();
         const threshold = args.threshold ?? 0.8;
-        const limit = args.limit ?? 50;
+        const limit = positiveLimit(args.limit, 20);
+        const offset = args.offset ?? 0;
         const conditions: string[] = ["trust_score < ?", "status = 'active'"];
         const params: (string | number)[] = [threshold];
         if (args.project_id) {
@@ -22,18 +25,27 @@ export function registerSystemMemoryAdminTools({ server, z, createMemory, getMem
           conditions.push("project_id = ?");
           params.push(resolved ?? args.project_id);
         }
-        params.push(limit);
+        params.push(limit + 1, offset);
         const sql = `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY trust_score ASC LIMIT ?`;
-        const rows = db.query(sql).all(...params) as Record<string, unknown>[];
+        const rows = db.query(`${sql} OFFSET ?`).all(...params) as Record<string, unknown>[];
         if (rows.length === 0) {
           return { content: [{ type: "text" as const, text: `No low-trust memories found (threshold: ${threshold})` }] };
         }
         const { parseMemoryRow } = await import("../../db/memories.js");
-        const memories = rows.map(parseMemoryRow);
+        const hasMore = rows.length > limit;
+        const memories = (hasMore ? rows.slice(0, limit) : rows).map(parseMemoryRow);
         const lines = memories.map((m) =>
-          `[trust=${(m.trust_score ?? 1.0).toFixed(2)}] ${m.id.slice(0, 8)} ${m.key}: ${m.value.slice(0, 80)}${m.value.length > 80 ? "..." : ""}`
+          `[trust=${(m.trust_score ?? 1.0).toFixed(2)}] ${m.id.slice(0, 8)} ${m.key}: ${compactText(m.value, 100)}`
         );
-        return { content: [{ type: "text" as const, text: `Low-trust memories (${rows.length}, threshold < ${threshold}):\n${lines.join("\n")}` }] };
+        const hint = compactPageHint({
+          shown: memories.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "memory_audit",
+          detailHint: "use memory_get(id) for full memory details",
+        });
+        return { content: [{ type: "text" as const, text: `Low-trust memories (${memories.length}${hasMore ? "+" : ""}, threshold < ${threshold}):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

@@ -6,6 +6,18 @@ import {
   checkMemoryWriteLock,
 } from "../../lib/memory-lock.js";
 import { acquireLock, releaseLock, checkLock, listAgentLocks, cleanExpiredLocksWithInfo } from "../../db/locks.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
+
+function formatLockLine(lock: {
+  id: string;
+  agent_id: string;
+  resource_type: string;
+  resource_id: string;
+  lock_type: string;
+  expires_at: string;
+}, index: number): string {
+  return `${index + 1}. ${lock.id.slice(0, 8)} ${lock.lock_type} ${lock.resource_type}:${compactText(lock.resource_id, 48)} agent=${lock.agent_id} expires=${lock.expires_at}`;
+}
 
 export function registerLockTools(server: McpServer): void {
   server.tool(
@@ -124,11 +136,32 @@ export function registerLockTools(server: McpServer): void {
       resource_type: z.enum(["project", "memory", "entity", "agent", "connector", "file"]),
       resource_id: z.string(),
       lock_type: z.enum(["advisory", "exclusive"]).optional(),
+      limit: z.coerce.number().optional().describe("Max locks (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+      full: z.boolean().optional().describe("Return complete lock JSON objects. Defaults to compact lines."),
     },
     async (args) => {
       const locks = checkLock(args.resource_type, args.resource_id, args.lock_type);
+      if (args.full) {
+        return {
+          content: [{ type: "text" as const, text: locks.length === 0 ? "No active locks." : JSON.stringify(locks, null, 2) }],
+        };
+      }
+      const limit = positiveLimit(args.limit, 10);
+      const offset = args.offset ?? 0;
+      const page = locks.slice(offset, offset + limit + 1);
+      const hasMore = page.length > limit;
+      const visible = hasMore ? page.slice(0, limit) : page;
+      const hint = compactPageHint({
+        shown: visible.length,
+        limit,
+        offset,
+        hasMore,
+        moreCall: "resource_check_lock",
+        detailHint: "use full=true for complete lock objects",
+      });
       return {
-        content: [{ type: "text" as const, text: locks.length === 0 ? "No active locks." : JSON.stringify(locks, null, 2) }],
+        content: [{ type: "text" as const, text: visible.length === 0 ? "No active locks." : `${visible.length}${hasMore ? "+" : ""} active lock(s):\n${visible.map(formatLockLine).join("\n")}${hint}` }],
       };
     }
   );
@@ -136,11 +169,34 @@ export function registerLockTools(server: McpServer): void {
   server.tool(
     "list_agent_locks",
     "List all active resource locks held by an agent.",
-    { agent_id: z.string() },
+    {
+      agent_id: z.string(),
+      limit: z.coerce.number().optional().describe("Max locks (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+      full: z.boolean().optional().describe("Return complete lock JSON objects. Defaults to compact lines."),
+    },
     async (args) => {
       const locks = listAgentLocks(args.agent_id);
+      if (args.full) {
+        return {
+          content: [{ type: "text" as const, text: locks.length === 0 ? "No active locks." : JSON.stringify(locks, null, 2) }],
+        };
+      }
+      const limit = positiveLimit(args.limit, 10);
+      const offset = args.offset ?? 0;
+      const page = locks.slice(offset, offset + limit + 1);
+      const hasMore = page.length > limit;
+      const visible = hasMore ? page.slice(0, limit) : page;
+      const hint = compactPageHint({
+        shown: visible.length,
+        limit,
+        offset,
+        hasMore,
+        moreCall: "list_agent_locks",
+        detailHint: "use full=true for complete lock objects",
+      });
       return {
-        content: [{ type: "text" as const, text: locks.length === 0 ? "No active locks." : JSON.stringify(locks, null, 2) }],
+        content: [{ type: "text" as const, text: visible.length === 0 ? "No active locks." : `${visible.length}${hasMore ? "+" : ""} active lock(s):\n${visible.map(formatLockLine).join("\n")}${hint}` }],
       };
     }
   );

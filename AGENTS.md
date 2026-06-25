@@ -46,6 +46,19 @@ memory_save(
 )
 ```
 
+## Compact Output Defaults
+
+The CLI and MCP tools are compact by default to keep agent context small.
+
+- `mementos list`, `search`, `history`, `stale`, and other list/status commands
+  show capped rows, truncated text, and a hint for the next page.
+- Use `--limit` and `--cursor`/`--offset` to page through compact output.
+- Use `--verbose` when a command supports it to show wider snippets or match
+  highlights.
+- Use `mementos show <id>` or targeted recall/get tools for full detail.
+- Use `--json` for stable CLI object output; MCP tools that can dump complete
+  objects expose `full=true` or `format="json"`.
+
 ## Session End Protocol
 
 ```

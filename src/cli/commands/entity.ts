@@ -7,6 +7,7 @@ import { getRelatedEntities } from "../../db/relations.js";
 import { linkEntityToMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import type { EntityType } from "../../types/index.js";
 import {
+  DEFAULT_COMPACT_LIMIT,
   outputJson,
   outputYaml,
   getOutputFormat,
@@ -14,6 +15,10 @@ import {
   resolveKeyOrId,
   resolveEntityArg,
   colorEntityType,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -67,6 +72,7 @@ export function registerEntityCommands(program: Command): void {
     .command("show <nameOrId>")
     .description("Show entity details with related entities and linked memories")
     .option("--type <type>", "Entity type hint for name lookup")
+    .option("--verbose", "Show all related entities and linked memories")
     .action((nameOrId: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
@@ -88,18 +94,24 @@ export function registerEntityCommands(program: Command): void {
         console.log(`${chalk.bold("Updated:")}     ${entity.updated_at}`);
 
         if (related.length > 0) {
-          console.log(`\n${chalk.bold("Related entities:")}`);
-          for (const r of related) {
-            console.log(`  ${chalk.dim(r.id.slice(0, 8))} [${colorEntityType(r.type)}] ${r.name}${r.description ? chalk.dim(` — ${r.description}`) : ""}`);
+          const visibleRelated = opts.verbose ? related : related.slice(0, DEFAULT_COMPACT_LIMIT);
+          console.log(`\n${chalk.bold(`Related entities (${visibleRelated.length}${related.length > visibleRelated.length ? `/${related.length}` : ""}):`)}`);
+          for (const r of visibleRelated) {
+            const desc = r.description ? chalk.dim(` - ${truncateText(r.description, 72)}`) : "";
+            console.log(`  ${chalk.dim(r.id.slice(0, 8))} [${colorEntityType(r.type)}] ${r.name}${desc}`);
           }
         }
 
         if (memories.length > 0) {
-          console.log(`\n${chalk.bold("Linked memories:")}`);
-          for (const m of memories) {
-            const value = m.value.length > 60 ? m.value.slice(0, 60) + "..." : m.value;
+          const visibleMemories = opts.verbose ? memories : memories.slice(0, DEFAULT_COMPACT_LIMIT);
+          console.log(`\n${chalk.bold(`Linked memories (${visibleMemories.length}${memories.length > visibleMemories.length ? `/${memories.length}` : ""}):`)}`);
+          for (const m of visibleMemories) {
+            const value = truncateText(m.value, opts.verbose ? 120 : 64);
             console.log(`  ${chalk.dim(m.id.slice(0, 8))} ${chalk.bold(m.key)} = ${value}`);
           }
+        }
+        if (!opts.verbose && (related.length > DEFAULT_COMPACT_LIMIT || memories.length > DEFAULT_COMPACT_LIMIT)) {
+          console.log(chalk.dim("Hint: add --verbose to show all linked records."));
         }
       } catch (e) {
         handleError(e);
@@ -117,10 +129,16 @@ export function registerEntityCommands(program: Command): void {
     .option("--project <path>", "Filter by project")
     .option("--search <query>", "Search by name or description")
     .option("--limit <n>", "Max results", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--format <fmt>", "Output format: compact, json, csv, yaml")
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
+        const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const isStructured = fmt === "json" || fmt === "csv" || fmt === "yaml";
+        const limit = positiveIntOrDefault(opts.limit, isStructured ? 50 : DEFAULT_COMPACT_LIMIT);
+        const offset = cursorOrOffset(opts.cursor, opts.offset);
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
         if (projectPath) {
@@ -132,10 +150,12 @@ export function registerEntityCommands(program: Command): void {
           type: opts.type as EntityType | undefined,
           project_id: projectId,
           search: opts.search as string | undefined,
-          limit: opts.limit as number | undefined,
+          limit: isStructured ? (opts.limit as number | undefined) : limit + 1,
+          offset,
         });
 
-        const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const hasMore = !isStructured && entities.length > limit;
+        const displayEntities = hasMore ? entities.slice(0, limit) : entities;
 
         if (fmt === "json") {
           outputJson(entities);
@@ -144,7 +164,7 @@ export function registerEntityCommands(program: Command): void {
 
         if (fmt === "csv") {
           console.log("id,type,name,description");
-          for (const e of entities) {
+          for (const e of displayEntities) {
             const desc = (e.description || "").replace(/"/g, '""');
             console.log(`${e.id.slice(0, 8)},${e.type},"${e.name}","${desc}"`);
           }
@@ -156,17 +176,25 @@ export function registerEntityCommands(program: Command): void {
           return;
         }
 
-        if (entities.length === 0) {
+        if (displayEntities.length === 0) {
           console.log(chalk.yellow("No entities found."));
           return;
         }
 
-        console.log(chalk.bold(`${entities.length} entit${entities.length === 1 ? "y" : "ies"}:`));
-        for (const e of entities) {
+        console.log(chalk.bold(`${displayEntities.length}${hasMore ? "+" : ""} entit${displayEntities.length === 1 ? "y" : "ies"}:`));
+        for (const e of displayEntities) {
           const id = chalk.dim(e.id.slice(0, 8));
-          const desc = e.description ? chalk.dim(` (${e.description})`) : "";
+          const desc = e.description ? chalk.dim(` (${truncateText(e.description, 72)})`) : "";
           console.log(`${id}  ${colorEntityType(e.type)}  ${e.name}${desc}`);
         }
+        printPageHint({
+          shown: displayEntities.length,
+          limit,
+          offset,
+          hasMore,
+          command: "mementos entity list",
+          detailHint: "use mementos entity show <id> for details or --json for full objects",
+        });
       } catch (e) {
         handleError(e);
       }

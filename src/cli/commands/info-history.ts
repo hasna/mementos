@@ -3,10 +3,15 @@ import chalk from "chalk";
 import { getDatabase } from "../../db/database.js";
 import { parseMemoryRow } from "../../db/memories.js";
 import {
+  DEFAULT_SEARCH_LIMIT,
   outputJson,
   colorScope,
   colorCategory,
   makeHandleError,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -16,23 +21,30 @@ export function registerHistoryCommand(program: Command): void {
   program
     .command("history")
     .description("List memories sorted by most recently accessed")
-    .option("--limit <n>", "Max results (default: 20)", parseInt)
+    .option("--limit <n>", "Max results (compact default: 10)", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
+    .option("--verbose", "Show wider memory snippets")
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const limit = (opts.limit as number | undefined) || 20;
+        const isJson = Boolean(globalOpts.json);
+        const limit = positiveIntOrDefault(opts.limit, isJson ? 20 : DEFAULT_SEARCH_LIMIT);
+        const offset = cursorOrOffset(opts.cursor, opts.offset);
         const db = getDatabase();
 
         const rows = db
           .query(
-            "SELECT * FROM memories WHERE status = 'active' AND accessed_at IS NOT NULL ORDER BY accessed_at DESC LIMIT ?"
+            `SELECT * FROM memories WHERE status = 'active' AND accessed_at IS NOT NULL ORDER BY accessed_at DESC LIMIT ?${offset ? " OFFSET ?" : ""}`
           )
-          .all(limit) as Record<string, unknown>[];
+          .all(...(offset ? [isJson ? limit : limit + 1, offset] : [isJson ? limit : limit + 1])) as Record<string, unknown>[];
 
-        const memories = rows.map(parseMemoryRow);
+        const fetched = rows.map(parseMemoryRow);
+        const hasMore = !isJson && fetched.length > limit;
+        const memories = hasMore ? fetched.slice(0, limit) : fetched;
 
         if (globalOpts.json) {
-          outputJson(memories);
+          outputJson(fetched);
           return;
         }
 
@@ -50,8 +62,7 @@ export function registerHistoryCommand(program: Command): void {
           const id = chalk.dim(m.id.slice(0, 8));
           const scope = colorScope(m.scope);
           const cat = colorCategory(m.category);
-          const value =
-            m.value.length > 60 ? m.value.slice(0, 60) + "..." : m.value;
+          const value = truncateText(m.value, opts.verbose ? 120 : 64);
           const accessed = m.accessed_at
             ? chalk.dim(m.accessed_at)
             : chalk.dim("never");
@@ -59,6 +70,14 @@ export function registerHistoryCommand(program: Command): void {
             `${id} [${scope}/${cat}] ${chalk.bold(m.key)} = ${value}  ${accessed}`
           );
         }
+        printPageHint({
+          shown: memories.length,
+          limit,
+          offset,
+          hasMore,
+          command: "mementos history",
+          detailHint: "use mementos show <id> for full details or --json for full objects",
+        });
       } catch (e) {
         handleError(e);
       }

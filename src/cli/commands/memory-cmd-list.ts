@@ -5,11 +5,15 @@ import { getProject } from "../../db/projects.js";
 import { listMemories } from "../../db/memories.js";
 import type { MemoryScope, MemoryCategory, MemoryStatus, MemoryFilter } from "../../types/index.js";
 import {
+  DEFAULT_COMPACT_LIMIT,
   outputJson,
   outputYaml,
   getOutputFormat,
   formatMemoryLine,
   makeHandleError,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -29,11 +33,21 @@ export function registerListCommand(program: Command): void {
     .option("--session <id>", "Session ID filter")
     .option("--limit <n>", "Max results", parseInt)
     .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--status <status>", "Status filter: active, archived, expired")
     .option("--format <fmt>", "Output format: compact (default), json, csv, yaml")
+    .option("--verbose", "Show wider memory snippets in human output")
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
+        const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const isStructured = fmt === "json" || fmt === "csv" || fmt === "yaml";
+        const requestedLimit = opts.limit as number | undefined;
+        const limit = positiveIntOrDefault(
+          requestedLimit,
+          isStructured ? 50 : DEFAULT_COMPACT_LIMIT
+        );
+        const offset = cursorOrOffset(opts.cursor, opts.offset);
         const agentId = (opts.agent as string | undefined) || globalOpts.agent;
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
@@ -52,17 +66,18 @@ export function registerListCommand(program: Command): void {
           pinned: opts.pinned ? true : undefined,
           agent_id: agentId,
           project_id: projectId,
-          limit: (opts.limit as number | undefined) || 50,
-          offset: opts.offset as number | undefined,
+          limit: isStructured ? limit : limit + 1,
+          offset,
           status: opts.status as MemoryStatus | undefined,
           session_id: (opts.session as string | undefined) || globalOpts.session,
         };
 
-        const memories = listMemories(filter);
-        const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const fetched = listMemories(filter);
+        const hasMore = !isStructured && fetched.length > limit;
+        const memories = hasMore ? fetched.slice(0, limit) : fetched;
 
         if (fmt === "json") {
-          outputJson(memories);
+          outputJson(fetched);
           return;
         }
 
@@ -85,10 +100,21 @@ export function registerListCommand(program: Command): void {
           return;
         }
 
-        console.log(chalk.bold(`${memories.length} memor${memories.length === 1 ? "y" : "ies"}:`));
+        console.log(chalk.bold(`${memories.length}${hasMore ? "+" : ""} memor${memories.length === 1 ? "y" : "ies"}:`));
         for (const m of memories) {
-          console.log(formatMemoryLine(m));
+          console.log(formatMemoryLine(m, {
+            valueLength: opts.verbose ? 120 : 64,
+            preferSummary: !opts.verbose,
+          }));
         }
+        printPageHint({
+          shown: memories.length,
+          limit,
+          offset,
+          hasMore,
+          command: "mementos list",
+          detailHint: "use mementos show <id> for full details or --json for full objects",
+        });
       } catch (e) {
         handleError(e);
       }

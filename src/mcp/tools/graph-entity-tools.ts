@@ -4,6 +4,7 @@ import { createEntity, listEntities, updateEntity, deleteEntity, mergeEntities }
 import { listRelations } from "../../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import { resolveEntityParam, resolveGraphId, formatGraphError } from "./graph-utils.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
 
 export function registerEntityTools(server: McpServer): void {
   server.tool(
@@ -42,7 +43,7 @@ export function registerEntityTools(server: McpServer): void {
           `Name: ${entity.name}`,
           `Type: ${entity.type}`,
         ];
-        if (entity.description) lines.push(`Description: ${entity.description}`);
+        if (entity.description) lines.push(`Description: ${compactText(entity.description, 240)}`);
         if (entity.project_id) lines.push(`Project: ${entity.project_id}`);
         lines.push(`Relations: ${relations.length}`);
         lines.push(`Memories: ${memories.length}`);
@@ -63,15 +64,28 @@ export function registerEntityTools(server: McpServer): void {
       project_id: z.string().optional(),
       search: z.string().optional(),
       limit: z.coerce.number().optional(),
+      offset: z.coerce.number().optional(),
     },
     async (args) => {
       try {
-        const entities = listEntities({ ...args, limit: args.limit || 50 });
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const entities = listEntities({ ...args, limit: limit + 1, offset });
         if (entities.length === 0) {
           return { content: [{ type: "text" as const, text: "No entities found." }] };
         }
-        const lines = entities.map(e => `${e.id.slice(0, 8)} | ${e.type} | ${e.name}`);
-        return { content: [{ type: "text" as const, text: `${entities.length} entit${entities.length === 1 ? "y" : "ies"}:\n${lines.join("\n")}` }] };
+        const hasMore = entities.length > limit;
+        const visible = hasMore ? entities.slice(0, limit) : entities;
+        const lines = visible.map(e => `${e.id.slice(0, 8)} | ${e.type} | ${e.name}${e.description ? ` | ${compactText(e.description, 80)}` : ""}`);
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "entity_list",
+          detailHint: "use entity_get(name_or_id) for details",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} entit${visible.length === 1 ? "y" : "ies"}:\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatGraphError(e) }], isError: true };
       }
