@@ -13,9 +13,11 @@ function isInMemoryDb(path: string): boolean {
 
 function findNearestMementosDb(startDir: string): string | null {
   let dir = resolve(startDir);
+  const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
+  const legacyHomeDb = resolve(home, ".mementos", "mementos.db");
   while (true) {
     const candidate = join(dir, ".mementos", "mementos.db");
-    if (existsSync(candidate)) return candidate;
+    if (existsSync(candidate) && resolve(candidate) !== legacyHomeDb) return candidate;
     const parent = dirname(dir);
     if (parent === dir) break;
     dir = parent;

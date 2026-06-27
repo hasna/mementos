@@ -8,14 +8,14 @@ import { homedir } from "node:os";
 import { getDbPath } from "./config.js";
 
 // ============================================================================
-// config.ts lines 152, 160, 288 — findFileWalkingUp finds the file
-// These lines fire when getDbPath() walks up from a directory under home
-// and finds ~/.mementos/mementos.db (which exists on this machine)
+// Legacy home-level ~/.mementos must not be auto-selected as the active DB.
+// It may be copied to ~/.hasna/mementos during migration, but canonical global
+// operation should resolve to ~/.hasna/mementos/mementos.db.
 // ============================================================================
 
 const HOME_MEMENTOS_DB = join(homedir(), ".mementos", "mementos.db");
 
-describe("getDbPath - findFileWalkingUp finds .mementos/mementos.db (lines 152, 160, 288)", () => {
+describe("getDbPath - ignores legacy home .mementos during automatic discovery", () => {
   let savedCwd: string;
 
   afterEach(() => {
@@ -29,7 +29,7 @@ describe("getDbPath - findFileWalkingUp finds .mementos/mementos.db (lines 152, 
     delete process.env["MEMENTOS_PROFILE"];
   });
 
-  test("findFileWalkingUp finds ~/.mementos/mementos.db (lines 152, 160, 288)", () => {
+  test("falls back to ~/.hasna/mementos when ~/.mementos/mementos.db exists", () => {
     if (!existsSync(HOME_MEMENTOS_DB)) {
       // If the file doesn't exist on this machine, skip gracefully
       expect(true).toBe(true);
@@ -42,22 +42,16 @@ describe("getDbPath - findFileWalkingUp finds .mementos/mementos.db (lines 152, 
     delete process.env["MEMENTOS_DB_SCOPE"];
     delete process.env["MEMENTOS_PROFILE"];
 
-    // Change to home directory — findFileWalkingUp will find ~/.mementos/mementos.db
-    // This triggers:
-    //   - line 160 (dir = parent) during directory walk
-    //   - line 152 (return candidate) when file is found
-    //   - line 288 (return found) in getDbPath
     process.chdir(homedir());
 
     const p = getDbPath();
 
-    // Should return the path to ~/.mementos/mementos.db
-    expect(p).toContain(".mementos");
-    expect(p).toContain("mementos.db");
+    expect(p).toBe(join(homedir(), ".hasna", "mementos", "mementos.db"));
+    expect(p).not.toBe(HOME_MEMENTOS_DB);
     expect(p).not.toBe(":memory:");
   });
 
-  test("findFileWalkingUp from subdirectory walks up to find the file (line 160 loop)", () => {
+  test("does not walk from a home subdirectory into legacy ~/.mementos", () => {
     if (!existsSync(HOME_MEMENTOS_DB)) {
       expect(true).toBe(true);
       return;
@@ -69,13 +63,12 @@ describe("getDbPath - findFileWalkingUp finds .mementos/mementos.db (lines 152, 
     delete process.env["MEMENTOS_DB_SCOPE"];
     delete process.env["MEMENTOS_PROFILE"];
 
-    // Change to a subdirectory of home — requires walking UP multiple steps (line 160 fires twice)
-    // then finds the file (line 152 fires)
     const tmpSubdir = join(homedir(), ".hasna");
     if (existsSync(tmpSubdir)) {
       process.chdir(tmpSubdir);
       const p = getDbPath();
-      expect(p).toContain("mementos.db");
+      expect(p).toBe(join(homedir(), ".hasna", "mementos", "mementos.db"));
+      expect(p).not.toBe(HOME_MEMENTOS_DB);
     } else {
       // Can't test from this path
       expect(true).toBe(true);

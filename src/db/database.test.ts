@@ -12,6 +12,9 @@ import {
   resolvePartialId,
 } from "./database.js";
 import { SqliteAdapter as Database } from "../storage.js";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 beforeEach(() => {
   resetDatabase();
@@ -177,6 +180,38 @@ describe("getDbPath", () => {
       expect(path).toContain("mementos.db");
     } finally {
       process.chdir(origCwd);
+      process.env["MEMENTOS_DB_PATH"] = ":memory:";
+    }
+  });
+
+  test("ignores legacy home .mementos during automatic discovery", () => {
+    delete process.env["MEMENTOS_DB_PATH"];
+    delete process.env["HASNA_MEMENTOS_DB_PATH"];
+    delete process.env["MEMENTOS_DB_SCOPE"];
+
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const originalCwd = process.cwd();
+    const tempHome = mkdtempSync(join(tmpdir(), "mementos-home-"));
+    try {
+      process.env["HOME"] = tempHome;
+      delete process.env["USERPROFILE"];
+      mkdirSync(join(tempHome, ".mementos"), { recursive: true });
+      writeFileSync(join(tempHome, ".mementos", "mementos.db"), "");
+      mkdirSync(join(tempHome, "workspace"), { recursive: true });
+      process.chdir(join(tempHome, "workspace"));
+
+      const path = getDbPath();
+
+      expect(path).toBe(join(tempHome, ".hasna", "mementos", "mementos.db"));
+      expect(path).not.toBe(join(tempHome, ".mementos", "mementos.db"));
+    } finally {
+      process.chdir(originalCwd);
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      rmSync(tempHome, { recursive: true, force: true });
       process.env["MEMENTOS_DB_PATH"] = ":memory:";
     }
   });

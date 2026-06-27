@@ -12,6 +12,10 @@ function isInMemoryDb(path: string): boolean {
   return path === ":memory:" || path.startsWith("file::memory:");
 }
 
+function homeDir(): string {
+  return process.env["HOME"] || process.env["USERPROFILE"] || homedir();
+}
+
 export const DEFAULT_CONFIG: MementosConfig = {
   default_scope: "private",
   default_category: "knowledge",
@@ -101,7 +105,7 @@ function isValidCategory(value: string): value is MemoryCategory {
 // ============================================================================
 
 export function loadConfig(): MementosConfig {
-  const configPath = join(homedir(), ".hasna", "mementos", "config.json");
+  const configPath = join(homeDir(), ".hasna", "mementos", "config.json");
 
   let fileConfig: Record<string, unknown> = {};
 
@@ -148,11 +152,15 @@ export function loadConfig(): MementosConfig {
 
 function findFileWalkingUp(filename: string): string | null {
   let dir = process.cwd();
+  const legacyHomeMementosDb = resolve(homeDir(), ".mementos", "mementos.db");
 
   // eslint-disable-next-line no-constant-condition
   while (true) {
     const candidate = join(dir, filename);
-    if (existsSync(candidate)) {
+    if (
+      existsSync(candidate) &&
+      resolve(candidate) !== legacyHomeMementosDb
+    ) {
       return candidate;
     }
     const parent = dirname(dir);
@@ -193,11 +201,11 @@ function findGitRoot(): string | null {
 // ============================================================================
 
 function profilesDir(): string {
-  return join(homedir(), ".hasna", "mementos", "profiles");
+  return join(homeDir(), ".hasna", "mementos", "profiles");
 }
 
 function globalConfigPath(): string {
-  return join(homedir(), ".hasna", "mementos", "config.json");
+  return join(homeDir(), ".hasna", "mementos", "config.json");
 }
 
 function readGlobalConfig(): Record<string, unknown> {
@@ -250,7 +258,7 @@ export function deleteProfile(name: string): boolean {
 
 export function getDbPath(): string {
   // 0. Auto-migrate: copy old ~/.mementos/ to ~/.hasna/mementos/ if needed
-  const _home = homedir();
+  const _home = homeDir();
   const _newDir = join(_home, ".hasna", "mementos");
   const _oldDir = join(_home, ".mementos");
   if (!existsSync(_newDir) && existsSync(_oldDir)) {
@@ -296,7 +304,7 @@ export function getDbPath(): string {
   }
 
   // 5. Fallback — ~/.hasna/mementos/mementos.db
-  const fallback = join(homedir(), ".hasna", "mementos", "mementos.db");
+  const fallback = join(homeDir(), ".hasna", "mementos", "mementos.db");
   ensureDir(dirname(fallback));
   return fallback;
 }
