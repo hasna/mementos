@@ -76,14 +76,19 @@ Endpoints: `GET /health`, `POST /mcp` (Streamable HTTP).
 mementos-serve
 ```
 
-## Cloud Sync
+## Storage Sync
 
-This package supports cloud sync via `@hasna/cloud`:
+Mementos owns its local and remote storage path. Local data stays in the
+SQLite database under `~/.hasna/mementos/` by default. Remote sync uses the
+native `mementos storage` commands and the `HASNA_MEMENTOS_DATABASE_URL` or
+`MEMENTOS_DATABASE_URL` environment variable when PostgreSQL storage is
+configured.
 
 ```bash
-cloud setup
-cloud sync push --service mementos
-cloud sync pull --service mementos
+mementos storage status
+mementos storage push
+mementos storage pull
+mementos storage sync
 ```
 
 ## Data Directory

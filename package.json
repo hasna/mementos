@@ -1,6 +1,6 @@
 {
   "name": "@hasna/mementos",
-  "version": "0.14.43",
+  "version": "0.14.44",
   "description": "Universal memory system for AI agents - CLI + MCP server + library API",
   "type": "module",
   "main": "dist/index.js",
@@ -34,6 +34,7 @@
     "clean": "rm -rf dist",
     "build": "bun run clean && bun build src/cli/index.tsx --outdir dist/cli --target bun --external ink --external react --external chalk --external @modelcontextprotocol/sdk && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk && bun build src/server/index.ts --outdir dist/server --target bun && bun build src/index.ts src/storage.ts --outdir dist --target bun && bun build src/sdk/index.ts --outdir dist/sdk --target bun && tsc --emitDeclarationOnly --outDir dist",
     "prepare": "bun run build",
+    "prepublishOnly": "bun run typecheck && bun run test",
     "typecheck": "tsc --noEmit",
     "test": "bun test --isolate --timeout=10000",
     "dev:cli": "bun run src/cli/index.tsx",
