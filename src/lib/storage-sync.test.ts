@@ -12,6 +12,7 @@ import {
   getStorageDatabaseUrl,
   getStorageMode,
   getStorageStatus,
+  shouldUsePgSsl,
   SqliteAdapter as Database,
 } from "../storage.js";
 import { registerMachine, listMachines } from "../db/machines.js";
@@ -117,6 +118,18 @@ describe("mementos storage configuration", () => {
     expect(status.env.databaseUrl.name).toBe("HASNA_MEMENTOS_DATABASE_URL");
     expect(status.env.databaseUrl.active_name).toBe("MEMENTOS_DATABASE_URL");
     expect(status.database.redacted_url).toBe("postgres://user:***@example.test/mementos");
+  });
+
+  it("enables pg ssl only from explicit connection query parameters", () => {
+    expect(shouldUsePgSsl("postgres://user:pass@example.test/mementos?ssl=true")).toBe(true);
+    expect(shouldUsePgSsl("postgres://user:pass@example.test/mementos?ssl=1")).toBe(true);
+    expect(shouldUsePgSsl("postgres://user:pass@example.test/mementos?sslmode=require")).toBe(true);
+    expect(shouldUsePgSsl("postgres://user:pass@example.test/mementos?sslmode=verify-full")).toBe(true);
+
+    expect(shouldUsePgSsl("postgres://user:sslmode%3Drequire@example.test/mementos")).toBe(false);
+    expect(shouldUsePgSsl("postgres://example.test/sslmode=require")).toBe(false);
+    expect(shouldUsePgSsl("postgres://example.test/mementos?ssl=false")).toBe(false);
+    expect(shouldUsePgSsl("postgres://example.test/mementos?sslmode=prefer")).toBe(false);
   });
 });
 

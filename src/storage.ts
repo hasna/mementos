@@ -129,10 +129,26 @@ function translateSql(sql: string): string {
   return translated;
 }
 
-function sslConfigFor(connectionString: string): { rejectUnauthorized: boolean } | undefined {
-  return connectionString.includes("sslmode=require") || connectionString.includes("ssl=true")
-    ? { rejectUnauthorized: false }
-    : undefined;
+export function shouldUsePgSsl(connectionString: string): boolean {
+  let params: URLSearchParams;
+
+  try {
+    params = new URL(connectionString).searchParams;
+  } catch {
+    params = new URLSearchParams(connectionString.split("?", 2)[1] ?? "");
+  }
+
+  const ssl = params.get("ssl")?.trim().toLowerCase();
+  const sslMode = params.get("sslmode")?.trim().toLowerCase();
+
+  return (
+    ["1", "true", "yes", "on", "require"].includes(ssl ?? "") ||
+    ["require", "verify-ca", "verify-full"].includes(sslMode ?? "")
+  );
+}
+
+function sslConfigFor(connectionString: string): boolean | undefined {
+  return shouldUsePgSsl(connectionString) || undefined;
 }
 
 export class PgAdapter implements DbAdapter {
