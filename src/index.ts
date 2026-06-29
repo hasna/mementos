@@ -140,6 +140,11 @@ export type { Machine } from "./db/machines.js";
 
 // Search
 export { searchMemories } from "./lib/search.js";
+export {
+  createMementosProjectPanel,
+  formatMementosProjectPanel,
+  type MementosProjectPanelOptions,
+} from "./lib/project-panel.js";
 
 // Config
 export {

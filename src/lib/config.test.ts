@@ -1,8 +1,8 @@
 process.env.MEMENTOS_DB_PATH = ":memory:";
 
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, writeFileSync, unlinkSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync, unlinkSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { loadConfig, DEFAULT_CONFIG, getActiveProfile, setActiveProfile, listProfiles, deleteProfile, getDbPath } from "./config.js";
@@ -157,11 +157,7 @@ describe("DEFAULT_CONFIG", () => {
 // getDbPath — exercises the config module's getDbPath and helpers
 // ============================================================================
 
-import { getDbPath } from "./config.js";
-
 describe("getDbPath", () => {
-  const origEnv = { ...process.env };
-
   afterEach(() => {
     // Restore env
     process.env["MEMENTOS_DB_PATH"] = ":memory:";
@@ -230,6 +226,39 @@ describe("getDbPath", () => {
       expect(p).toContain("mementos.db");
     } finally {
       process.chdir(origCwd);
+      process.env["MEMENTOS_DB_PATH"] = ":memory:";
+    }
+  });
+
+  test("ignores legacy home .mementos during automatic discovery", () => {
+    delete process.env["MEMENTOS_DB_PATH"];
+    delete process.env["HASNA_MEMENTOS_DB_PATH"];
+    delete process.env["MEMENTOS_DB_SCOPE"];
+    delete process.env["MEMENTOS_PROFILE"];
+
+    const originalHome = process.env["HOME"];
+    const originalUserProfile = process.env["USERPROFILE"];
+    const originalCwd = process.cwd();
+    const tempHome = mkdtempSync(join(tmpdir(), "mementos-config-home-"));
+    try {
+      process.env["HOME"] = tempHome;
+      delete process.env["USERPROFILE"];
+      mkdirSync(join(tempHome, ".mementos"), { recursive: true });
+      writeFileSync(join(tempHome, ".mementos", "mementos.db"), "");
+      mkdirSync(join(tempHome, "workspace"), { recursive: true });
+      process.chdir(join(tempHome, "workspace"));
+
+      const p = getDbPath();
+
+      expect(p).toBe(join(tempHome, ".hasna", "mementos", "mementos.db"));
+      expect(p).not.toBe(join(tempHome, ".mementos", "mementos.db"));
+    } finally {
+      process.chdir(originalCwd);
+      if (originalHome === undefined) delete process.env["HOME"];
+      else process.env["HOME"] = originalHome;
+      if (originalUserProfile === undefined) delete process.env["USERPROFILE"];
+      else process.env["USERPROFILE"] = originalUserProfile;
+      rmSync(tempHome, { recursive: true, force: true });
       process.env["MEMENTOS_DB_PATH"] = ":memory:";
     }
   });
