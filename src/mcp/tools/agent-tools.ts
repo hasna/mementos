@@ -1,6 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { registerAgent, getAgent, listAgents, listAgentsByProject, updateAgent } from "../../db/agents.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;
@@ -36,15 +37,31 @@ export function registerAgentTools(server: McpServer): void {
   server.tool(
     "list_agents",
     "List all registered agents",
-    {},
-    async () => {
+    {
+      limit: z.coerce.number().optional().describe("Max agents (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+    },
+    async (args) => {
       try {
         const agents = listAgents();
         if (agents.length === 0) {
           return { content: [{ type: "text" as const, text: "No agents registered." }] };
         }
-        const lines = agents.map((a) => `${a.id} | ${a.name} | ${a.role || "agent"} | project: ${a.active_project_id || "-"} | last seen: ${a.last_seen_at}`);
-        return { content: [{ type: "text" as const, text: `${agents.length} agent(s):\n${lines.join("\n")}` }] };
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = agents.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        const lines = visible.map((a) => `${a.id} | ${a.name} | ${compactText(a.role || "agent", 24)} | project: ${a.active_project_id || "-"} | last seen: ${a.last_seen_at}`);
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "list_agents",
+          detailHint: "use get_agent(id) for details",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} agent(s):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }
@@ -110,6 +127,8 @@ export function registerAgentTools(server: McpServer): void {
     "List agents currently active on a project.",
     {
       project_id: z.string(),
+      limit: z.coerce.number().optional().describe("Max agents (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
     },
     async (args) => {
       try {
@@ -117,8 +136,21 @@ export function registerAgentTools(server: McpServer): void {
         if (agents.length === 0) {
           return { content: [{ type: "text" as const, text: `No active agents for project: ${args.project_id}` }] };
         }
-        const lines = agents.map((a) => `${a.id} | ${a.name} | ${a.role || "agent"} | last seen: ${a.last_seen_at}`);
-        return { content: [{ type: "text" as const, text: `${agents.length} agent(s) on project ${args.project_id}:\n${lines.join("\n")}` }] };
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = agents.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        const lines = visible.map((a) => `${a.id} | ${a.name} | ${compactText(a.role || "agent", 24)} | last seen: ${a.last_seen_at}`);
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "list_agents_by_project",
+          detailHint: "use get_agent(id) for details",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} agent(s) on project ${args.project_id}:\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

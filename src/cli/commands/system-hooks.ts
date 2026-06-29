@@ -1,6 +1,13 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import type { HookType } from "../../types/hooks.js";
+import {
+  DEFAULT_COMPACT_LIMIT,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
+} from "../helpers.js";
 
 export function registerHooksCommand(program: Command): void {
   // ============================================================================
@@ -15,19 +22,35 @@ export function registerHooksCommand(program: Command): void {
     .command("list")
     .description("List registered hooks in the in-memory registry")
     .option("--type <type>", "Filter by hook type")
+    .option("--limit <n>", "Max results (compact default: 20)", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .action(async (opts) => {
       const { hookRegistry } = await import("../../lib/hooks.js");
       const hooks = hookRegistry.list(opts.type);
-      if (hooks.length === 0) {
+      const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
+      const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
+      const page = hooks.slice(offset, offset + limit + 1);
+      const hasMore = page.length > limit;
+      const visibleHooks = hasMore ? page.slice(0, limit) : page;
+      if (visibleHooks.length === 0) {
         console.log(chalk.gray("No hooks registered."));
         return;
       }
-      for (const h of hooks) {
+      for (const h of visibleHooks) {
         const builtinTag = h.builtin ? chalk.blue(" [builtin]") : "";
         const blockingTag = h.blocking ? chalk.red(" [blocking]") : chalk.gray(" [non-blocking]");
         console.log(`${chalk.cyan(h.id)} ${chalk.bold(h.type)}${builtinTag}${blockingTag} priority=${h.priority}`);
-        if (h.description) console.log(`  ${chalk.gray(h.description)}`);
+        if (h.description) console.log(`  ${chalk.gray(truncateText(h.description, 120))}`);
       }
+      printPageHint({
+        shown: visibleHooks.length,
+        limit,
+        offset,
+        hasMore,
+        command: "mementos hooks list",
+        detailHint: "increase --limit to show more hooks",
+      });
     });
 
   hooksCmd
@@ -62,23 +85,39 @@ export function registerHooksCommand(program: Command): void {
     .description("List all persisted webhook hooks")
     .option("--type <type>", "Filter by hook type")
     .option("--disabled", "Show only disabled webhooks")
+    .option("--limit <n>", "Max results (compact default: 20)", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .action(async (opts) => {
       const { listWebhookHooks } = await import("../../db/webhook_hooks.js");
       const webhooks = listWebhookHooks({
         type: opts.type,
         enabled: opts.disabled ? false : undefined,
       });
-      if (webhooks.length === 0) {
+      const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
+      const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
+      const page = webhooks.slice(offset, offset + limit + 1);
+      const hasMore = page.length > limit;
+      const visibleWebhooks = hasMore ? page.slice(0, limit) : page;
+      if (visibleWebhooks.length === 0) {
         console.log(chalk.gray("No webhooks registered."));
         return;
       }
-      for (const wh of webhooks) {
+      for (const wh of visibleWebhooks) {
         const enabledTag = wh.enabled ? chalk.green("enabled") : chalk.red("disabled");
         const blockingTag = wh.blocking ? chalk.red("blocking") : chalk.gray("non-blocking");
-        console.log(`${chalk.cyan(wh.id)} [${enabledTag}] ${chalk.bold(wh.type)} → ${wh.handlerUrl}`);
+        console.log(`${chalk.cyan(wh.id)} [${enabledTag}] ${chalk.bold(wh.type)} -> ${truncateText(wh.handlerUrl, 96)}`);
         console.log(`  ${blockingTag} | priority=${wh.priority} | invocations=${wh.invocationCount} failures=${wh.failureCount}`);
-        if (wh.description) console.log(`  ${chalk.gray(wh.description)}`);
+        if (wh.description) console.log(`  ${chalk.gray(truncateText(wh.description, 120))}`);
       }
+      printPageHint({
+        shown: visibleWebhooks.length,
+        limit,
+        offset,
+        hasMore,
+        command: "mementos hooks webhooks list",
+        detailHint: "increase --limit to show more webhooks",
+      });
     });
 
   webhooksCmd

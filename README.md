@@ -17,6 +17,19 @@ npm install -g @hasna/mementos
 mementos --help
 ```
 
+CLI output is compact by default so agent terminals do not fill with full
+records. List/search/history commands show capped rows, truncated values, and a
+hint for the next page or detail path.
+
+```bash
+mementos list                         # compact page, default 20 rows
+mementos list --cursor 20 --limit 20  # next page
+mementos search "deploy"              # compact results, no highlights
+mementos search "deploy" --verbose    # include match highlights
+mementos show <id>                    # full memory detail
+mementos --json list                  # stable machine-readable objects
+```
+
 ## Shared Event Webhooks
 
 `mementos` exposes the shared `@hasna/events` commands so memory events can
@@ -57,6 +70,10 @@ mementos-mcp
 ```
 
 116 tools available.
+
+MCP list/status tools also default to compact text. Use tool-specific
+`limit`/`offset` arguments for paging and `full=true` or `format="json"` on tools
+that expose it when a complete object dump is required.
 
 ## HTTP mode
 

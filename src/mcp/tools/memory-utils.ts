@@ -91,6 +91,43 @@ export function formatMemory(m: Memory): string {
   return parts.join("\n");
 }
 
+export const MCP_DEFAULT_LIMIT = 10;
+export const MCP_MAX_COMPACT_LIMIT = 50;
+
+export function positiveLimit(value: unknown, fallback = MCP_DEFAULT_LIMIT): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.min(Math.floor(parsed), MCP_MAX_COMPACT_LIMIT);
+}
+
+export function compactText(value: string | null | undefined, max = 100): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  if (max <= 3) return normalized.slice(0, max);
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
+export function formatMemorySummary(m: Memory, index?: number, maxValue = 100): string {
+  const prefix = index === undefined ? "" : `${index}. `;
+  return `${prefix}[${m.scope}/${m.category}] ${m.key} = ${compactText(m.summary || m.value, maxValue)} (imp:${m.importance} id:${m.id.slice(0, 8)})`;
+}
+
+export function compactPageHint(args: {
+  shown: number;
+  limit: number;
+  offset?: number;
+  hasMore: boolean;
+  moreCall: string;
+  detailHint?: string;
+}): string {
+  const hints: string[] = [];
+  if (args.hasMore) {
+    hints.push(`more available: call ${args.moreCall} with offset=${(args.offset ?? 0) + args.shown}, limit=${args.limit}`);
+  }
+  if (args.detailHint) hints.push(args.detailHint);
+  return hints.length > 0 ? `\n\nHint: ${hints.join("; ")}.` : "";
+}
+
 // ============================================================================
 // ASMR result formatting
 // ============================================================================
@@ -101,22 +138,25 @@ export function formatAsmrResult(result: import("../../lib/asmr/types.js").AsmrR
   sections.push(`[deep] ASMR recall for "${query}" (${result.duration_ms}ms, agents: ${result.agents_used.join(", ")})`);
 
   if (result.memories.length > 0) {
-    const memLines = result.memories.map((m, i) =>
-      `${i + 1}. [${m.source_agent}] [score:${m.score.toFixed(3)}] [${m.memory.scope}/${m.memory.category}] ${m.memory.key} = ${m.memory.value.slice(0, 120)}${m.memory.value.length > 120 ? "..." : ""}`,
+    const visibleMemories = result.memories.slice(0, MCP_MAX_COMPACT_LIMIT);
+    const memLines = visibleMemories.map((m, i) =>
+      `${i + 1}. [${m.source_agent}] [score:${m.score.toFixed(3)}] ${formatMemorySummary(m.memory, undefined, 120)}`,
     );
     sections.push(`Memories (${result.memories.length}):\n${memLines.join("\n")}`);
   }
 
   if (result.facts.length > 0) {
-    sections.push(`Facts:\n${result.facts.map((f) => `- ${f}`).join("\n")}`);
+    const facts = result.facts.slice(0, MCP_MAX_COMPACT_LIMIT).map((f) => `- ${compactText(f, 180)}`);
+    sections.push(`Facts (${facts.length}${result.facts.length > facts.length ? `/${result.facts.length}` : ""}):\n${facts.join("\n")}`);
   }
 
   if (result.timeline.length > 0) {
-    sections.push(`Timeline:\n${result.timeline.map((t) => `- ${t}`).join("\n")}`);
+    const timeline = result.timeline.slice(0, MCP_MAX_COMPACT_LIMIT).map((t) => `- ${compactText(t, 180)}`);
+    sections.push(`Timeline (${timeline.length}${result.timeline.length > timeline.length ? `/${result.timeline.length}` : ""}):\n${timeline.join("\n")}`);
   }
 
   if (result.reasoning) {
-    sections.push(`Reasoning: ${result.reasoning}`);
+    sections.push(`Reasoning: ${compactText(result.reasoning, 500)}`);
   }
 
   return sections.join("\n\n");

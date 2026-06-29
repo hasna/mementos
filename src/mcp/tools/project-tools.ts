@@ -14,6 +14,7 @@ import {
   setPrimaryMachine,
 } from "../../db/machines.js";
 import { pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
+import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) {
@@ -78,15 +79,31 @@ export function registerProjectTools(server: McpServer): void {
   server.tool(
     "list_projects",
     "List all registered projects",
-    {},
-    async () => {
+    {
+      limit: z.coerce.number().optional().describe("Max projects (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+    },
+    async (args) => {
       try {
         const projects = listProjects();
         if (projects.length === 0) {
           return { content: [{ type: "text" as const, text: "No projects registered." }] };
         }
-        const lines = projects.map((p) => `${p.id.slice(0, 8)} | ${p.name} | ${p.path}`);
-        return { content: [{ type: "text" as const, text: `${projects.length} project(s):\n${lines.join("\n")}` }] };
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = projects.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        const lines = visible.map((p) => `${p.id.slice(0, 8)} | ${p.name} | ${compactText(p.path, 96)}`);
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "list_projects",
+          detailHint: "use get_project(id) for details",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} project(s):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }
@@ -138,17 +155,62 @@ export function registerProjectTools(server: McpServer): void {
   server.tool(
     "list_machines",
     "List all registered machines with their hostname, platform, primary status, and last seen time.",
-    {},
-    async () => {
+    {
+      limit: z.coerce.number().optional().describe("Max machines (default: 10)"),
+      offset: z.coerce.number().optional().describe("Cursor offset for the next page"),
+      full: z.boolean().optional().describe("Return complete machine JSON objects. Defaults to compact lines."),
+    },
+    async (args) => {
       try {
         syncMachinesTable("pull");
         const machines = listMachines();
-        return { content: [{ type: "text" as const, text: JSON.stringify(machines) }] };
+        if (args.full) {
+          return { content: [{ type: "text" as const, text: JSON.stringify(machines, null, 2) }] };
+        }
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = machines.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        if (visible.length === 0) {
+          return { content: [{ type: "text" as const, text: "No machines registered." }] };
+        }
+        const lines = visible.map((m) =>
+          `${m.id.slice(0, 8)} | ${m.name} | ${m.hostname} | ${m.platform}${m.is_primary ? " | primary" : ""} | last_seen=${m.last_seen_at ?? "-"}`
+        );
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "list_machines",
+          detailHint: "use full=true for complete machine objects",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} machine(s):\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         // Fallback to local machines when remote storage sync is unavailable
         try {
           const machines = listMachines();
-          return { content: [{ type: "text" as const, text: JSON.stringify(machines) + "\n\n(Note: Storage pull failed, showing local data only)" }] };
+          if (args.full) {
+            return { content: [{ type: "text" as const, text: `${JSON.stringify(machines, null, 2)}\n\n(Note: Storage pull failed, showing local data only)` }] };
+          }
+          const limit = positiveLimit(args.limit, 10);
+          const offset = args.offset ?? 0;
+          const page = machines.slice(offset, offset + limit + 1);
+          const hasMore = page.length > limit;
+          const visible = hasMore ? page.slice(0, limit) : page;
+          const lines = visible.map((m) =>
+            `${m.id.slice(0, 8)} | ${m.name} | ${m.hostname} | ${m.platform}${m.is_primary ? " | primary" : ""} | last_seen=${m.last_seen_at ?? "-"}`
+          );
+          const hint = compactPageHint({
+            shown: visible.length,
+            limit,
+            offset,
+            hasMore,
+            moreCall: "list_machines",
+            detailHint: "use full=true for complete machine objects",
+          });
+          return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} machine(s):\n${lines.join("\n")}${hint}\n\n(Note: Storage pull failed, showing local data only)` }] };
         } catch {
           return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
         }

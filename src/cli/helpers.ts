@@ -111,6 +111,52 @@ export function outputJson(data: unknown): void {
   console.log(JSON.stringify(data, null, 2));
 }
 
+export const DEFAULT_COMPACT_LIMIT = 20;
+export const DEFAULT_SEARCH_LIMIT = 10;
+export const DEFAULT_SNIPPET_LENGTH = 72;
+
+export function positiveIntOrDefault(value: unknown, fallback: number): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1) return fallback;
+  return Math.floor(parsed);
+}
+
+export function cursorOrOffset(cursor: unknown, offset: unknown): number | undefined {
+  const raw = cursor ?? offset;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const parsed = typeof raw === "number" ? raw : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.floor(parsed);
+}
+
+export function truncateText(value: string | null | undefined, max = DEFAULT_SNIPPET_LENGTH): string {
+  const normalized = (value ?? "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= max) return normalized;
+  if (max <= 3) return normalized.slice(0, max);
+  return `${normalized.slice(0, max - 3)}...`;
+}
+
+export function printPageHint(opts: {
+  shown: number;
+  limit: number;
+  offset?: number;
+  hasMore: boolean;
+  command: string;
+  detailHint?: string;
+}): void {
+  const hints: string[] = [];
+  const offset = opts.offset ?? 0;
+  if (opts.hasMore) {
+    hints.push(`use ${opts.command} --cursor ${offset + opts.shown} --limit ${opts.limit} for more`);
+  }
+  if (opts.detailHint) {
+    hints.push(opts.detailHint);
+  }
+  if (hints.length > 0) {
+    console.log(chalk.dim(`Hint: ${hints.join("; ")}.`));
+  }
+}
+
 /**
  * Resolve output format from local command flag, global flag, or --json alias.
  * Priority: localFmt > global --format > --json > "compact"
@@ -201,14 +247,17 @@ export function outputYaml(data: unknown): void {
   }
 }
 
-export function formatMemoryLine(m: Memory): string {
+export function formatMemoryLine(
+  m: Memory,
+  opts: { valueLength?: number; preferSummary?: boolean } = {}
+): string {
   const id = chalk.dim(m.id.slice(0, 8));
   const scope = colorScope(m.scope);
   const cat = colorCategory(m.category);
   const imp = colorImportance(m.importance);
   const pin = m.pinned ? chalk.red(" *") : "";
-  const value =
-    m.value.length > 80 ? m.value.slice(0, 80) + "..." : m.value;
+  const displayValue = opts.preferSummary && m.summary ? m.summary : m.value;
+  const value = truncateText(displayValue, opts.valueLength ?? 80);
   return `${id} [${scope}/${cat}] ${chalk.bold(m.key)} = ${value} (${imp})${pin}`;
 }
 

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createRelation, getRelation, listRelations, deleteRelation } from "../../db/relations.js";
 import { resolveEntityParam, resolveGraphId, formatGraphError } from "./graph-utils.js";
+import { compactPageHint, positiveLimit } from "./memory-utils.js";
 
 export function registerRelationTools(server: McpServer): void {
   server.tool(
@@ -54,6 +55,8 @@ export function registerRelationTools(server: McpServer): void {
       entity_name_or_id: z.string(),
       relation_type: z.enum(["uses", "knows", "depends_on", "created_by", "related_to", "contradicts", "part_of", "implements"]).optional(),
       direction: z.enum(["outgoing", "incoming", "both"]).optional(),
+      limit: z.coerce.number().optional(),
+      offset: z.coerce.number().optional(),
     },
     async (args) => {
       try {
@@ -66,10 +69,23 @@ export function registerRelationTools(server: McpServer): void {
         if (relations.length === 0) {
           return { content: [{ type: "text" as const, text: `No relations found for: ${entity.name}` }] };
         }
-        const lines = relations.map(r =>
+        const limit = positiveLimit(args.limit, 10);
+        const offset = args.offset ?? 0;
+        const page = relations.slice(offset, offset + limit + 1);
+        const hasMore = page.length > limit;
+        const visible = hasMore ? page.slice(0, limit) : page;
+        const lines = visible.map(r =>
           `${r.id.slice(0, 8)} | ${r.source_entity_id.slice(0, 8)} —[${r.relation_type}]→ ${r.target_entity_id.slice(0, 8)} (w:${r.weight})`
         );
-        return { content: [{ type: "text" as const, text: `${relations.length} relation(s) for ${entity.name}:\n${lines.join("\n")}` }] };
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "relation_list",
+          detailHint: "use relation_get(id) for details",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} relation(s) for ${entity.name}:\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatGraphError(e) }], isError: true };
       }

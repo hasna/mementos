@@ -5,11 +5,15 @@ import { getEntity } from "../../db/entities.js";
 import { createRelation, listRelations, deleteRelation } from "../../db/relations.js";
 import type { Entity, RelationType } from "../../types/index.js";
 import {
+  DEFAULT_COMPACT_LIMIT,
   outputJson,
   outputYaml,
   getOutputFormat,
   makeHandleError,
   resolveEntityArg,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -59,6 +63,9 @@ export function registerRelationCommands(program: Command): void {
     .description("List relations for an entity")
     .option("--type <relationType>", "Filter by relation type")
     .option("--direction <dir>", "Direction: outgoing, incoming, both", "both")
+    .option("--limit <n>", "Max results (compact default: 20)", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--format <fmt>", "Output format: compact, json, csv, yaml")
     .action((entityNameOrId: string, opts) => {
       try {
@@ -71,6 +78,14 @@ export function registerRelationCommands(program: Command): void {
         });
 
         const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const isStructured = fmt === "json" || fmt === "csv" || fmt === "yaml";
+        const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
+        const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
+        const displayRelations = isStructured
+          ? relations
+          : relations.slice(offset, offset + limit + 1);
+        const hasMore = !isStructured && displayRelations.length > limit;
+        const visibleRelations = hasMore ? displayRelations.slice(0, limit) : displayRelations;
 
         if (fmt === "json") {
           outputJson(relations);
@@ -79,7 +94,7 @@ export function registerRelationCommands(program: Command): void {
 
         if (fmt === "csv") {
           console.log("id,source,target,type,weight");
-          for (const r of relations) {
+          for (const r of visibleRelations) {
             console.log(`${r.id.slice(0, 8)},${r.source_entity_id.slice(0, 8)},${r.target_entity_id.slice(0, 8)},${r.relation_type},${r.weight}`);
           }
           return;
@@ -90,7 +105,7 @@ export function registerRelationCommands(program: Command): void {
           return;
         }
 
-        if (relations.length === 0) {
+        if (visibleRelations.length === 0) {
           console.log(chalk.yellow(`No relations found for: ${entity.name}`));
           return;
         }
@@ -109,14 +124,22 @@ export function registerRelationCommands(program: Command): void {
           }
         };
 
-        console.log(chalk.bold(`${relations.length} relation${relations.length === 1 ? "" : "s"} for ${entity.name}:`));
-        for (const r of relations) {
+        console.log(chalk.bold(`${visibleRelations.length}${hasMore ? "+" : ""} relation${visibleRelations.length === 1 ? "" : "s"} for ${entity.name}:`));
+        for (const r of visibleRelations) {
           const src = resolveName(r.source_entity_id);
           const tgt = resolveName(r.target_entity_id);
           const id = chalk.dim(r.id.slice(0, 8));
           const weight = r.weight !== 1.0 ? chalk.dim(` w:${r.weight}`) : "";
           console.log(`${id}  ${src} —[${chalk.cyan(r.relation_type)}]→ ${tgt}${weight}`);
         }
+        printPageHint({
+          shown: visibleRelations.length,
+          limit,
+          offset,
+          hasMore,
+          command: `mementos relation list ${entity.name}`,
+          detailHint: "use --json for full relation objects",
+        });
       } catch (e) {
         handleError(e);
       }

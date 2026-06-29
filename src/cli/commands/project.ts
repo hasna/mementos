@@ -12,8 +12,13 @@ import type {
   MemoryCategory,
 } from "../../types/index.js";
 import {
+  DEFAULT_COMPACT_LIMIT,
   outputJson,
   makeHandleError,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
   type GlobalOpts,
 } from "../helpers.js";
 
@@ -31,6 +36,9 @@ export function registerProjectCommands(program: Command): void {
     .option("--name <name>", "Project name")
     .option("--path <path>", "Project path")
     .option("--description <text>", "Project description")
+    .option("--limit <n>", "Max results (compact default: 20)", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
@@ -66,28 +74,44 @@ export function registerProjectCommands(program: Command): void {
         }
 
         // List projects
-        const projects = listProjects();
+        const allProjects = listProjects();
+        const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
+        const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
+        const projects = globalOpts.json
+          ? allProjects
+          : allProjects.slice(offset, offset + limit + 1);
+        const hasMore = !globalOpts.json && projects.length > limit;
+        const displayProjects = hasMore ? projects.slice(0, limit) : projects;
 
         if (globalOpts.json) {
-          outputJson(projects);
+          outputJson(allProjects);
           return;
         }
 
-        if (projects.length === 0) {
+        if (displayProjects.length === 0) {
           console.log(chalk.yellow("No projects registered."));
           return;
         }
 
         console.log(
           chalk.bold(
-            `${projects.length} project${projects.length === 1 ? "" : "s"}:`
+            `${displayProjects.length}${hasMore ? "+" : ""} project${displayProjects.length === 1 ? "" : "s"}:`
           )
         );
-        for (const p of projects) {
+        for (const p of displayProjects) {
+          const description = p.description ? chalk.dim(` - ${truncateText(p.description, 72)}`) : "";
           console.log(
-            `  ${chalk.dim(p.id.slice(0, 8))} ${chalk.bold(p.name)} ${chalk.gray(p.path)}${p.description ? chalk.dim(` — ${p.description}`) : ""}`
+            `  ${chalk.dim(p.id.slice(0, 8))} ${chalk.bold(p.name)} ${chalk.gray(truncateText(p.path, 80))}${description}`
           );
         }
+        printPageHint({
+          shown: displayProjects.length,
+          limit,
+          offset,
+          hasMore,
+          command: "mementos projects",
+          detailHint: "use --json for full objects",
+        });
       } catch (e) {
         handleError(e);
       }

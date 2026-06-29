@@ -16,7 +16,15 @@ import { getDatabase } from "../../db/database.js";
 import { getCurrentMachineId } from "../../db/machines.js";
 import { searchMemories } from "../../lib/search.js";
 import { parseDuration } from "../../lib/duration.js";
-import { ensureAutoProject, formatError, resolveId, formatMemory } from "./memory-utils.js";
+import {
+  compactPageHint,
+  ensureAutoProject,
+  formatError,
+  formatMemory,
+  formatMemorySummary,
+  positiveLimit,
+  resolveId,
+} from "./memory-utils.js";
 import type { MemoryFilter, CreateMemoryInput } from "../../types/index.js";
 
 export function registerMemoryCrudTools(server: McpServer): void {
@@ -343,11 +351,14 @@ export function registerMemoryCrudTools(server: McpServer): void {
       limit: z.coerce.number().optional(),
       offset: z.coerce.number().optional(),
       full: z.boolean().optional(),
+      verbose: z.boolean().optional(),
       fields: z.array(z.string()).optional(),
     },
     async (args) => {
       try {
-        const { full, fields, ...filterArgs } = args;
+        const { full, fields, verbose, ...filterArgs } = args;
+        const limit = positiveLimit(filterArgs.limit, 10);
+        const offset = filterArgs.offset ?? 0;
         // Focus mode: if agent is focused and no explicit scope/project_id, auto-scope
         let resolvedFilter = { ...filterArgs };
         if (!resolvedFilter.scope && !resolvedFilter.project_id && resolvedFilter.agent_id) {
@@ -356,7 +367,8 @@ export function registerMemoryCrudTools(server: McpServer): void {
         }
         const filter: MemoryFilter = {
           ...resolvedFilter,
-          limit: resolvedFilter.limit || 10,
+          limit: full ? limit : limit + 1,
+          offset,
         };
         const memories = listMemories(filter);
         if (memories.length === 0) {
@@ -376,11 +388,19 @@ export function registerMemoryCrudTools(server: McpServer): void {
           });
           return { content: [{ type: "text" as const, text: JSON.stringify(compact, null, 2) }] };
         }
+        const hasMore = memories.length > limit;
+        const visible = hasMore ? memories.slice(0, limit) : memories;
         // Compact mode (default): key+value+scope+importance+id only
-        const lines = memories.map((m, i) =>
-          `${i + 1}. [${m.scope}/${m.category}] ${m.key} = ${m.value.slice(0, 100)}${m.value.length > 100 ? "..." : ""} (imp:${m.importance} id:${m.id.slice(0, 8)})`
-        );
-        return { content: [{ type: "text" as const, text: `${memories.length} memories:\n${lines.join("\n")}` }] };
+        const lines = visible.map((m, i) => formatMemorySummary(m, i + 1, verbose ? 160 : 100));
+        const hint = compactPageHint({
+          shown: visible.length,
+          limit,
+          offset,
+          hasMore,
+          moreCall: "memory_list",
+          detailHint: "use memory_get(id) or memory_recall(key) for details; use full=true for complete JSON objects",
+        });
+        return { content: [{ type: "text" as const, text: `${visible.length}${hasMore ? "+" : ""} memories:\n${lines.join("\n")}${hint}` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }
@@ -404,18 +424,22 @@ export function registerMemoryCrudTools(server: McpServer): void {
       expires_at: z.string().nullable().optional(),
       version: z.coerce.number().optional(),
       when_to_use: z.string().optional().describe("Update the activation context for this memory"),
+      full: z.boolean().optional().describe("Return full memory detail after updating. Defaults to compact summary."),
     },
     async (args) => {
       try {
         const id = resolveId(args.id);
-        const { id: _id, version, ...updateFields } = args;
+        const { id: _id, version, full, ...updateFields } = args;
         // Auto-fetch version if not provided (eliminates the need for a prior read)
         const resolvedVersion = version ?? getMemory(id)?.version;
         if (resolvedVersion === undefined) {
           return { content: [{ type: "text" as const, text: `Memory not found: ${id}` }] };
         }
         const memory = updateMemory(id, { ...updateFields, version: resolvedVersion });
-        return { content: [{ type: "text" as const, text: `Memory updated:\n${formatMemory(memory)}` }] };
+        const text = full
+          ? `Memory updated:\n${formatMemory(memory)}`
+          : `Memory updated: ${formatMemorySummary(memory)}\nHint: call memory_get(id="${memory.id.slice(0, 8)}") for full details.`;
+        return { content: [{ type: "text" as const, text }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

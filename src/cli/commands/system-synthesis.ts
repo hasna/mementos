@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { positiveIntOrDefault } from "../helpers.js";
 
 export function registerSynthesisCommand(program: Command): void {
   // ============================================================================
@@ -44,9 +45,10 @@ export function registerSynthesisCommand(program: Command): void {
     .command("status")
     .description("Show recent synthesis runs")
     .option("--project <id>", "Filter by project")
+    .option("--limit <n>", "Max runs (default: 10)", parseInt)
     .action(async (opts) => {
       const { listSynthesisRuns } = await import("../../db/synthesis.js");
-      const runs = listSynthesisRuns({ project_id: opts.project, limit: 10 });
+      const runs = listSynthesisRuns({ project_id: opts.project, limit: positiveIntOrDefault(opts.limit, 10) });
       if (runs.length === 0) {
         console.log(chalk.gray("No synthesis runs found."));
         return;

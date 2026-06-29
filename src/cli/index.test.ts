@@ -19,7 +19,15 @@ async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env: { ...process.env, MEMENTOS_DB_PATH: DB_PATH, HASNA_MEMENTOS_DB_PATH: DB_PATH },
+    env: {
+      ...process.env,
+      MEMENTOS_DB_PATH: DB_PATH,
+      HASNA_MEMENTOS_DB_PATH: DB_PATH,
+      ANTHROPIC_API_KEY: "",
+      OPENAI_API_KEY: "",
+      CEREBRAS_API_KEY: "",
+      XAI_API_KEY: "",
+    },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -167,6 +175,26 @@ describe("CLI", () => {
     expect(stdout).toContain("cli-test-key");
   });
 
+  test("list compact default pages noisy records and preserves JSON detail", async () => {
+    const tag = `compact-list-${Date.now()}`;
+    const longValue = "compact default output should truncate this repeated detail ".repeat(8) + "UNTRUNCATED_SENTINEL";
+    for (let i = 0; i < 25; i++) {
+      await runCli("save", `${tag}-${i}`, longValue, "--tags", tag, "--scope", "shared");
+    }
+
+    const { stdout, exitCode } = await runCli("list", "--tags", tag);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("20+ memories");
+    expect(stdout).toContain("Hint:");
+    expect(stdout).toContain("mementos show <id>");
+    expect(stdout).not.toContain("UNTRUNCATED_SENTINEL");
+
+    const { stdout: jsonOut } = await runCli("list", "--tags", tag, "--json");
+    const parsed = JSON.parse(jsonOut);
+    expect(Array.isArray(parsed)).toBe(true);
+    expect(parsed[0].value).toContain("UNTRUNCATED_SENTINEL");
+  });
+
   test("list --json outputs parseable JSON", async () => {
     const { stdout } = await runCli("list", "--json");
     const parsed = JSON.parse(stdout);
@@ -196,6 +224,24 @@ describe("CLI", () => {
   test("search finds matching memories", async () => {
     const { stdout } = await runCli("search", "global-val");
     expect(stdout).toContain("cli-global");
+  });
+
+  test("search compact default hides highlights until verbose", async () => {
+    const needle = `compact-search-${Date.now()}`;
+    const longValue = `This memory contains ${needle} and a long body that should not print highlight detail by default. `.repeat(5);
+    for (let i = 0; i < 12; i++) {
+      await runCli("save", `${needle}-${i}`, longValue, "--scope", "shared");
+    }
+
+    const compact = await runCli("search", needle);
+    expect(compact.exitCode).toBe(0);
+    expect(compact.stdout).toContain("10+ results");
+    expect(compact.stdout).toContain("Hint:");
+    expect(compact.stdout).not.toContain("value:");
+
+    const verbose = await runCli("search", needle, "--verbose", "--limit", "1");
+    expect(verbose.exitCode).toBe(0);
+    expect(verbose.stdout).toContain("value:");
   });
 
   test("stats shows counts", async () => {

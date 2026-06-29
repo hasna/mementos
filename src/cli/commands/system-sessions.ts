@@ -1,6 +1,16 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { outputJson, outputYaml, getOutputFormat, makeHandleError } from "../helpers.js";
+import {
+  DEFAULT_COMPACT_LIMIT,
+  outputJson,
+  outputYaml,
+  getOutputFormat,
+  makeHandleError,
+  cursorOrOffset,
+  positiveIntOrDefault,
+  printPageHint,
+  truncateText,
+} from "../helpers.js";
 import type { GlobalOpts } from "../helpers.js";
 
 export function registerSessionsCommand(program: Command): void {
@@ -19,6 +29,9 @@ export function registerSessionsCommand(program: Command): void {
     .description("List all active sessions in the registry")
     .option("--project <name>", "Filter by project name")
     .option("--agent <name>", "Filter by agent name")
+    .option("--limit <n>", "Max results (compact default: 20)", parseInt)
+    .option("--offset <n>", "Offset for pagination", parseInt)
+    .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--format <fmt>", "Output format: compact (default), json, yaml")
     .action((opts) => {
       try {
@@ -30,6 +43,12 @@ export function registerSessionsCommand(program: Command): void {
         });
 
         const fmt = getOutputFormat(program, opts.format as string | undefined);
+        const isStructured = fmt === "json" || fmt === "yaml";
+        const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
+        const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
+        const page = isStructured ? sessions : sessions.slice(offset, offset + limit + 1);
+        const hasMore = !isStructured && page.length > limit;
+        const displaySessions = hasMore ? page.slice(0, limit) : page;
 
         if (fmt === "json") {
           outputJson(sessions);
@@ -41,21 +60,29 @@ export function registerSessionsCommand(program: Command): void {
           return;
         }
 
-        if (sessions.length === 0) {
+        if (displaySessions.length === 0) {
           console.log(chalk.yellow("No active sessions found."));
           return;
         }
 
-        console.log(chalk.bold(`${sessions.length} active session${sessions.length === 1 ? "" : "s"}:\n`));
-        for (const s of sessions) {
+        console.log(chalk.bold(`${displaySessions.length}${hasMore ? "+" : ""} active session${displaySessions.length === 1 ? "" : "s"}:\n`));
+        for (const s of displaySessions) {
           const pid = chalk.dim(`pid:${s.pid}`);
           const agent = s.agent_name ? chalk.cyan(s.agent_name) : chalk.dim("(no agent)");
           const project = s.project_name ? chalk.yellow(s.project_name) : chalk.dim("(no project)");
           const mcp = chalk.dim(s.mcp_server);
           const self = s.pid === process.pid ? chalk.green(" (self)") : "";
           console.log(`  ${chalk.bold(s.id)} ${pid}${self} ${agent} ${project} ${mcp}`);
-          console.log(`    ${chalk.dim(`cwd: ${s.cwd}`)}  ${chalk.dim(`last seen: ${s.last_seen_at}`)}`);
+          console.log(`    ${chalk.dim(`cwd: ${truncateText(s.cwd, 96)}`)}  ${chalk.dim(`last seen: ${s.last_seen_at}`)}`);
         }
+        printPageHint({
+          shown: displaySessions.length,
+          limit,
+          offset,
+          hasMore,
+          command: "mementos sessions list",
+          detailHint: "use --json for full session objects",
+        });
       } catch (e) {
         handleError(e);
       }
