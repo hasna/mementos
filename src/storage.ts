@@ -214,7 +214,7 @@ function stripSslParams(connectionString: string): string {
 }
 
 /** Build a pg Pool with adapter-controlled SSL from a connection string. */
-function makePool(connectionString: string): Pool {
+export function makePool(connectionString: string): Pool {
   return new pg.Pool({
     connectionString: stripSslParams(connectionString),
     ssl: sslConfigFor(connectionString),
