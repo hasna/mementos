@@ -12,8 +12,10 @@ ENV NODE_ENV=production \
     PORT=8080
 
 # Production deps only (pg, @hasna/contracts, ai sdk, tesseract.js, ...).
+# --ignore-scripts: the tarball ships prebuilt dist/ (no src/), so the package's
+# own prepare/build lifecycle must not run here.
 COPY package.json bun.lock ./
-RUN bun install --production --frozen-lockfile
+RUN bun install --production --frozen-lockfile --ignore-scripts
 
 # Prebuilt bundles shipped in the tarball.
 COPY dist ./dist

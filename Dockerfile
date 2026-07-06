@@ -5,9 +5,10 @@
 FROM --platform=linux/arm64 oven/bun:1 AS build
 WORKDIR /app
 
-# Install all deps (incl. dev) for the build.
+# Install all deps (incl. dev) for the build. --ignore-scripts: src/ is not
+# copied yet, so defer the build to the explicit step below.
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile
+RUN bun install --frozen-lockfile --ignore-scripts
 
 # Build CLI + MCP + serve + SDK + lib bundles into dist/.
 COPY . .
@@ -22,8 +23,9 @@ ENV NODE_ENV=production \
     PORT=8080
 
 # Production dependencies only (pg, @hasna/contracts, ai sdk, etc.).
+# --ignore-scripts: dist is copied from the build stage; no rebuild here.
 COPY package.json bun.lock ./
-RUN bun install --frozen-lockfile --production
+RUN bun install --frozen-lockfile --production --ignore-scripts
 
 # Built artifacts + OCR language data (used by the extraction routes).
 COPY --from=build /app/dist ./dist
