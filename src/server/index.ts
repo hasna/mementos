@@ -5,6 +5,7 @@
  */
 
 import { existsSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
 import { getActiveProfile, listProfiles, getDbPath } from "../lib/config.js";
 import { getDatabase } from "../db/database.js";
@@ -13,8 +14,15 @@ import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startSessionQueueWorker } from "../lib/session-queue.js";
 import { startTaskRunner } from "../lib/task-runner.js";
 
+import { getStorageMode } from "../storage.js";
 import { matchRoute } from "./router.js";
-import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile, authenticateRequest } from "./helpers.js";
+import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile } from "./helpers.js";
+import { checkApiKey } from "./auth.js";
+
+function pkgVersion(): string {
+  const req = createRequire(import.meta.url);
+  return (req("../../package.json") as { version: string }).version;
+}
 
 async function findFreePort(start: number): Promise<number> {
   const net = await import("node:net");
@@ -153,37 +161,74 @@ export function startServer(port: number): void {
         return new Response(null, { status: 204, headers: getCorsHeaders(req) });
       }
 
-      // Health check
-      if (pathname === "/api/health" || pathname === "/health") {
-        const profile = getActiveProfile();
-        const { createRequire } = await import("node:module");
-        const req = createRequire(import.meta.url);
-        const pkg = req("../../package.json") as { version: string };
-        // Enrich with memory metrics for meaningful health assessment
-        const db = getDatabase();
-        const total = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get() as { c: number }).c;
-        const expired = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'expired' OR (expires_at IS NOT NULL AND expires_at < datetime('now'))").get() as { c: number }).c;
-        const pinned = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1").get() as { c: number }).c;
-        const agents = (db.query("SELECT COUNT(*) as c FROM agents").get() as { c: number }).c;
-        const projects = (db.query("SELECT COUNT(*) as c FROM projects").get() as { c: number }).c;
-        const status = expired > 50 ? "warn" : "ok";
-        return json({ status, version: pkg.version, profile: profile ?? "default", db_path: getDbPath(), hostname, memories: { total, expired, pinned }, agents, projects });
+      // ----------------------------------------------------------------------
+      // Unauthenticated operational probes: {status, version, mode}
+      // ----------------------------------------------------------------------
+      const mode = getStorageMode();
+
+      // Version — cheap, no DB.
+      if (pathname === "/version" || pathname === "/api/version" || pathname === "/v1/version") {
+        return json({ status: "ok", version: pkgVersion(), mode });
       }
 
-      // Auth gate for all /api/* routes (except health)
-      if (pathname.startsWith("/api/") && pathname !== "/api/health") {
-        const authError = authenticateRequest(req);
+      // Readiness — verifies backing-store connectivity.
+      if (pathname === "/ready" || pathname === "/api/ready" || pathname === "/v1/ready") {
+        try {
+          getDatabase().query("SELECT 1 AS ok").get();
+          return json({ status: "ready", version: pkgVersion(), mode });
+        } catch (e) {
+          return json(
+            { status: "not_ready", version: pkgVersion(), mode, error: e instanceof Error ? e.message : String(e) },
+            503
+          );
+        }
+      }
+
+      // Health — liveness + memory metrics.
+      if (pathname === "/health" || pathname === "/api/health" || pathname === "/v1/health") {
+        const profile = getActiveProfile();
+        try {
+          const db = getDatabase();
+          const total = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get() as { c: number }).c;
+          const expired = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'expired' OR (expires_at IS NOT NULL AND expires_at < datetime('now'))").get() as { c: number }).c;
+          const pinned = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1").get() as { c: number }).c;
+          const agents = (db.query("SELECT COUNT(*) as c FROM agents").get() as { c: number }).c;
+          const projects = (db.query("SELECT COUNT(*) as c FROM projects").get() as { c: number }).c;
+          const status = expired > 50 ? "warn" : "ok";
+          return json({ status, version: pkgVersion(), mode, profile: profile ?? "default", db_path: getDbPath(), hostname, memories: { total, expired, pinned }, agents, projects });
+        } catch (e) {
+          return json({ status: "error", version: pkgVersion(), mode, error: e instanceof Error ? e.message : String(e) }, 503);
+        }
+      }
+
+      // ----------------------------------------------------------------------
+      // Versioned API. `/v1/*` is the canonical prefix; `/api/*` is kept as a
+      // backward-compatible alias. Both share one handler set and one auth gate.
+      // ----------------------------------------------------------------------
+      const isV1 = pathname === "/v1" || pathname.startsWith("/v1/");
+      const routePath = isV1 ? `/api${pathname.slice(3)}` : pathname;
+      const isApi = routePath.startsWith("/api/");
+
+      // OpenAPI document (unauthenticated) — the serve contract the SDK targets.
+      if (pathname === "/openapi.json" || pathname === "/v1/openapi.json" || pathname === "/api/openapi.json") {
+        const { buildOpenApiDocument } = await import("./openapi.js");
+        return json(buildOpenApiDocument(pkgVersion()));
+      }
+
+      // Auth gate for all API routes.
+      if (isApi) {
+        const authError = await checkApiKey(req, req.method, routePath);
         if (authError) return authError;
       }
 
       // Profile info
-      if (pathname === "/api/profile" && req.method === "GET") {
+      if (routePath === "/api/profile" && req.method === "GET") {
         const profile = getActiveProfile();
         return json({ active: profile ?? null, profiles: listProfiles(), db_path: getDbPath() });
       }
 
       // SSE stream for live memory updates
-      if (pathname === "/api/memories/stream" && req.method === "GET") {
+      if (routePath === "/api/memories/stream" && req.method === "GET") {
         const stream = new ReadableStream({
           start(controller) {
             const encoder = new TextEncoder();
@@ -232,11 +277,11 @@ export function startServer(port: number): void {
         });
       }
 
-      // Route matching
-      const matched = matchRoute(req.method, pathname);
+      // Route matching (versioned + legacy alias share the same handlers)
+      const matched = matchRoute(req.method, routePath);
       if (!matched) {
         // API routes always return JSON 404
-        if (pathname.startsWith("/api/")) {
+        if (isApi || isV1) {
           return errorResponse("Not found", 404);
         }
         // Serve dashboard static files for non-API routes
