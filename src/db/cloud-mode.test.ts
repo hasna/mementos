@@ -67,6 +67,21 @@ describe("Amendment A1 — SQLite→Postgres SQL translation", () => {
     expect(out).toContain("to_char(");
   });
 
+  test("literal boolean comparisons: pinned = 1/0 become TRUE/FALSE", () => {
+    expect(translateSql("SELECT COUNT(*) FROM memories WHERE pinned = 1")).toBe(
+      "SELECT COUNT(*) FROM memories WHERE pinned = TRUE"
+    );
+    expect(translateSql("SELECT * FROM memories WHERE status = 'active' AND pinned = 0")).toBe(
+      "SELECT * FROM memories WHERE status = 'active' AND pinned = FALSE"
+    );
+  });
+
+  test("parameterized pinned = ? is left untouched (pg coerces the bound value)", () => {
+    expect(translateSql("SELECT * FROM memories WHERE pinned = ?")).toBe(
+      "SELECT * FROM memories WHERE pinned = $1"
+    );
+  });
+
   test("INSERT OR IGNORE becomes INSERT ... ON CONFLICT DO NOTHING", () => {
     expect(translateSql("INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)")).toBe(
       "INSERT INTO memory_tags (memory_id, tag) VALUES ($1, $2) ON CONFLICT DO NOTHING"
