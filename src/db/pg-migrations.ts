@@ -731,4 +731,47 @@ export const PG_MIGRATIONS: string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
   `,
+
+  // Migration 35: tasks + task_comments (present in the SQLite schema but
+  // previously missing from the cloud schema). Timestamp columns are TEXT to
+  // match the app's ISO-8601 UTC string convention and translateSql output.
+  `
+  CREATE TABLE IF NOT EXISTS tasks (
+    id TEXT PRIMARY KEY,
+    subject TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','in_progress','completed','failed','cancelled')),
+    priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('critical','high','medium','low')),
+    tags TEXT NOT NULL DEFAULT '[]',
+    assigned_agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    session_id TEXT,
+    parent_task_id TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    progress REAL NOT NULL DEFAULT 0 CHECK(progress >= 0 AND progress <= 1),
+    due_at TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    failed_at TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL DEFAULT to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+    updated_at TEXT NOT NULL DEFAULT to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  );
+  CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+  CREATE INDEX IF NOT EXISTS idx_tasks_priority ON tasks(priority);
+  CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(assigned_agent_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_project ON tasks(project_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
+  CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+
+  CREATE TABLE IF NOT EXISTS task_comments (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    agent_id TEXT REFERENCES agents(id) ON DELETE SET NULL,
+    body TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT to_char((now() AT TIME ZONE 'UTC'), 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"')
+  );
+  CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
+  CREATE INDEX IF NOT EXISTS idx_task_comments_agent ON task_comments(agent_id);
+  `,
 ];

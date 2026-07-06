@@ -1,0 +1,47 @@
+# =============================================================================
+# Local self_hosted stack for @hasna/mementos.
+#   Postgres (pure-remote target) + the mementos-serve API.
+# For cloud, point DATABASE_URL at RDS and drop the `db` service.
+# =============================================================================
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: mementos_owner
+      POSTGRES_PASSWORD: mementos_local
+      POSTGRES_DB: mementos
+    ports:
+      - "5432:5432"
+    volumes:
+      - mementos_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mementos_owner -d mementos"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  migrate:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://mementos_owner:mementos_local@db:5432/mementos"
+      HASNA_MEMENTOS_STORAGE_MODE: cloud
+    command: ["mementos", "storage", "migrate"]
+
+  serve:
+    build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: "postgres://mementos_owner:mementos_local@db:5432/mementos"
+      API_KEY_SIGNING_SECRET: "${API_KEY_SIGNING_SECRET:-local-dev-signing-secret}"
+      HASNA_MEMENTOS_STORAGE_MODE: cloud
+      PORT: "8080"
+    ports:
+      - "8080:8080"
+
+volumes:
+  mementos_pgdata:

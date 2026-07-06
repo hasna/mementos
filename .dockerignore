@@ -1,0 +1,10 @@
+.git
+node_modules
+dist
+coverage
+dashboard/node_modules
+sdk/node_modules
+*.log
+.mementos
+.takumi
+.codewith

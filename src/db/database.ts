@@ -1,4 +1,9 @@
-import { SqliteAdapter as Database } from "../storage.js";
+import {
+  SqliteAdapter as Database,
+  PgAdapter,
+  getStorageMode,
+  getStorageConnectionString,
+} from "../storage.js";
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations.js";
@@ -83,8 +88,40 @@ function ensureDir(filePath: string): void {
 
 let _db: Database | null = null;
 let _dbPath: string | null = null;
+let _pg: Database | null = null;
+
+/**
+ * Amendment A1 — PURE REMOTE cloud store.
+ *
+ * When `HASNA_MEMENTOS_STORAGE_MODE=cloud` (aliases `remote`/`hybrid` also map
+ * to `cloud`), ALL runtime paths (CLI, MCP, serve) read AND write directly to
+ * cloud Postgres. No SQLite database is ever opened in cloud mode: no PRAGMAs,
+ * no local migrations, no local schema/DDL. The cloud schema is applied
+ * out-of-band (migration runbook). This is fail-closed: if no connection string
+ * is configured, {@link getStorageConnectionString} throws rather than silently
+ * falling back to SQLite.
+ *
+ * An explicit `dbPath` argument (tests, tooling, import/export against a file)
+ * always uses local SQLite regardless of mode.
+ */
+function getCloudDatabase(): Database {
+  if (_pg) return _pg;
+  const connectionString = getStorageConnectionString();
+  // Cast: PgAdapter implements the same DbAdapter surface (run/get/all/exec/
+  // prepare/query/transaction/close) that call sites use. Structural `raw`
+  // differs (Pool vs bun:sqlite Database) so we bridge via `unknown`.
+  _pg = new PgAdapter(connectionString) as unknown as Database;
+  return _pg;
+}
 
 export function getDatabase(dbPath?: string): Database {
+  if (!dbPath) {
+    if (_pg) return _pg;
+    if (getStorageMode() === "cloud") {
+      return getCloudDatabase();
+    }
+  }
+
   const path = dbPath || getDbPath();
 
   if (_db) {
@@ -170,10 +207,15 @@ export function closeDatabase(): void {
     _db.close();
     _db = null;
   }
+  if (_pg) {
+    _pg.close();
+    _pg = null;
+  }
 }
 
 export function resetDatabase(): void {
   _db = null;
+  _pg = null;
 }
 
 export function now(): string {
