@@ -146,6 +146,13 @@ export function translateSql(sql: string): string {
     "COALESCE(pinned, FALSE)"
   );
 
+  // Literal integer comparisons against the BOOLEAN `pinned` column. Postgres
+  // has no `boolean = integer` operator, so `pinned = 1`/`pinned = 0` literals
+  // (health, stats, report queries) must become TRUE/FALSE. Parameterized
+  // `pinned = ?` is unaffected — pg coerces the bound '1'/'0' text to boolean.
+  translated = translated.replace(/\bpinned\s*=\s*1\b/gi, "pinned = TRUE");
+  translated = translated.replace(/\bpinned\s*=\s*0\b/gi, "pinned = FALSE");
+
   return translated;
 }
 
