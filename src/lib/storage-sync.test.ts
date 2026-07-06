@@ -81,8 +81,8 @@ describe("mementos storage configuration", () => {
     expect(getStorageDatabaseEnvName()).toBe("HASNA_MEMENTOS_DATABASE_URL");
     expect(getStorageDatabaseUrl()).toBe("postgres://canonical");
     expect(getStorageConnectionString()).toBe("postgres://canonical");
-    expect(getStorageConfig().mode).toBe("hybrid");
-    expect(getStorageMode()).toBe("hybrid");
+    expect(getStorageConfig().mode).toBe("cloud");
+    expect(getStorageMode()).toBe("cloud");
   });
 
   it("uses the shorter storage database env as fallback", () => {
@@ -100,10 +100,25 @@ describe("mementos storage configuration", () => {
     expect(getStorageConfig().mode).toBe("local");
 
     process.env["MEMENTOS_DATABASE_URL"] = "postgres://remote";
-    expect(getStorageConfig().mode).toBe("hybrid");
+    expect(getStorageConfig().mode).toBe("cloud");
 
     process.env["HASNA_MEMENTOS_STORAGE_MODE"] = "remote";
-    expect(getStorageConfig().mode).toBe("remote");
+    expect(getStorageConfig().mode).toBe("cloud");
+  });
+
+  it("treats cloud as canonical and remote/hybrid as deprecated aliases", () => {
+    process.env["HASNA_MEMENTOS_STORAGE_MODE"] = "cloud";
+    expect(getStorageConfig().mode).toBe("cloud");
+    expect(getStorageMode()).toBe("cloud");
+
+    process.env["HASNA_MEMENTOS_STORAGE_MODE"] = "hybrid";
+    expect(getStorageConfig().mode).toBe("cloud");
+
+    process.env["HASNA_MEMENTOS_STORAGE_MODE"] = "remote";
+    expect(getStorageConfig().mode).toBe("cloud");
+
+    process.env["HASNA_MEMENTOS_STORAGE_MODE"] = "local";
+    expect(getStorageConfig().mode).toBe("local");
   });
 
   it("publishes stable storage tables, env constants, and redacted status", () => {
