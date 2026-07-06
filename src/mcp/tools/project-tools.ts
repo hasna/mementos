@@ -36,7 +36,7 @@ function formatError(error: unknown): string {
 
 function storageSyncEnabled(): boolean {
   const mode = getStorageConfig().mode;
-  return mode === "hybrid" || mode === "remote";
+  return mode === "cloud";
 }
 
 function syncMachinesTable(direction: "push" | "pull", currentMachineId?: string): void {

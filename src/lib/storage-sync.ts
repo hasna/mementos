@@ -698,7 +698,7 @@ export function getStorageSyncStatus(
     const currentMachineId = resolveCurrentMachineId(local, options.current_machine_id);
     return {
       mode: config.mode,
-      enabled: config.mode === "hybrid" || config.mode === "remote",
+      enabled: config.mode === "cloud",
       db_path: getDbPath(),
       current_machine_id: currentMachineId,
       generic_sync_meta: getSyncMetaAll(local),

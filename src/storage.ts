@@ -318,7 +318,25 @@ export class PgAdapterAsync {
   }
 }
 
-export type StorageMode = "local" | "remote" | "hybrid";
+/**
+ * Canonical storage-mode axis (aligned with the shared cloud-runtime contract).
+ *
+ * - `local`  — SQLite on disk. Default. Unchanged behavior.
+ * - `cloud`  — pure remote: reads AND writes go directly to cloud Postgres.
+ *
+ * The legacy values `remote` and `hybrid` are still accepted as INPUT (env or
+ * config file) for backwards compatibility, but they are DEPRECATED aliases
+ * that normalize to `cloud`. See {@link DeprecatedStorageMode}. The historical
+ * local<->remote sync engine (the "hybrid sync path") is retained only for
+ * back-compat and is explicitly NOT the fleet cutover path.
+ */
+export type StorageMode = "local" | "cloud";
+
+/** Deprecated storage-mode aliases accepted as input; all map to `cloud`. */
+export type DeprecatedStorageMode = "remote" | "hybrid";
+
+/** Any value accepted from env/config for the storage mode. */
+export type StorageModeInput = StorageMode | DeprecatedStorageMode;
 
 export const MEMENTOS_STORAGE_TABLES = [
   "projects",
@@ -433,11 +451,33 @@ function readEnv(name: string): string | null {
   return value ? value : null;
 }
 
+const warnedDeprecatedModes = new Set<string>();
+
+/**
+ * Emit a one-time deprecation warning (to stderr, never stdout) when a caller
+ * uses a legacy `remote`/`hybrid` mode value. Deduped per process so JSON
+ * output and hot paths are not spammed.
+ */
+function warnDeprecatedStorageMode(alias: DeprecatedStorageMode): void {
+  if (warnedDeprecatedModes.has(alias)) return;
+  warnedDeprecatedModes.add(alias);
+  process.emitWarning(
+    `${MEMENTOS_STORAGE_ENV.mode}="${alias}" is deprecated; use "cloud". ` +
+      `"${alias}" now maps to pure-remote cloud storage. The local<->remote ` +
+      `sync path is deprecated and is not the fleet cutover path.`,
+    { type: "DeprecationWarning", code: "MEMENTOS_STORAGE_MODE_ALIAS" }
+  );
+}
+
 function normalizeStorageMode(value: string | undefined): StorageMode | null {
   if (!value) return null;
   const normalized = value.trim().toLowerCase();
-  if (normalized === "local" || normalized === "remote" || normalized === "hybrid") {
+  if (normalized === "local" || normalized === "cloud") {
     return normalized;
+  }
+  if (normalized === "remote" || normalized === "hybrid") {
+    warnDeprecatedStorageMode(normalized);
+    return "cloud";
   }
   return null;
 }
@@ -514,7 +554,9 @@ export function getStorageConfig(): StorageConfig {
   if (modeOverride) {
     merged.mode = modeOverride;
   } else if (envConnectionString && merged.mode === "local") {
-    merged.mode = "hybrid";
+    // A configured database URL auto-promotes to cloud (pure remote) when no
+    // explicit mode is set. Previously this promoted to the deprecated "hybrid".
+    merged.mode = "cloud";
   }
 
   return merged;
@@ -541,7 +583,7 @@ export function getStorageStatus(): NativeStorageStatus {
   const mode = getStorageConfig().mode;
   const databaseUrl = getStorageDatabaseUrl();
   const issues: string[] = [];
-  if ((mode === "remote" || mode === "hybrid") && !databaseUrl) {
+  if (mode === "cloud" && !databaseUrl) {
     issues.push(`Missing ${MEMENTOS_STORAGE_ENV.databaseUrl}`);
   }
 
@@ -550,7 +592,7 @@ export function getStorageStatus(): NativeStorageStatus {
     service: "mementos",
     mode,
     local_default: mode === "local",
-    remote_enabled: mode === "remote" || mode === "hybrid",
+    remote_enabled: mode === "cloud",
     database: {
       configured: Boolean(databaseUrl),
       redacted_url: redactDatabaseUrl(databaseUrl),
