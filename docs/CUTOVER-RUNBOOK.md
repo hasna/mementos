@@ -186,3 +186,55 @@ memories written to cloud after cutover stay in cloud.
   VPC/Tailscale-reachable host (blocked from the prep machine).
 - **pgvector on RDS**: verify `vector` is available in the instance's
   `pg_available_extensions`; if not, a parameter-group / instance follow-up.
+
+---
+
+## 9. Amendment A1 — PURE REMOTE implementation (2026-07-06)
+
+Cloud mode is now wired end to end. `HASNA_MEMENTOS_STORAGE_MODE=cloud` (aliases
+`remote`/`hybrid` also normalize to `cloud`) makes **all** runtime paths (CLI,
+MCP, serve) read AND write directly to cloud Postgres. There is **no SQLite open
+in cloud mode**: no PRAGMAs, no local migrations, no local DDL. It is
+fail-closed — with no `HASNA_MEMENTOS_DATABASE_URL` configured,
+`getStorageConnectionString()` throws rather than silently using SQLite.
+
+### How it works
+- `getDatabase()` (`src/db/database.ts`) is mode-aware. In cloud mode it returns
+  a `PgAdapter` and never constructs a `SqliteAdapter`. An **explicit** `dbPath`
+  argument (tests, import/export tooling) always uses local SQLite regardless of
+  mode.
+- The mementos data layer is fully synchronous (`db.query(sql).get(...)`).
+  node-postgres is async, and a main-thread busy-wait deadlocks the event loop.
+  So `PgAdapter` is backed by `PgSyncPool` (`src/pg-sync-worker.ts`): a
+  worker thread owns one long-lived `pg.Client`, runs queries on its own event
+  loop, and the main thread blocks on `Atomics.wait` over a SharedArrayBuffer
+  until the worker returns the result. One client keeps transactions correct.
+- `translateSql` bridges SQLite dialect → Postgres: `?`→`$n`, `INSERT OR
+  IGNORE`→`ON CONFLICT DO NOTHING`, boolean `COALESCE(pinned, 0)`→`... FALSE`
+  (the cloud `memories.pinned` column is BOOLEAN), and `datetime('now'[,'-N
+  unit'])` → an **ISO-8601 UTC text** expression that compares correctly against
+  BOTH the `timestamptz` columns (`created_at`, `updated_at`) and the `text`
+  ISO columns (`expires_at`, `valid_from`, ...) in the live schema.
+- SSL follows libpq semantics: `sslmode=require` encrypts without cert/hostname
+  verification (needed for tunnelled/private-endpoint connects);
+  `verify-ca`/`verify-full` verify. The adapter is authoritative over SSL (it
+  strips `ssl`/`sslmode` from the string and sets the `pg` option itself).
+
+### Verified live (SSM tunnel → shared prod RDS, app role)
+save → list → recall → search → forget roundtrip through the **real CLI** (both
+`bun run src/cli/index.tsx` and the built `dist/cli/index.js`), each row
+confirmed via `psql` and deleted afterward (table returned to 0 rows).
+
+### Known limitations / follow-ups
+- **Vector search**: pgvector is NOT installed on the instance (only `plpgsql`;
+  `memory_embeddings` exists but the extension is absent). Semantic/vector
+  ranking is therefore unavailable in cloud mode. `search` runs BM25/SQL
+  (LIKE-based) scoring, which works. Enable with `CREATE EXTENSION vector` as
+  RDS master (needs `rds_superuser`) to light up the vector path.
+- **Dockerized unit tests**: Docker is unavailable on the build host (no docker
+  group), so the "dockerized postgres" unit target could not run; coverage is
+  provided by the live RDS integration smoke above plus pure-function unit tests
+  in `src/db/cloud-mode.test.ts` (translation + routing).
+- Any store method not exercised by the CLI/MCP hot path that hits an
+  untranslated SQLite-only construct will surface a loud Postgres error (never a
+  silent SQLite fallback). Extend `translateSql` as such paths are cutover.

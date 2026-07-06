@@ -2,6 +2,8 @@ import { Database } from "bun:sqlite";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import pg from "pg";
 import type { Pool, PoolClient } from "pg";
 
@@ -96,11 +98,20 @@ export class SqliteAdapter implements DbAdapter {
   }
 }
 
-function translateSql(sql: string): string {
+export function translateSql(sql: string): string {
   let parameterIndex = 0;
   let translated = sql.replace(/\?/g, () => `$${++parameterIndex}`);
 
-  translated = translated.replace(/datetime\s*\(\s*'now'\s*\)/gi, "NOW()");
+  // Mementos stores timestamps as ISO-8601 UTC strings (JS `toISOString()`).
+  // The cloud schema is mixed: some columns are `timestamptz`, others are
+  // `text`. Emitting an ISO-8601 UTC *text* value for SQLite's `datetime('now')`
+  // compares correctly against BOTH: text-vs-text is lexicographic (ISO ordering
+  // == chronological), and timestamptz-vs-text implicitly casts the text.
+  const ISO_FMT = `'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'`;
+  translated = translated.replace(
+    /datetime\s*\(\s*'now'\s*\)/gi,
+    `to_char(now() AT TIME ZONE 'UTC', ${ISO_FMT})`
+  );
   translated = translated.replace(
     /datetime\s*\(\s*'now'\s*,\s*'(-?\d+)\s+(minutes?|hours?|days?|seconds?)'\s*\)/gi,
     (_match, amount, unit) => {
@@ -108,9 +119,8 @@ function translateSql(sql: string): string {
       const absolute = Math.abs(parsed);
       const normalizedUnit = String(unit).toLowerCase().replace(/s$/, "");
       const pluralUnit = absolute === 1 ? normalizedUnit : `${normalizedUnit}s`;
-      return parsed < 0
-        ? `NOW() - INTERVAL '${absolute} ${pluralUnit}'`
-        : `NOW() + INTERVAL '${absolute} ${pluralUnit}'`;
+      const op = parsed < 0 ? "-" : "+";
+      return `to_char((now() ${op} INTERVAL '${absolute} ${pluralUnit}') AT TIME ZONE 'UTC', ${ISO_FMT})`;
     }
   );
   translated = translated.replace(
@@ -125,6 +135,16 @@ function translateSql(sql: string): string {
   }
 
   translated = translated.replace(/INSERT\s+OR\s+REPLACE\s+INTO/gi, "INSERT INTO");
+
+  // Postgres does not implicitly cast integer 0/1 to BOOLEAN. The SQLite schema
+  // uses 0/1 for boolean-typed columns (e.g. memories.pinned). Rewrite the
+  // known boolean-column assignment/default idioms so writes succeed against
+  // the BOOLEAN columns in the cloud schema. Reads return JS booleans, which
+  // `parseMemoryRow`'s `!!(...)` handles transparently.
+  translated = translated.replace(
+    /COALESCE\s*\(\s*pinned\s*,\s*0\s*\)/gi,
+    "COALESCE(pinned, FALSE)"
+  );
 
   return translated;
 }
@@ -147,78 +167,180 @@ export function shouldUsePgSsl(connectionString: string): boolean {
   );
 }
 
-function sslConfigFor(connectionString: string): boolean | undefined {
-  return shouldUsePgSsl(connectionString) || undefined;
+type PgSslConfig = boolean | { rejectUnauthorized: boolean };
+
+/**
+ * Resolve the `pg` SSL option from a connection string, following libpq
+ * semantics rather than node-postgres' newer verify-full-by-default behavior:
+ *
+ * - `sslmode=verify-ca` / `verify-full` → verify the server certificate.
+ * - `sslmode=require` (or `ssl=true|1|yes|on`) → encrypt but do NOT verify the
+ *   certificate chain/hostname. This matches libpq `require` and is what lets a
+ *   private RDS endpoint (or an SSM/Tailscale tunnel presenting the RDS cert on
+ *   a localhost address) connect without a spurious hostname mismatch.
+ * - otherwise → no SSL.
+ */
+function sslConfigFor(connectionString: string): PgSslConfig | undefined {
+  if (!shouldUsePgSsl(connectionString)) return undefined;
+
+  let sslMode: string | undefined;
+  try {
+    sslMode = new URL(connectionString).searchParams.get("sslmode")?.trim().toLowerCase() ?? undefined;
+  } catch {
+    sslMode = new URLSearchParams(connectionString.split("?", 2)[1] ?? "").get("sslmode")?.trim().toLowerCase() ?? undefined;
+  }
+
+  if (sslMode === "verify-ca" || sslMode === "verify-full") {
+    return { rejectUnauthorized: true };
+  }
+  return { rejectUnauthorized: false };
+}
+
+/**
+ * Strip `ssl`/`sslmode` query params from a connection string so the adapter's
+ * explicit `ssl` option (from {@link sslConfigFor}) is authoritative. Newer
+ * pg-connection-string versions parse `sslmode=require` as verify-full, which
+ * clobbers the explicit option and breaks tunnelled/private-endpoint connects.
+ */
+function stripSslParams(connectionString: string): string {
+  try {
+    const url = new URL(connectionString);
+    url.searchParams.delete("ssl");
+    url.searchParams.delete("sslmode");
+    return url.toString();
+  } catch {
+    return connectionString;
+  }
+}
+
+/** Build a pg Pool with adapter-controlled SSL from a connection string. */
+function makePool(connectionString: string): Pool {
+  return new pg.Pool({
+    connectionString: stripSslParams(connectionString),
+    ssl: sslConfigFor(connectionString),
+  });
+}
+
+interface SyncQueryResult {
+  rows: any[];
+  rowCount: number;
+}
+
+/**
+ * Synchronous Postgres access backed by a worker thread (see
+ * `pg-sync-worker.ts`). The worker owns one long-lived `pg.Client` and runs
+ * queries on its own event loop; the main thread blocks on `Atomics.wait`
+ * against a SharedArrayBuffer until the worker writes the response. This is the
+ * only way to expose a truly synchronous API (which the entire mementos data
+ * layer requires) over async pg I/O without deadlocking the main event loop.
+ */
+export class PgSyncPool {
+  private readonly worker: Worker;
+  private readonly status: Int32Array;
+  private readonly data: Uint8Array;
+  private closed = false;
+  private lastError: Error | null = null;
+  private static readonly DATA_BYTES = 128 * 1024 * 1024; // 128 MiB response ceiling
+  private static readonly QUERY_TIMEOUT_MS = 60_000;
+
+  /**
+   * Resolve the worker entry file. `storage` is bundled into several entry
+   * points at different depths (dist/cli, dist/mcp, dist/server) as well as run
+   * directly from source, so probe candidate locations relative to this module.
+   */
+  private static resolveWorkerPath(): string {
+    const ext = import.meta.url.endsWith(".ts") ? ".ts" : ".js";
+    const here = fileURLToPath(new URL(".", import.meta.url));
+    const candidates = [
+      join(here, `pg-sync-worker${ext}`),
+      join(here, "..", `pg-sync-worker${ext}`),
+      join(here, "..", "..", `pg-sync-worker${ext}`),
+    ];
+    for (const candidate of candidates) {
+      if (existsSync(candidate)) return candidate;
+    }
+    return candidates[0]!;
+  }
+
+  constructor(connectionString: string) {
+    const control = new SharedArrayBuffer(8); // 2 x Int32: [0]=status, [1]=byteLength
+    const dataSab = new SharedArrayBuffer(PgSyncPool.DATA_BYTES);
+    this.status = new Int32Array(control);
+    this.data = new Uint8Array(dataSab);
+
+    this.worker = new Worker(PgSyncPool.resolveWorkerPath(), {
+      workerData: {
+        dsn: stripSslParams(connectionString),
+        ssl: sslConfigFor(connectionString),
+        control,
+        data: dataSab,
+      },
+    });
+    // Do not keep the process alive solely for this worker.
+    this.worker.unref();
+    this.worker.on("error", (err: Error) => {
+      this.lastError = err;
+    });
+  }
+
+  query(sql: string, params: any[]): SyncQueryResult {
+    if (this.closed) throw new Error("PgSyncPool is closed");
+    if (this.lastError) throw this.lastError;
+
+    Atomics.store(this.status, 0, 0);
+    this.worker.postMessage({ sql, params });
+    const waitResult = Atomics.wait(this.status, 0, 0, PgSyncPool.QUERY_TIMEOUT_MS);
+    const code = Atomics.load(this.status, 0);
+    if (code === 0 || waitResult === "timed-out") {
+      if (this.lastError) throw this.lastError;
+      throw new Error("PostgreSQL query timed out after 60s");
+    }
+
+    const len = Atomics.load(this.status, 1);
+    const payload = JSON.parse(new TextDecoder().decode(this.data.subarray(0, len)));
+    if (code === 2) {
+      throw new Error(payload.message ?? "PostgreSQL error");
+    }
+    return payload as SyncQueryResult;
+  }
+
+  end(): void {
+    if (this.closed) return;
+    this.closed = true;
+    void this.worker.terminate();
+  }
 }
 
 export class PgAdapter implements DbAdapter {
-  private readonly pool: Pool;
+  private readonly pool: PgSyncPool;
 
   constructor(connectionString: string);
-  constructor(pool: Pool);
-  constructor(input: string | Pool) {
-    this.pool = typeof input === "string"
-      ? new pg.Pool({ connectionString: input, ssl: sslConfigFor(input) })
-      : input;
-  }
-
-  private runSync<T>(fn: () => Promise<T>): T {
-    let result: T | undefined;
-    let error: unknown;
-    let done = false;
-
-    fn()
-      .then((value) => {
-        result = value;
-        done = true;
-      })
-      .catch((caught) => {
-        error = caught;
-        done = true;
-      });
-
-    const deadline = Date.now() + 30_000;
-    while (!done && Date.now() < deadline) {
-      Bun.sleepSync(1);
-    }
-
-    if (error) {
-      throw error;
-    }
-    if (!done) {
-      throw new Error("PostgreSQL query timed out after 30s");
-    }
-    return result as T;
+  constructor(pool: PgSyncPool);
+  constructor(input: string | PgSyncPool) {
+    this.pool = typeof input === "string" ? new PgSyncPool(input) : input;
   }
 
   run(sql: string, ...params: any[]): RunResult {
-    return this.runSync(async () => {
-      const result = await this.pool.query(translateSql(sql), normalizeParams(params));
-      return {
-        changes: result.rowCount ?? 0,
-        lastInsertRowid: result.rows?.[0]?.id ?? 0,
-      };
-    });
+    const result = this.pool.query(translateSql(sql), normalizeParams(params));
+    return {
+      changes: result.rowCount ?? 0,
+      lastInsertRowid: result.rows?.[0]?.id ?? 0,
+    };
   }
 
   get(sql: string, ...params: any[]): any {
-    return this.runSync(async () => {
-      const result = await this.pool.query(translateSql(sql), normalizeParams(params));
-      return result.rows[0] ?? null;
-    });
+    const result = this.pool.query(translateSql(sql), normalizeParams(params));
+    return result.rows[0] ?? null;
   }
 
   all(sql: string, ...params: any[]): any[] {
-    return this.runSync(async () => {
-      const result = await this.pool.query(translateSql(sql), normalizeParams(params));
-      return result.rows;
-    });
+    return this.pool.query(translateSql(sql), normalizeParams(params)).rows;
   }
 
   exec(sql: string): void {
-    this.runSync(async () => {
-      await this.pool.query(sql);
-    });
+    // exec runs raw DDL/utility SQL (no `?` params). It is not used in cloud
+    // runtime paths (no local schema/migrations in cloud mode), but honor it.
+    this.pool.query(sql, []);
   }
 
   prepare(sql: string): PreparedStatement {
@@ -230,33 +352,38 @@ export class PgAdapter implements DbAdapter {
     };
   }
 
+  /**
+   * Bun-sqlite-style `query()` shim so the CLI/MCP/server call sites that do
+   * `db.query(sql).get(...)` / `.all(...)` / `.run(...)` work unchanged against
+   * Postgres in cloud mode. Behaves like {@link prepare}.
+   */
+  query(sql: string): PreparedStatement {
+    return this.prepare(sql);
+  }
+
   close(): void {
-    this.runSync(async () => {
-      await this.pool.end();
-    });
+    this.pool.end();
   }
 
   transaction<T>(fn: () => T): T {
-    return this.runSync(async () => {
-      const client = await this.pool.connect();
-      const originalQuery = this.pool.query.bind(this.pool);
+    // All statements serialize over the worker's single client, so BEGIN/COMMIT
+    // wrap the synchronous fn() correctly.
+    this.pool.query("BEGIN", []);
+    try {
+      const value = fn();
+      this.pool.query("COMMIT", []);
+      return value;
+    } catch (error) {
       try {
-        await client.query("BEGIN");
-        (this.pool as unknown as { query: PoolClient["query"] }).query = client.query.bind(client);
-        const value = fn();
-        await client.query("COMMIT");
-        return value;
-      } catch (error) {
-        await client.query("ROLLBACK");
-        throw error;
-      } finally {
-        (this.pool as unknown as { query: Pool["query"] }).query = originalQuery;
-        client.release();
+        this.pool.query("ROLLBACK", []);
+      } catch {
+        // ignore rollback failure; surface the original error
       }
-    });
+      throw error;
+    }
   }
 
-  get raw(): Pool {
+  get raw(): PgSyncPool {
     return this.pool;
   }
 }
@@ -267,9 +394,7 @@ export class PgAdapterAsync {
   constructor(connectionString: string);
   constructor(pool: Pool);
   constructor(input: string | Pool) {
-    this.pool = typeof input === "string"
-      ? new pg.Pool({ connectionString: input, ssl: sslConfigFor(input) })
-      : input;
+    this.pool = typeof input === "string" ? makePool(input) : input;
   }
 
   async run(sql: string, ...params: any[]): Promise<RunResult> {
