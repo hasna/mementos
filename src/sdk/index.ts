@@ -314,6 +314,18 @@ export interface ListTasksFilter {
 export interface MementosClientConfig {
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
+  /**
+   * API key issued by `contracts issue-key --app mementos`. Sent as both
+   * `Authorization: Bearer <key>` and `x-api-key`. Required against a
+   * self_hosted deployment with API-key auth enabled.
+   */
+  apiKey?: string;
+  /**
+   * Versioned route prefix. Defaults to the canonical `/v1`. The deployed
+   * service also serves the legacy `/api` prefix; set `prefix: "/api"` to target
+   * it explicitly.
+   */
+  prefix?: string;
 }
 
 // ============================================================================
@@ -434,16 +446,21 @@ export interface SessionMemoryJob {
 export class MementosClient {
   private baseUrl: string;
   private _fetch: typeof globalThis.fetch;
+  private apiKey?: string;
+  private prefix: string;
 
   constructor(config: MementosClientConfig = {}) {
     this.baseUrl = (config.baseUrl ?? "http://localhost:19428").replace(/\/$/, "");
     this._fetch = config.fetch ?? globalThis.fetch.bind(globalThis);
+    this.apiKey = config.apiKey;
+    this.prefix = (config.prefix ?? "/v1").replace(/\/$/, "");
   }
 
   static fromEnv(overrides: Partial<MementosClientConfig> = {}): MementosClient {
-    const envUrl = typeof process !== "undefined" ? process.env?.["MEMENTOS_URL"] : undefined;
-    const baseUrl = envUrl ?? "http://localhost:19428";
-    return new MementosClient({ baseUrl, ...overrides });
+    const env = typeof process !== "undefined" ? process.env : undefined;
+    const baseUrl = env?.["MEMENTOS_API_URL"] ?? env?.["MEMENTOS_URL"] ?? "http://localhost:19428";
+    const apiKey = env?.["MEMENTOS_API_KEY"];
+    return new MementosClient({ baseUrl, apiKey, ...overrides });
   }
 
   // --------------------------------------------------------------------------
@@ -456,7 +473,9 @@ export class MementosClient {
     body?: unknown,
     query?: Record<string, string | number | boolean | undefined>
   ): Promise<T> {
-    let url = `${this.baseUrl}${path}`;
+    // Route legacy `/api/...` method paths through the configured version prefix.
+    const routed = path.startsWith("/api/") ? `${this.prefix}${path.slice(4)}` : path;
+    let url = `${this.baseUrl}${routed}`;
     if (query) {
       const params = new URLSearchParams();
       for (const [k, v] of Object.entries(query)) {
@@ -466,9 +485,16 @@ export class MementosClient {
       if (qs) url += `?${qs}`;
     }
 
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+      headers["x-api-key"] = this.apiKey;
+    }
+
     const res = await this._fetch(url, {
       method,
-      headers: body !== undefined ? { "Content-Type": "application/json" } : {},
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
 
@@ -527,6 +553,7 @@ export class MementosClient {
   getHealth(): Promise<{
     status: "ok" | "warn";
     version: string;
+    mode: "local" | "cloud";
     profile: string;
     db_path: string;
     hostname: string;
@@ -534,7 +561,17 @@ export class MementosClient {
     agents: number;
     projects: number;
   }> {
-    return this.get("/api/health");
+    return this.get("/health");
+  }
+
+  /** Liveness/readiness probe — verifies backing-store connectivity. */
+  getReady(): Promise<{ status: "ready" | "not_ready"; version: string; mode: "local" | "cloud" }> {
+    return this.get("/ready");
+  }
+
+  /** Service version + storage mode. */
+  getVersion(): Promise<{ status: "ok"; version: string; mode: "local" | "cloud" }> {
+    return this.get("/version");
   }
 
   getReport(options?: { days?: number; project_id?: string; agent_id?: string }): Promise<{
