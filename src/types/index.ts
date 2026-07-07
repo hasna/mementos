@@ -120,6 +120,7 @@ export interface UpdateMemoryInput {
 // ============================================================================
 
 export interface MemoryFilter {
+  key?: string;
   scope?: MemoryScope | MemoryScope[];
   category?: MemoryCategory | MemoryCategory[];
   source?: MemorySource | MemorySource[];

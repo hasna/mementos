@@ -22,6 +22,7 @@ import { computeTrustScore } from "../lib/poisoning.js";
 // The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
 // Keeping this comment so the migration intent is clear.
 import { unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 // ============================================================================
 // Entity extraction helper
@@ -87,6 +88,10 @@ export function createMemory(
   dedupeMode: DedupeMode = "merge",
   db?: Database
 ): Memory {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Memory>("POST", "/memories", { ...input, dedupe: dedupeMode });
+    return data;
+  }
   const d = db || getDatabase();
   const timestamp = now();
 
@@ -331,6 +336,10 @@ export function bulkUpsertMemories(
   memories: Array<Record<string, unknown>>,
   db?: Database
 ): BulkUpsertResult {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<BulkUpsertResult>("POST", "/memories/bulk-upsert", { memories });
+    return data;
+  }
   const d = db || getDatabase();
   let inserted = 0;
   let skipped = 0;
@@ -515,6 +524,10 @@ function listMemoriesByKey(key: string, db: Database): Memory[] {
 // ============================================================================
 
 export function getMemory(id: string, db?: Database): Memory | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Memory>("GET", `/memories/${encodeURIComponent(id)}`);
+    return status === 404 ? null : (data ?? null);
+  }
   const d = db || getDatabase();
   const row = d.query("SELECT * FROM memories WHERE id = ?").get(id) as
     | Record<string, unknown>
@@ -532,6 +545,11 @@ export function getMemoryByKey(
   db?: Database,
   as_of?: string
 ): Memory | null {
+  if (!db && isApiMode()) {
+    const q = toQuery({ key, scope, agent_id: agentId, project_id: projectId, session_id: sessionId, as_of, status: "active", limit: 1 });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories${q}`);
+    return data?.memories?.[0] ?? null;
+  }
   const d = db || getDatabase();
 
   let sql = "SELECT * FROM memories WHERE key = ?";
@@ -607,11 +625,36 @@ export function getMemoriesByKey(
 // ============================================================================
 
 export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
+  if (!db && isApiMode()) {
+    const f = filter || {};
+    const q = toQuery({
+      key: f.key,
+      scope: f.scope,
+      category: f.category,
+      status: f.status,
+      tags: f.tags,
+      min_importance: f.min_importance,
+      pinned: f.pinned,
+      agent_id: f.agent_id,
+      project_id: f.project_id,
+      session_id: f.session_id,
+      namespace: f.namespace,
+      as_of: f.as_of,
+      limit: f.limit,
+      offset: f.offset,
+    });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories${q}`);
+    return data?.memories ?? [];
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
 
   if (filter) {
+    if (filter.key) {
+      conditions.push("key = ?");
+      params.push(filter.key);
+    }
     if (filter.scope) {
       if (Array.isArray(filter.scope)) {
         conditions.push(`scope IN (${filter.scope.map(() => "?").join(",")})`);
@@ -759,6 +802,11 @@ export function updateMemory(
   input: UpdateMemoryInput,
   db?: Database
 ): Memory {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input);
+    if (status === 404) throw new MemoryNotFoundError(id);
+    return data;
+  }
   const d = db || getDatabase();
   const existing = getMemory(id, d);
   if (!existing) throw new MemoryNotFoundError(id);
@@ -887,6 +935,10 @@ export function updateMemory(
 // ============================================================================
 
 export function deleteMemory(id: string, db?: Database): boolean {
+  if (!db && isApiMode()) {
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/memories/${encodeURIComponent(id)}`);
+    return status !== 404;
+  }
   const d = db || getDatabase();
   // Fire PostMemoryDelete hook (non-blocking)
   const result = d.run("DELETE FROM memories WHERE id = ?", [id]);
@@ -925,6 +977,8 @@ export function bulkDeleteMemories(ids: string[], db?: Database): number {
 // ============================================================================
 
 export function touchMemory(id: string, db?: Database): void {
+  // In API mode the server touches on GET; avoid an extra round-trip.
+  if (!db && isApiMode()) return;
   const d = db || getDatabase();
   d.run(
     "UPDATE memories SET access_count = access_count + 1, accessed_at = ? WHERE id = ?",
@@ -941,6 +995,7 @@ export function touchMemory(id: string, db?: Database): void {
 const RECALL_PROMOTE_THRESHOLD = 3;
 
 export function incrementRecallCount(id: string, db?: Database): void {
+  if (!db && isApiMode()) return;
   const d = db || getDatabase();
   try {
     // Increment recall_count and access_count atomically
@@ -992,6 +1047,10 @@ export function cleanExpiredMemories(db?: Database): number {
 // ============================================================================
 
 export function getMemoryVersions(memoryId: string, db?: Database): MemoryVersion[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ versions: MemoryVersion[] }>("GET", `/memories/${encodeURIComponent(memoryId)}/versions`);
+    return data?.versions ?? [];
+  }
   const d = db || getDatabase();
   try {
     const rows = d
@@ -1061,6 +1120,10 @@ export async function semanticSearch(
   } = {},
   db?: Database
 ): Promise<SemanticSearchResult[]> {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ results: SemanticSearchResult[] }>("POST", "/memories/search/semantic", { query: queryText, ...options });
+    return data?.results ?? [];
+  }
   const d = db || getDatabase();
   const { threshold = 0.5, limit = 10, scope, agent_id, project_id } = options;
 

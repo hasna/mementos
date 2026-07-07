@@ -23,6 +23,8 @@ addRoute("GET", "/api/memories", (_req: Request, url: URL) => {
   const q = getSearchParams(url);
   const filter: MemoryFilter = {};
 
+  if (q["key"]) filter.key = q["key"];
+  if (q["as_of"]) filter.as_of = q["as_of"];
   if (q["scope"]) filter.scope = q["scope"] as MemoryScope;
   if (q["category"]) filter.category = q["category"] as MemoryCategory;
   if (q["tags"]) filter.tags = q["tags"].split(",");
@@ -67,7 +69,15 @@ addRoute("POST", "/api/memories", async (req) => {
     if (body["ttl_ms"] !== undefined && typeof body["ttl_ms"] === "string") {
       body["ttl_ms"] = parseDuration(body["ttl_ms"] as string);
     }
-    const memory = createMemory(body as unknown as CreateMemoryInput);
+    // Honor an explicit dedupe/conflict strategy from the client (default merge).
+    const rawDedupe = (body["dedupe"] ?? body["conflict"]) as string | undefined;
+    const validDedupe = ["merge", "overwrite", "create", "version-fork", "error"];
+    const dedupe = rawDedupe && validDedupe.includes(rawDedupe)
+      ? (rawDedupe as import("../../types/index.js").DedupeMode)
+      : undefined;
+    const memory = dedupe
+      ? createMemory(body as unknown as CreateMemoryInput, dedupe)
+      : createMemory(body as unknown as CreateMemoryInput);
     return json(memory, 201);
   } catch (e) {
     if (e instanceof DuplicateMemoryError) {
