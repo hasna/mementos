@@ -142,6 +142,30 @@ describe("createMemory", () => {
     db = freshDb();
   });
 
+  it("creates a memory whose agent_id/project_id/session_id/machine_id do not yet exist (cross-machine import / cloud write) by auto-provisioning FK stubs instead of throwing a foreign-key error", () => {
+    // Reproduces the cloud POST /v1/memories HTTP 500: with foreign_keys=ON a
+    // memory authored on another machine references ids absent in this store.
+    const mem = createMemory(
+      {
+        key: "authored-elsewhere",
+        value: "written by a registered agent on spark01",
+        agent_id: "e79f97a1",
+        project_id: "proj-xyz",
+        session_id: "sess-123",
+        machine_id: "mach-spark01",
+      },
+      "merge",
+      db
+    );
+    expect(mem.agent_id).toBe("e79f97a1");
+    expect(mem.project_id).toBe("proj-xyz");
+    // The referenced rows now exist (stubs), satisfying the FK.
+    const agent = db.query("SELECT id FROM agents WHERE id = ?").get("e79f97a1");
+    expect(agent).toBeTruthy();
+    const roundtrip = getMemory(mem.id, db);
+    expect(roundtrip?.agent_id).toBe("e79f97a1");
+  });
+
   it("creates with minimal input (key+value only, check defaults)", () => {
     const mem = createMemory({ key: "lang", value: "TypeScript" }, "merge", db);
     expect(mem.key).toBe("lang");

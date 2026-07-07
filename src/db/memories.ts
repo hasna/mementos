@@ -449,6 +449,13 @@ export function createMemory(
     }
   }
 
+  // Ensure FK-referenced rows exist before inserting. On the cloud server and
+  // during cross-machine imports, a memory can reference an agent/project/
+  // session/machine id created on another machine that is absent here; with
+  // `PRAGMA foreign_keys = ON` that INSERT throws a FK error (opaque HTTP 500)
+  // and drops the write. Provision minimal stubs so authorship is preserved.
+  ensureMemoryReferences(d, input);
+
   // Insert new
   d.run(
     `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, when_to_use, sequence_group, sequence_order, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
@@ -520,6 +527,53 @@ export function createMemory(
 // ============================================================================
 // Internal helpers
 // ============================================================================
+
+/**
+ * Ensure the agent/project/session/machine rows referenced by a memory exist,
+ * inserting minimal stubs when they do not. Idempotent (INSERT OR IGNORE keyed
+ * on the primary id, so existing real rows are never modified). This keeps the
+ * FK constraints on `memories` satisfiable for writes that originate on another
+ * machine (the cloud/self_hosted flip and cross-machine imports) instead of
+ * failing the whole write with a foreign-key error.
+ */
+function ensureMemoryReferences(d: Database, input: CreateMemoryInput): void {
+  const t = now();
+  // Each stub is best-effort and independently guarded: a referenced table may
+  // be absent in reduced/test schemas, and a missing stub must never block the
+  // write (the FK, when present, is what we are satisfying).
+  const tryRun = (sql: string, params: unknown[]): void => {
+    try {
+      d.run(sql, params as never[]);
+    } catch {
+      // Table/column may not exist in this schema variant — ignore.
+    }
+  };
+  if (input.agent_id) {
+    tryRun(
+      "INSERT OR IGNORE INTO agents (id, name, role, created_at, last_seen_at) VALUES (?, ?, 'agent', ?, ?)",
+      [input.agent_id, `imported-${input.agent_id}`, t, t]
+    );
+  }
+  if (input.project_id) {
+    tryRun(
+      "INSERT OR IGNORE INTO projects (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      [input.project_id, `imported-${input.project_id}`, `imported://${input.project_id}`, t, t]
+    );
+  }
+  if (input.machine_id) {
+    tryRun(
+      "INSERT OR IGNORE INTO machines (id, name, hostname, platform, created_at, last_seen_at) VALUES (?, ?, ?, 'unknown', ?, ?)",
+      [input.machine_id, `imported-${input.machine_id}`, `imported-${input.machine_id}`, t, t]
+    );
+  }
+  if (input.session_id) {
+    // sessions.agent_id / project_id reference agents/projects (stubbed above).
+    tryRun(
+      "INSERT OR IGNORE INTO sessions (id, agent_id, project_id, started_at, last_activity) VALUES (?, ?, ?, ?, ?)",
+      [input.session_id, input.agent_id ?? null, input.project_id ?? null, t, t]
+    );
+  }
+}
 
 /** List active memories with the same key (for trust_score contradiction check). */
 function listMemoriesByKey(key: string, db: Database): Memory[] {
