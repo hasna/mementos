@@ -7,6 +7,7 @@ import {
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations.js";
+import { cloudStoreFor, isCloudMode } from "./cloud-store.js";
 
 // ============================================================================
 // Path resolution
@@ -245,6 +246,23 @@ export function resolvePartialId(
   if (!ALLOWED_TABLES.has(table)) {
     throw new Error(`Invalid table name: ${table}`);
   }
+
+  // Cloud (self_hosted) mode: resolve the id against the cloud HTTP API so that
+  // CLI helpers (forget/update/get by id) operate on the cloud dataset, not the
+  // untouched local SQLite store.
+  if (isCloudMode()) {
+    const store = cloudStoreFor(table);
+    if (store) {
+      if (partialId.length >= 36) {
+        return store.get(partialId) ? partialId : null;
+      }
+      const matches = (store.list({ limit: 1000 }) as Array<{ id?: unknown }>)
+        .map((row) => String(row?.id ?? ""))
+        .filter((id) => id.startsWith(partialId));
+      return matches.length === 1 ? matches[0]! : null;
+    }
+  }
+
   if (partialId.length >= 36) {
     const row = db
       .query(`SELECT id FROM ${table} WHERE id = ?`)
