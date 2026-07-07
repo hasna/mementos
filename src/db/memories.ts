@@ -596,6 +596,13 @@ export function getMemoriesByKey(
   projectId?: string,
   db?: Database
 ): Memory[] {
+  if (!db && isApiMode()) {
+    // Cloud path: return ALL active matches for this key so callers (e.g. the
+    // `forget <key>` CLI command) can find/delete cloud-resident memories.
+    const q = toQuery({ key, scope, agent_id: agentId, project_id: projectId, status: "active" });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories${q}`);
+    return data?.memories ?? [];
+  }
   const d = db || getDatabase();
 
   let sql = "SELECT * FROM memories WHERE key = ?";

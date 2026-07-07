@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import { deleteMemory, getMemoryByKey } from "../../db/memories.js";
 import { outputJson, type GlobalOpts } from "../helpers.js";
 
@@ -14,14 +15,18 @@ export function registerRemoveCommand(program: Command): void {
       const globalOpts = program.opts<GlobalOpts>();
       const agentId = opts.agent || globalOpts.agent;
 
-      // Try by partial ID first
-      const db = getDatabase();
-      let id = resolvePartialId(db, "memories", nameOrId);
+      // Try by partial ID first (local only; api mode trusts full ids below).
+      let id = isApiMode() ? null : resolvePartialId(getDatabase(), "memories", nameOrId);
 
-      // Fall back to key lookup
+      // Fall back to key lookup (cloud-routed in api mode).
       if (!id) {
         const mem = getMemoryByKey(nameOrId, opts.scope, agentId);
         if (mem) id = mem.id;
+      }
+
+      // api mode: no key match — the input may be a full cloud id (UUID).
+      if (!id && isApiMode() && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(nameOrId)) {
+        id = nameOrId;
       }
 
       if (!id) {

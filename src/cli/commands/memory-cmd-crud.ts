@@ -2,6 +2,7 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
 import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import {
   createMemory,
   getMemory,
@@ -253,9 +254,13 @@ export function registerCrudCommands(program: Command): void {
       try {
         const globalOpts = program.opts<GlobalOpts>();
 
-        // Try by ID first (exact/partial ID always unambiguous)
-        const db = getDatabase();
-        const idMatch = resolvePartialId(db, "memories", keyOrId);
+        // Try by ID first (exact/partial ID always unambiguous).
+        // In api mode there is no local table to prefix-match against, so we
+        // don't open a local SQLite db; a full id is deleted directly below
+        // (via key-lookup fallthrough → direct delete).
+        const idMatch = isApiMode()
+          ? null
+          : resolvePartialId(getDatabase(), "memories", keyOrId);
         if (idMatch) {
           deleteMemory(idMatch);
           if (globalOpts.json) {
@@ -270,6 +275,17 @@ export function registerCrudCommands(program: Command): void {
         const matches = getMemoriesByKey(keyOrId, opts.scope, opts.agent, opts.project);
 
         if (matches.length === 0) {
+          // api mode: no key match — the input may be a full cloud id (UUID).
+          // Attempt a direct delete (server returns false if absent).
+          const looksLikeId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(keyOrId);
+          if (isApiMode() && looksLikeId && deleteMemory(keyOrId)) {
+            if (globalOpts.json) {
+              outputJson({ deleted: keyOrId });
+            } else {
+              console.log(chalk.green(`Memory ${keyOrId} deleted.`));
+            }
+            return;
+          }
           if (globalOpts.json) {
             outputJson({ error: `No memory found: ${keyOrId}` });
           } else {

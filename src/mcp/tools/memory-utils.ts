@@ -1,4 +1,5 @@
 import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import { detectProject } from "../../lib/project-detect.js";
 import type { Memory } from "../../types/index.js";
 import {
@@ -55,6 +56,11 @@ export function formatError(error: unknown): string {
 // ============================================================================
 
 export function resolveId(partialId: string, table = "memories"): string {
+  // Cloud path: there is no local table to prefix-match against, so trust the
+  // caller's id as-is (cloud list/search/save return full UUIDs). The server
+  // validates it and returns 404 if it doesn't exist. Avoids opening a local
+  // SQLite db (which would silently diverge from cloud) in api mode.
+  if (isApiMode()) return partialId;
   const db = getDatabase();
   const id = resolvePartialId(db, table, partialId);
   if (!id) throw new Error(`Could not resolve ID: ${partialId}`);
