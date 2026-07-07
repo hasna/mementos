@@ -59,14 +59,21 @@ describe("cloud-store resolver (client flip)", () => {
     expect(cfg!.baseUrl).toBe("https://mementos.hasna.xyz/v1"); // not doubled
   });
 
-  test("cloud requested but no key => throws (fail-closed, no silent local drift)", () => {
+  test("mode=cloud but NO api url/key => local (legacy fall-through, no throw)", () => {
+    process.env.HASNA_MEMENTOS_STORAGE_MODE = "self_hosted";
+    resetCloudConfigCache();
+    expect(resolveCloudConfig()).toBeNull();
+    expect(isCloudMode()).toBe(false);
+  });
+
+  test("partial config: url set but no key => throws (fail-closed, no silent drift)", () => {
     process.env.HASNA_MEMENTOS_STORAGE_MODE = "self_hosted";
     process.env.HASNA_MEMENTOS_API_URL = "https://mementos.hasna.xyz";
     resetCloudConfigCache();
     expect(() => resolveCloudConfig()).toThrow(/API key/);
   });
 
-  test("cloud requested but no url => throws", () => {
+  test("partial config: key set but no url => throws", () => {
     process.env.HASNA_MEMENTOS_STORAGE_MODE = "cloud";
     process.env.HASNA_MEMENTOS_API_KEY = "hasna_test_key";
     resetCloudConfigCache();

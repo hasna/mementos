@@ -118,19 +118,26 @@ function computeConfig(
 ): CloudConfig | null {
   const mode = normalizeMode(modeRaw);
 
-  // Local or unset: never touch the network.
-  if (mode === null || mode === "local") return null;
+  // Local or unset mode: never route to the API client.
+  if (mode !== "cloud") return null;
 
-  // Cloud requested but misconfigured -> fail closed (no silent local drift).
+  // Mode is cloud/self_hosted. The API client is engaged ONLY when both the API
+  // URL and key are present (the task's contract). When NEITHER is set, this is
+  // not an API-client flip (e.g. a legacy self_hosted config) — fall through to
+  // the app's existing local/legacy path rather than erroring.
+  if (!apiUrl && !apiKey) return null;
+
+  // Partial API config -> fail closed (no silent drift onto the wrong dataset).
   if (!apiKey) {
     throw new Error(
-      `${APP}: cloud mode requested (HASNA_${TOKEN}_STORAGE_MODE) but no API key set. ` +
-        `Set HASNA_${TOKEN}_API_KEY to route to the cloud, or unset the mode to use the local store.`,
+      `${APP}: cloud API URL is set (HASNA_${TOKEN}_API_URL) but no API key. ` +
+        `Set HASNA_${TOKEN}_API_KEY to route to the cloud, or unset the URL to use the local store.`,
     );
   }
   if (!apiUrl) {
     throw new Error(
-      `${APP}: cloud mode requested but no API URL set. Set HASNA_${TOKEN}_API_URL=https://${APP}.hasna.xyz.`,
+      `${APP}: cloud API key is set (HASNA_${TOKEN}_API_KEY) but no API URL. ` +
+        `Set HASNA_${TOKEN}_API_URL=https://${APP}.hasna.xyz.`,
     );
   }
 
