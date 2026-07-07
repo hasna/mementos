@@ -1,4 +1,4 @@
-import { createMemory, listMemories } from "../../db/memories.js";
+import { createMemory, listMemories, bulkUpsertMemories } from "../../db/memories.js";
 import type { MemoryScope, MemoryCategory, MemoryFilter, CreateMemoryInput } from "../../types/index.js";
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson } from "../helpers.js";
@@ -50,4 +50,21 @@ addRoute("POST", "/api/memories/import", async (req) => {
   }
 
   return json({ imported, errors, total: memoriesArr.length }, 201);
+});
+
+// POST /api/memories/bulk-upsert — faithful, idempotent bulk restore.
+// Preserves each memory's original id + status (archived stays archived) and
+// all core fields; upserts by primary-key id (ON CONFLICT DO NOTHING) so
+// re-runs never create duplicate rows and existing rows are never mutated.
+// This is the cross-machine -> cloud backfill path for the fleet self-host cutover.
+addRoute("POST", "/api/memories/bulk-upsert", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || !Array.isArray(body["memories"])) {
+    return errorResponse("Missing required field: memories (array)", 400);
+  }
+
+  const memoriesArr = body["memories"] as Record<string, unknown>[];
+  const result = bulkUpsertMemories(memoriesArr);
+
+  return json(result, 201);
 });

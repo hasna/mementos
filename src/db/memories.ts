@@ -525,6 +525,162 @@ export function createMemory(
 }
 
 // ============================================================================
+// Bulk restore / backfill
+// ============================================================================
+
+export interface BulkUpsertResult {
+  inserted: number;
+  skipped: number;
+  errors: string[];
+  total: number;
+}
+
+/**
+ * Faithful, idempotent bulk restore of memories into the current store.
+ *
+ * Unlike {@link createMemory}, this primitive:
+ *  - PRESERVES the original `id` (does not regenerate a UUID);
+ *  - PRESERVES `status` (archived stays archived — never resurrected to active);
+ *  - PRESERVES timestamps, `version`, `pinned`, `access_count` and scope fields;
+ *  - does NOT dedupe by key/scope/agent and does NOT fire hooks / entity
+ *    extraction / embedding work (those run asynchronously elsewhere).
+ *
+ * Idempotency is by primary-key `id`: `INSERT OR IGNORE` maps to
+ * `ON CONFLICT DO NOTHING` on Postgres, so a row whose `id` already exists is
+ * left untouched and re-runs never create duplicate rows. This is the
+ * cross-machine → cloud backfill path (see the fleet self-host cutover): a
+ * machine's local memories are shipped to the cloud store verbatim without
+ * mutating rows that are already present.
+ *
+ * FK-referenced agent/project/session/machine rows are stubbed via
+ * {@link ensureMemoryReferences} so cross-machine authorship ids never fail the
+ * write. Values and summaries are still passed through {@link redactSecrets}.
+ */
+export function bulkUpsertMemories(
+  memories: Array<Record<string, unknown>>,
+  db?: Database
+): BulkUpsertResult {
+  const d = db || getDatabase();
+  let inserted = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+
+  const insert = d.prepare(
+    `INSERT OR IGNORE INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, when_to_use, sequence_group, sequence_order, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const insertTag = d.prepare(
+    "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
+  );
+
+  for (const mem of memories) {
+    const key = mem["key"] as string | undefined;
+    const id = (mem["id"] as string) || uuid();
+    try {
+      if (!key) {
+        errors.push(`skipped row without key (id=${id})`);
+        continue;
+      }
+      const timestamp = now();
+
+      // tags may arrive as an array (JSON body) or a serialized JSON string (row dump)
+      let tags: string[] = [];
+      const rawTags = mem["tags"];
+      if (Array.isArray(rawTags)) {
+        tags = rawTags as string[];
+      } else if (typeof rawTags === "string" && rawTags.trim()) {
+        try {
+          const parsed = JSON.parse(rawTags);
+          if (Array.isArray(parsed)) tags = parsed as string[];
+        } catch {
+          // leave tags empty on malformed input
+        }
+      }
+      const tagsJson = JSON.stringify(tags);
+
+      // metadata may arrive as an object or a serialized JSON string
+      let metadataJson = "{}";
+      const rawMeta = mem["metadata"];
+      if (rawMeta && typeof rawMeta === "object") {
+        metadataJson = JSON.stringify(rawMeta);
+      } else if (typeof rawMeta === "string" && rawMeta.trim()) {
+        metadataJson = rawMeta;
+      }
+
+      const safeValue = redactSecrets(String(mem["value"] ?? ""));
+      const safeSummary = mem["summary"] ? redactSecrets(String(mem["summary"])) : null;
+
+      const agentId = (mem["agent_id"] as string) ?? null;
+      const projectId = (mem["project_id"] as string) ?? null;
+      const sessionId = (mem["session_id"] as string) ?? null;
+      const machineId = (mem["machine_id"] as string) ?? null;
+
+      // Satisfy FK constraints for ids that were created on another machine.
+      ensureMemoryReferences(d, {
+        key,
+        value: safeValue,
+        agent_id: agentId ?? undefined,
+        project_id: projectId ?? undefined,
+        session_id: sessionId ?? undefined,
+        machine_id: machineId ?? undefined,
+      } as CreateMemoryInput);
+
+      const res = insert.run(
+        id,
+        key,
+        safeValue,
+        (mem["category"] as string) || "knowledge",
+        (mem["scope"] as string) || "private",
+        safeSummary,
+        tagsJson,
+        (mem["importance"] as number) ?? 5,
+        (mem["source"] as string) || "imported",
+        (mem["status"] as string) || "active",
+        Boolean(mem["pinned"]),
+        agentId,
+        projectId,
+        sessionId,
+        machineId,
+        (mem["namespace"] as string) ?? null,
+        (mem["created_by_agent"] as string) ?? agentId,
+        (mem["when_to_use"] as string) ?? null,
+        (mem["sequence_group"] as string) ?? null,
+        (mem["sequence_order"] as number) ?? null,
+        metadataJson,
+        (mem["access_count"] as number) ?? 0,
+        (mem["version"] as number) ?? 1,
+        (mem["expires_at"] as string) ?? null,
+        (mem["valid_from"] as string) ?? timestamp,
+        (mem["valid_until"] as string) ?? null,
+        (mem["ingested_at"] as string) ?? timestamp,
+        (mem["created_at"] as string) ?? timestamp,
+        (mem["updated_at"] as string) ?? timestamp
+      );
+
+      if ((res?.changes ?? 0) > 0) {
+        inserted++;
+        for (const tag of tags) {
+          try {
+            insertTag.run(id, tag);
+          } catch {
+            // tag table may be absent in reduced schemas — never block the row
+          }
+        }
+      } else {
+        // id already present — left untouched (idempotent, non-destructive)
+        skipped++;
+      }
+    } catch (e) {
+      errors.push(
+        `Failed "${String(key)}": ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  }
+
+  return { inserted, skipped, errors, total: memories.length };
+}
+
+// ============================================================================
 // Internal helpers
 // ============================================================================
 
