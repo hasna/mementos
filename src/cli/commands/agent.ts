@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { registerAgent, listAgents, updateAgent, getAgent, touchAgent } from "../../db/agents.js";
+import { getProject } from "../../db/projects.js";
 import { setFocus, getFocus } from "../../lib/focus.js";
 import {
   DEFAULT_COMPACT_LIMIT,
@@ -188,7 +189,18 @@ export function registerAgentCommands(program: Command): void {
       const globalOpts = program.opts() as { agent?: string };
       const agentId = opts?.agent || globalOpts.agent;
       if (!agentId) { process.stderr.write("Agent ID required. Use --agent.\n"); process.exit(1); }
-      setFocus(agentId, project ?? null);
+      // Resolve a project name/path to its canonical UUID before persisting.
+      // The store (local + cloud server) validates active_project_id by ID and
+      // only prefix-matches partial UUIDs, so a bare name/path would 400
+      // ("Project not found") in cloud. getProject() resolves by id/path/name in
+      // both transports; if it can't resolve (e.g. a partial-UUID prefix), pass
+      // the original through so the server's partial-ID matcher can finish the job.
+      let target: string | null = project ?? null;
+      if (project) {
+        const proj = getProject(project);
+        if (proj) target = proj.id;
+      }
+      setFocus(agentId, target);
       if (project) console.log(chalk.green(`Focused: ${agentId} → project ${project}`));
       else console.log(chalk.dim(`Focus cleared for ${agentId}`));
     });
