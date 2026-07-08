@@ -5,6 +5,7 @@ import {
   getStorageConnectionString,
   isServerContext,
 } from "../storage.js";
+import { isApiMode } from "./api-mode.js";
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations.js";
@@ -128,6 +129,26 @@ function getCloudDatabase(): Database {
 export function getDatabase(dbPath?: string): Database {
   if (!dbPath) {
     if (_pg) return _pg;
+    // ── Split-brain guard (fail-closed) ─────────────────────────────────────
+    // In API mode the ONLY sanctioned transport is the self-hosted HTTP API
+    // (HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY). No client code path —
+    // domain module, MCP tool, CLI command, or lib helper — may open a local
+    // SQLite file, because a silent local island IS the split-brain this
+    // mission exists to eliminate. Any op that reaches here in API mode without
+    // an explicit dbPath either (a) forgot to route through the API client, or
+    // (b) has no cloud endpoint yet; in both cases we FAIL LOUDLY rather than
+    // silently read/write a divergent local database. An explicit dbPath
+    // (tests/tooling/import-export against a file) is always honored below.
+    if (isApiMode()) {
+      throw new Error(
+        "mementos is in API mode (HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY set) " +
+          "but this operation tried to open a local SQLite database. That would create a " +
+          "split-brain local island instead of using the shared cloud store. This op must " +
+          "route through the API client (src/db/api-mode.ts); if it needs a server endpoint " +
+          "that does not exist yet, add it to src/server and redeploy. To use local storage " +
+          "instead, unset HASNA_MEMENTOS_API_URL / HASNA_MEMENTOS_API_KEY."
+      );
+    }
     if (getStorageMode() === "cloud") {
       return getCloudDatabase();
     }

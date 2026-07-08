@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, shortUuid } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 import type { Entity, Relation, CreateRelationInput, RelationType } from "../types/index.js";
 import { hookRegistry } from "../lib/hooks.js";
 
@@ -38,6 +39,10 @@ export function parseEntityRow(row: Record<string, unknown>): Entity {
 // ============================================================================
 
 export function createRelation(input: CreateRelationInput, db?: Database): Relation {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Relation>("POST", "/relations", input);
+    return data;
+  }
   const d = db || getDatabase();
   const id = shortUuid();
   const timestamp = now();
@@ -79,6 +84,11 @@ export function createRelation(input: CreateRelationInput, db?: Database): Relat
 // ============================================================================
 
 export function getRelation(id: string, db?: Database): Relation {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Relation>("GET", `/relations/${encodeURIComponent(id)}`);
+    if (status === 404 || !data) throw new Error(`Relation not found: ${id}`);
+    return data;
+  }
   const d = db || getDatabase();
   const row = d.query("SELECT * FROM relations WHERE id = ?").get(id) as Record<string, unknown> | null;
   if (!row) throw new Error(`Relation not found: ${id}`);
@@ -97,6 +107,19 @@ export function listRelations(
   },
   db?: Database
 ): Relation[] {
+  if (!db && isApiMode()) {
+    // The cloud exposes relations for a given entity at
+    // GET /entities/:id/relations. A general (entity-less) relation listing has
+    // no cloud endpoint; the fail-closed getDatabase() guard covers that case.
+    if (filter.entity_id) {
+      const q = toQuery({ type: filter.relation_type, direction: filter.direction });
+      const { data } = apiJson<{ relations: Relation[] }>(
+        "GET",
+        `/entities/${encodeURIComponent(filter.entity_id)}/relations${q}`,
+      );
+      return data?.relations ?? [];
+    }
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -130,6 +153,11 @@ export function listRelations(
 // ============================================================================
 
 export function deleteRelation(id: string, db?: Database): void {
+  if (!db && isApiMode()) {
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/relations/${encodeURIComponent(id)}`);
+    if (status === 404) throw new Error(`Relation not found: ${id}`);
+    return;
+  }
   const d = db || getDatabase();
   const result = d.run("DELETE FROM relations WHERE id = ?", [id]);
   if (result.changes === 0) throw new Error(`Relation not found: ${id}`);
@@ -186,6 +214,14 @@ export function getEntityGraph(
   depth: number = 2,
   db?: Database
 ): { entities: Entity[]; relations: Relation[] } {
+  if (!db && isApiMode()) {
+    const q = toQuery({ depth });
+    const { data } = apiJson<{ entities: Entity[]; relations: Relation[] }>(
+      "GET",
+      `/graph/${encodeURIComponent(entityId)}${q}`,
+    );
+    return { entities: data?.entities ?? [], relations: data?.relations ?? [] };
+  }
   const d = db || getDatabase();
 
   // Get entities via recursive CTE
@@ -233,6 +269,12 @@ export function findPath(
   maxDepth: number = 5,
   db?: Database
 ): Entity[] | null {
+  if (!db && isApiMode()) {
+    const q = toQuery({ from: fromEntityId, to: toEntityId, max_depth: maxDepth });
+    const { data } = apiJson<{ path: Entity[] | null; found: boolean }>("GET", `/graph/path${q}`);
+    if (!data || !data.found || !data.path) return null;
+    return data.path;
+  }
   const d = db || getDatabase();
 
   // Use recursive CTE that tracks the full path

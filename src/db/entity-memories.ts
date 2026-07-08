@@ -1,5 +1,6 @@
 import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase, now } from "./database.js";
+import { isApiMode, apiJson } from "./api-mode.js";
 import type { Entity, Memory, EntityMemory, EntityRole } from "../types/index.js";
 import { parseMemoryRow } from "./memories.js";
 
@@ -43,6 +44,13 @@ export function linkEntityToMemory(
   role: EntityRole = "context",
   db?: Database
 ): EntityMemory {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<EntityMemory>("POST", `/entities/${encodeURIComponent(entityId)}/memories`, {
+      memory_id: memoryId,
+      role,
+    });
+    return data;
+  }
   const d = db || getDatabase();
   const timestamp = now();
 
@@ -70,6 +78,13 @@ export function unlinkEntityFromMemory(
   memoryId: string,
   db?: Database
 ): void {
+  if (!db && isApiMode()) {
+    apiJson<{ deleted: boolean }>(
+      "DELETE",
+      `/entities/${encodeURIComponent(entityId)}/memories/${encodeURIComponent(memoryId)}`,
+    );
+    return;
+  }
   const d = db || getDatabase();
   d.run(
     "DELETE FROM entity_memories WHERE entity_id = ? AND memory_id = ?",
@@ -89,6 +104,13 @@ export function getMemoriesForEntity(
   entityId: string,
   db?: Database
 ): Memory[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ memories: Memory[] }>(
+      "GET",
+      `/entities/${encodeURIComponent(entityId)}/memories`,
+    );
+    return data?.memories ?? [];
+  }
   const d = db || getDatabase();
   const rows = d
     .query(

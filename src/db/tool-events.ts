@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 import type { ToolEvent, CreateToolEventInput, ToolStats } from "../types/index.js";
 import { getDatabase, uuid, now } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 // ============================================================================
 // Helpers
@@ -32,6 +33,10 @@ function parseToolEventRow(row: Record<string, unknown>): ToolEvent {
 // ============================================================================
 
 export function saveToolEvent(input: CreateToolEventInput, db?: Database): ToolEvent {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<ToolEvent>("POST", "/tool-events", input);
+    return data;
+  }
   const d = db || getDatabase();
   const id = uuid();
   const timestamp = now();
@@ -87,6 +92,20 @@ export function getToolEvents(
   },
   db?: Database
 ): ToolEvent[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      tool_name: filters.tool_name,
+      agent_id: filters.agent_id,
+      project_id: filters.project_id,
+      success: filters.success,
+      from_date: filters.from_date,
+      to_date: filters.to_date,
+      limit: filters.limit,
+      offset: filters.offset,
+    });
+    const { data } = apiJson<{ events: ToolEvent[] }>("GET", `/tool-events${q}`);
+    return data?.events ?? [];
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: (string | number | null)[] = [];
@@ -136,6 +155,14 @@ export function getToolStats(
   project_id?: string,
   db?: Database
 ): ToolStats {
+  if (!db && isApiMode()) {
+    const q = toQuery({ project_id });
+    const { data } = apiJson<{ stats: ToolStats }>(
+      "GET",
+      `/tool-insights/${encodeURIComponent(tool_name)}${q}`,
+    );
+    return data.stats;
+  }
   const d = db || getDatabase();
 
   let where = "WHERE tool_name = ?";
@@ -189,6 +216,14 @@ export function getToolLessons(
   limit?: number,
   db?: Database
 ): { lesson: string; when_to_use: string | null; created_at: string }[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ project_id, limit });
+    const { data } = apiJson<{ lessons: { lesson: string; when_to_use: string | null; created_at: string }[] }>(
+      "GET",
+      `/tool-insights/${encodeURIComponent(tool_name)}${q}`,
+    );
+    return data?.lessons ?? [];
+  }
   const d = db || getDatabase();
 
   let where = "WHERE tool_name = ? AND lesson IS NOT NULL";

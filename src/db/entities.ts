@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, shortUuid } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 import type {
   Entity,
   CreateEntityInput,
@@ -32,6 +33,10 @@ export function parseEntityRow(row: Record<string, unknown>): Entity {
 // ============================================================================
 
 export function createEntity(input: CreateEntityInput, db?: Database): Entity {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Entity>("POST", "/entities", input);
+    return data;
+  }
   const d = db || getDatabase();
   const timestamp = now();
   const metadataJson = JSON.stringify(input.metadata || {});
@@ -101,6 +106,11 @@ export function createEntity(input: CreateEntityInput, db?: Database): Entity {
 // ============================================================================
 
 export function getEntity(id: string, db?: Database): Entity {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Entity>("GET", `/entities/${encodeURIComponent(id)}`);
+    if (status === 404 || !data) throw new EntityNotFoundError(id);
+    return data;
+  }
   const d = db || getDatabase();
   const row = d.query("SELECT * FROM entities WHERE id = ?").get(id) as
     | Record<string, unknown>
@@ -115,6 +125,18 @@ export function getEntityByName(
   projectId?: string,
   db?: Database
 ): Entity | null {
+  if (!db && isApiMode()) {
+    const q = toQuery({ search: name, type, project_id: projectId, limit: 50 });
+    const { data } = apiJson<{ entities: Entity[] }>("GET", `/entities${q}`);
+    const list = data?.entities ?? [];
+    const match = list.find(
+      (e) =>
+        e.name === name &&
+        (type === undefined || e.type === type) &&
+        (projectId === undefined || (e.project_id ?? undefined) === projectId),
+    );
+    return match ?? null;
+  }
   const d = db || getDatabase();
 
   let sql = "SELECT * FROM entities WHERE name = ?";
@@ -150,6 +172,17 @@ export function listEntities(
   } = {},
   db?: Database
 ): Entity[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      type: filter.type,
+      project_id: filter.project_id,
+      search: filter.search,
+      limit: filter.limit,
+      offset: filter.offset,
+    });
+    const { data } = apiJson<{ entities: Entity[] }>("GET", `/entities${q}`);
+    return data?.entities ?? [];
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
@@ -196,6 +229,11 @@ export function updateEntity(
   input: UpdateEntityInput,
   db?: Database
 ): Entity {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Entity>("PATCH", `/entities/${encodeURIComponent(id)}`, input);
+    if (status === 404 || !data) throw new EntityNotFoundError(id);
+    return data;
+  }
   const d = db || getDatabase();
 
   // Verify entity exists
@@ -235,6 +273,11 @@ export function updateEntity(
 // ============================================================================
 
 export function deleteEntity(id: string, db?: Database): void {
+  if (!db && isApiMode()) {
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/entities/${encodeURIComponent(id)}`);
+    if (status === 404) throw new EntityNotFoundError(id);
+    return;
+  }
   const d = db || getDatabase();
   const result = d.run("DELETE FROM entities WHERE id = ?", [id]);
   if (result.changes === 0) throw new EntityNotFoundError(id);
@@ -249,6 +292,13 @@ export function mergeEntities(
   targetId: string,
   db?: Database
 ): Entity {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Entity>("POST", "/entities/merge", {
+      source_id: sourceId,
+      target_id: targetId,
+    });
+    return data;
+  }
   const d = db || getDatabase();
 
   // Verify both exist
