@@ -62,7 +62,7 @@ export function registerSystemToolRoutes(): void {
 
   addRoute("GET", "/api/tool-insights/:tool_name", (_req: Request, url: URL, params) => {
     const q = getSearchParams(url);
-    const toolName = decodeURIComponent(params["tool_name"]!);
+    const toolName = params["tool_name"]!; // router already percent-decodes path params
     const projectId = q["project_id"];
     const lessonsLimit = q["limit"] ? parseInt(q["limit"], 10) : 20;
 
