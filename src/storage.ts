@@ -149,16 +149,20 @@ export function translateSql(sql: string): string {
     }
   );
 
-  // Mixed-type COALESCE: in the cloud schema `created_at` is `timestamptz` while
-  // `accessed_at` is `text` (JS ISO-8601). Postgres refuses
+  // Mixed-type COALESCE: in the cloud schema `created_at`/`updated_at` are
+  // `timestamptz` while `accessed_at` is `text` (JS ISO-8601). Postgres refuses
   // `COALESCE(text, timestamptz)` ("types text and timestamp with time zone
-  // cannot be matched"), which 500s the `stale` (and health/retention) surfaces.
-  // Render created_at as the SAME ISO-8601 text as accessed_at so the COALESCE is
-  // type-consistent AND the fallback sorts/compares lexicographically alongside
-  // real accessed_at values (identical format => chronological order preserved).
+  // cannot be matched"), which 500s the `stale`, health, and retention surfaces
+  // (`archiveStale` uses COALESCE(accessed_at, created_at); `deprioritizeStale`
+  // uses COALESCE(accessed_at, updated_at) — reached by `mementos clean`).
+  // Render the timestamptz fallback as the SAME ISO-8601 text as accessed_at so
+  // the COALESCE is type-consistent AND the fallback sorts/compares
+  // lexicographically alongside real accessed_at values (identical format =>
+  // chronological order preserved).
   translated = translated.replace(
-    /COALESCE\s*\(\s*accessed_at\s*,\s*created_at\s*\)/gi,
-    `COALESCE(accessed_at, to_char(created_at AT TIME ZONE 'UTC', ${ISO_FMT}))`
+    /COALESCE\s*\(\s*accessed_at\s*,\s*(created_at|updated_at)\s*\)/gi,
+    (_match, col: string) =>
+      `COALESCE(accessed_at, to_char(${col} AT TIME ZONE 'UTC', ${ISO_FMT}))`
   );
   translated = translated.replace(
     /lower\s*\(\s*hex\s*\(\s*randomblob\s*\(\s*\d+\s*\)\s*\)\s*\)/gi,

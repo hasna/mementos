@@ -55,6 +55,20 @@ describe("Amendment A1 — SQLite→Postgres SQL translation", () => {
     );
   });
 
+  test("COALESCE(accessed_at, created_at|updated_at) renders the timestamptz fallback as ISO text", () => {
+    // archiveStale path
+    const created = translateSql(
+      "SELECT COUNT(*) FROM memories WHERE COALESCE(accessed_at, created_at) < ?"
+    );
+    expect(created).toContain("COALESCE(accessed_at, to_char(created_at AT TIME ZONE 'UTC'");
+    // deprioritizeStale path (reached by `mementos clean`) — this is the one that 500'd
+    const updated = translateSql(
+      "SELECT COUNT(*) FROM memories WHERE COALESCE(accessed_at, updated_at) < ?"
+    );
+    expect(updated).toContain("COALESCE(accessed_at, to_char(updated_at AT TIME ZONE 'UTC'");
+    expect(updated).not.toMatch(/COALESCE\(accessed_at,\s*updated_at\)/);
+  });
+
   test("datetime('now') becomes an ISO-8601 UTC text expression (comparable to text & timestamptz columns)", () => {
     const out = translateSql("SELECT * FROM m WHERE expires_at >= datetime('now')");
     expect(out).toContain("to_char(now() AT TIME ZONE 'UTC'");
