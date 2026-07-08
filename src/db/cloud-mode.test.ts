@@ -76,6 +76,14 @@ describe("Amendment A1 — SQLite→Postgres SQL translation", () => {
     );
   });
 
+  test("INSTR(haystack, needle) becomes Postgres STRPOS(...) (graph-path recursive CTE)", () => {
+    const out = translateSql(
+      "SELECT trail FROM path WHERE INSTR(p.trail, x.id) = 0"
+    );
+    expect(out).toBe("SELECT trail FROM path WHERE STRPOS(p.trail, x.id) = 0");
+    expect(out).not.toMatch(/INSTR/i);
+  });
+
   test("parameterized pinned = ? is left untouched (pg coerces the bound value)", () => {
     expect(translateSql("SELECT * FROM memories WHERE pinned = ?")).toBe(
       "SELECT * FROM memories WHERE pinned = $1"

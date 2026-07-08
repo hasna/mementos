@@ -154,6 +154,13 @@ export function translateSql(sql: string): string {
   );
   translated = translated.replace(/\bIFNULL\s*\(/gi, "COALESCE(");
 
+  // SQLite `INSTR(haystack, needle)` -> Postgres `STRPOS(string, substring)`.
+  // Same argument order and same semantics (1-based position, 0 when absent),
+  // so the `= 0` "not present" idiom in the graph-path recursive CTE is
+  // preserved. Postgres has no INSTR function, so without this the
+  // `graph path` recursive CTE errors out (500 on GET /v1/graph/path).
+  translated = translated.replace(/\bINSTR\s*\(/gi, "STRPOS(");
+
   if (/INSERT\s+OR\s+IGNORE\s+INTO/i.test(translated)) {
     translated = translated.replace(/INSERT\s+OR\s+IGNORE\s+INTO/gi, "INSERT INTO");
     translated = translated.replace(/;?\s*$/, " ON CONFLICT DO NOTHING");
