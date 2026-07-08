@@ -1253,6 +1253,10 @@ export function incrementRecallCount(id: string, db?: Database): void {
 // ============================================================================
 
 export function cleanExpiredMemories(db?: Database): number {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ cleaned: number }>("POST", "/memories/clean");
+    return data?.cleaned ?? 0;
+  }
   const d = db || getDatabase();
   const timestamp = now();
   // Count first — result.changes includes FTS5 trigger operations

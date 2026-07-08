@@ -16,7 +16,6 @@ import { registerMemoryHealthTools } from "./tools/memory-health.js";
 import { registerMemoryValidationTools } from "./tools/memory-validation.js";
 import { registerMemorySearchTools } from "./tools/memory-search.js";
 import { registerMemoryLifecycleTools } from "./tools/memory-lifecycle.js";
-import { registerMemorySyncTools } from "./tools/memory-sync.js";
 import { registerMemoryStatsTools } from "./tools/memory-stats.js";
 import { registerMemoryAuditTools } from "./tools/memory-audit.js";
 import { registerMemoryIoTools } from "./tools/memory-io.js";
@@ -88,7 +87,6 @@ When running with --dangerously-load-development-channels, mementos will proacti
   registerMemoryValidationTools(server);
   registerMemorySearchTools(server);
   registerMemoryLifecycleTools(server);
-  registerMemorySyncTools(server);
   registerMemoryStatsTools(server);
   registerMemoryAuditTools(server);
   registerMemoryIoTools(server);
