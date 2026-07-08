@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase } from "../db/database.js";
+import { isApiMode } from "../db/api-mode.js";
 import { registerProject, getProject } from "../db/projects.js";
 import type { Project } from "../types/index.js";
 
@@ -34,7 +35,6 @@ let _cachedProject: Project | null | undefined = undefined;
 export function detectProject(db?: Database): Project | null {
   if (_cachedProject !== undefined) return _cachedProject;
 
-  const d = db || getDatabase();
   const cwd = process.cwd();
   const gitRoot = findGitRoot(cwd);
 
@@ -45,6 +45,13 @@ export function detectProject(db?: Database): Project | null {
 
   const repoName = basename(gitRoot);
   const absPath = resolve(gitRoot);
+
+  // Resolve the storage handle lazily. In api mode we must NOT open a local
+  // sqlite database (that is the split-brain the fail-closed getDatabase guard
+  // rejects) — instead we pass no db handle so getProject/registerProject route
+  // the lookup + auto-registration through the cloud HTTP API. In local mode we
+  // materialize the on-box database as before. An explicit db (tests) wins.
+  const d = db ?? (isApiMode() ? undefined : getDatabase());
 
   // Check if already registered by path
   const existing = getProject(absPath, d);

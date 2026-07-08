@@ -1,5 +1,5 @@
 import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities, graphTraverse } from "../../db/entities.js";
-import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath, getGraphStats } from "../../db/relations.js";
+import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath, getGraphStats, getRelatedEntities } from "../../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import { getDatabase } from "../../db/database.js";
 import {
@@ -116,6 +116,24 @@ addRoute("GET", "/api/entities/:id/relations", (_req, url, params) => {
       direction: q["direction"] as "outgoing" | "incoming" | "both" | undefined,
     });
     return json({ relations, count: relations.length });
+  } catch (e) {
+    if (e instanceof EntityNotFoundError) {
+      return errorResponse(e.message, 404);
+    }
+    throw e;
+  }
+});
+
+// GET /api/entities/:id/related — list entities directly related to this one
+addRoute("GET", "/api/entities/:id/related", (_req, url, params) => {
+  const q = getSearchParams(url);
+  try {
+    getEntity(params["id"]!); // verify entity exists
+    const entities = getRelatedEntities(
+      params["id"]!,
+      q["type"] as RelationType | undefined,
+    );
+    return json({ entities, count: entities.length });
   } catch (e) {
     if (e instanceof EntityNotFoundError) {
       return errorResponse(e.message, 404);

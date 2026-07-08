@@ -175,6 +175,14 @@ export function getRelatedEntities(
   relationType?: RelationType,
   db?: Database
 ): Entity[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ type: relationType });
+    const { data } = apiJson<{ entities: Entity[] }>(
+      "GET",
+      `/entities/${encodeURIComponent(entityId)}/related${q}`,
+    );
+    return data?.entities ?? [];
+  }
   const d = db || getDatabase();
 
   let sql: string;
