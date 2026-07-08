@@ -96,6 +96,17 @@ export function resolveEntityArg(nameOrId: string, type?: EntityType): Entity {
   // Try by name first
   const byName = getEntityByName(nameOrId, type);
   if (byName) return byName;
+  // API mode: there is no local table to prefix-match, and opening local SQLite
+  // would trip the split-brain guard. Trust the arg as a (full) id and let the
+  // cloud resolve/404 it (routed getEntity). Never opens local SQLite.
+  if (isApiMode()) {
+    try {
+      return getEntity(nameOrId);
+    } catch {
+      console.error(chalk.red(`Entity not found: ${nameOrId}`));
+      process.exit(1);
+    }
+  }
   // Try partial ID
   const db = getDatabase();
   const id = resolvePartialId(db, "entities", nameOrId);

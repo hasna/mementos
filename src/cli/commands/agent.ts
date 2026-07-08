@@ -186,23 +186,29 @@ export function registerAgentCommands(program: Command): void {
     .description("Focus this agent on a project (or clear focus if no project given)")
     .option("--agent <id>", "Agent ID")
     .action((project?: string, opts?: { agent?: string }) => {
-      const globalOpts = program.opts() as { agent?: string };
-      const agentId = opts?.agent || globalOpts.agent;
-      if (!agentId) { process.stderr.write("Agent ID required. Use --agent.\n"); process.exit(1); }
-      // Resolve a project name/path to its canonical UUID before persisting.
-      // The store (local + cloud server) validates active_project_id by ID and
-      // only prefix-matches partial UUIDs, so a bare name/path would 400
-      // ("Project not found") in cloud. getProject() resolves by id/path/name in
-      // both transports; if it can't resolve (e.g. a partial-UUID prefix), pass
-      // the original through so the server's partial-ID matcher can finish the job.
-      let target: string | null = project ?? null;
-      if (project) {
-        const proj = getProject(project);
-        if (proj) target = proj.id;
+      try {
+        const globalOpts = program.opts() as { agent?: string };
+        const agentId = opts?.agent || globalOpts.agent;
+        if (!agentId) { process.stderr.write("Agent ID required. Use --agent.\n"); process.exit(1); }
+        // Resolve a project name/path to its canonical UUID before persisting.
+        // The store (local + cloud server) validates active_project_id by ID and
+        // only prefix-matches partial UUIDs, so a bare name/path would 400
+        // ("Project not found") in cloud. getProject() resolves by id/path/name in
+        // both transports; if it can't resolve (e.g. a partial-UUID prefix), pass
+        // the original through so the server's partial-ID matcher can finish the job.
+        let target: string | null = project ?? null;
+        if (project) {
+          const proj = getProject(project);
+          if (proj) target = proj.id;
+        }
+        setFocus(agentId, target);
+        if (project) console.log(chalk.green(`Focused: ${agentId} → project ${project}`));
+        else console.log(chalk.dim(`Focus cleared for ${agentId}`));
+      } catch (e) {
+        // Surface a clean one-line error (e.g. an unresolved project) instead of
+        // an uncaught ApiRequestError stack trace in either transport.
+        handleError(e);
       }
-      setFocus(agentId, target);
-      if (project) console.log(chalk.green(`Focused: ${agentId} → project ${project}`));
-      else console.log(chalk.dim(`Focus cleared for ${agentId}`));
     });
 
   // get-focus

@@ -14,6 +14,7 @@ import { listMemories } from "../../db/memories.js";
 import { listAgents } from "../../db/agents.js";
 import { listProjects } from "../../db/projects.js";
 import { loadConfig, getActiveProfile, listProfiles } from "../../lib/config.js";
+import { isApiMode, getApiConfig, apiJson } from "../../db/api-mode.js";
 import { outputJson, getPackageVersion, type GlobalOpts } from "../helpers.js";
 
 async function runCommandWithTimeout(
@@ -47,6 +48,14 @@ export function registerDoctorCommand(program: Command): void {
     .action(async () => {
       const globalOpts = program.opts<GlobalOpts>();
       const checks: { name: string; status: "ok" | "warn" | "fail"; detail: string }[] = [];
+
+      // API (self-hosted cloud) mode: opening a local SQLite file would trip the
+      // split-brain guard, so run a cloud-aware health path against the API
+      // instead of the local-DB checks below.
+      if (isApiMode()) {
+        await runCloudDoctor(globalOpts, checks);
+        return;
+      }
 
       // 1. Version
       const version = getPackageVersion();
@@ -280,6 +289,149 @@ export function registerDoctorCommand(program: Command): void {
 
       outputDoctorResults(globalOpts, checks);
     });
+}
+
+interface CloudHealth {
+  status?: string;
+  version?: string;
+  mode?: string;
+  profile?: string;
+  hostname?: string;
+  memories?: { total?: number; expired?: number; pinned?: number };
+  agents?: number;
+  projects?: number;
+}
+
+/**
+ * Cloud-aware doctor (API mode). Never opens local SQLite; checks the
+ * self-hosted HTTP API instead. Reuses the same output/exit-code contract as
+ * the local doctor: any `fail` makes the command exit 1.
+ */
+async function runCloudDoctor(
+  globalOpts: GlobalOpts,
+  checks: { name: string; status: "ok" | "warn" | "fail"; detail: string }[],
+): Promise<void> {
+  // 1. Version (local client package)
+  checks.push({ name: "Version", status: "ok", detail: getPackageVersion() });
+
+  // 2. Storage mode + API endpoint (never print the key)
+  const cfg = getApiConfig();
+  checks.push({
+    name: "Storage mode",
+    status: "ok",
+    detail: `self-hosted API (${cfg?.baseUrl ?? "unknown endpoint"})`,
+  });
+
+  // 3. Cloud health + data checks (single authed round-trip)
+  let healthy = false;
+  try {
+    const { status, data } = apiJson<CloudHealth>("GET", "/health");
+    healthy = status >= 200 && status < 300 && !!data;
+    if (healthy && data) {
+      const serverStatus = data.status === "warn" ? "warn" : "ok";
+      checks.push({
+        name: "Cloud connection",
+        status: serverStatus,
+        detail: `reachable — server v${data.version ?? "?"} (${data.status ?? "ok"})`,
+      });
+
+      const total = data.memories?.total ?? 0;
+      const expired = data.memories?.expired ?? 0;
+      checks.push({ name: "Memories", status: "ok", detail: `${total} total` });
+      checks.push({
+        name: "  Expired",
+        status: expired > 10 ? "warn" : "ok",
+        detail: expired > 10 ? `${expired} (run 'mementos clean' to remove)` : String(expired),
+      });
+      checks.push({ name: "Agents", status: "ok", detail: String(data.agents ?? 0) });
+      checks.push({ name: "Projects", status: "ok", detail: String(data.projects ?? 0) });
+    } else {
+      checks.push({ name: "Cloud connection", status: "fail", detail: "health endpoint returned no data" });
+    }
+  } catch (e) {
+    checks.push({
+      name: "Cloud connection",
+      status: "fail",
+      detail: e instanceof Error ? e.message : String(e),
+    });
+  }
+
+  // 4. Config file (local profile config — no DB access)
+  try {
+    loadConfig();
+    checks.push({ name: "Config", status: "ok", detail: "valid" });
+  } catch (e) {
+    checks.push({ name: "Config", status: "fail", detail: e instanceof Error ? e.message : String(e) });
+  }
+
+  // 5. Active profile (local)
+  try {
+    const activeProfile = getActiveProfile();
+    const profiles = listProfiles();
+    checks.push({
+      name: "Active profile",
+      status: "ok",
+      detail: activeProfile ? `${activeProfile} (${profiles.length} total)` : `default — ${profiles.length} profile(s) available`,
+    });
+  } catch (e) {
+    checks.push({ name: "Active profile", status: "warn", detail: e instanceof Error ? e.message : String(e) });
+  }
+
+  // 6. MCP registered with Claude Code (local install check)
+  try {
+    const { stdout: mcpOut, exitCode: mcpExit, timedOut } = await runCommandWithTimeout(
+      ["claude", "mcp", "list"],
+      1500,
+    );
+    if (timedOut) {
+      checks.push({ name: "MCP server", status: "warn", detail: "health check timed out" });
+    } else if (mcpExit === 0 && mcpOut.includes("mementos")) {
+      checks.push({ name: "MCP server", status: "ok", detail: "registered with Claude Code" });
+    } else if (mcpExit !== 0) {
+      checks.push({ name: "MCP server", status: "warn", detail: "claude not installed or not accessible" });
+    } else {
+      checks.push({ name: "MCP server", status: "warn", detail: "not registered  →  run: mementos init" });
+    }
+  } catch {
+    checks.push({ name: "MCP server", status: "warn", detail: "could not check (is claude CLI installed?)" });
+  }
+
+  // 7. Stop hook installed (local install check)
+  try {
+    const settingsFilePath = join(homedir(), ".claude", "settings.json");
+    if (existsSync(settingsFilePath)) {
+      const settings = JSON.parse(readFileSync(settingsFilePath, "utf-8")) as Record<string, unknown>;
+      const hooksObj = (settings["hooks"] || {}) as Record<string, unknown>;
+      const stopHooks = (hooksObj["Stop"] || []) as Array<{ hooks?: Array<{ command?: string }> }>;
+      const hasMementos = stopHooks.some((e) => e.hooks?.some((h) => h.command && h.command.includes("mementos")));
+      checks.push({
+        name: "Stop hook",
+        status: hasMementos ? "ok" : "warn",
+        detail: hasMementos ? "installed (sessions → memories)" : "not installed  →  run: mementos init",
+      });
+    } else {
+      checks.push({ name: "Stop hook", status: "warn", detail: "~/.claude/settings.json not found  →  run: mementos init" });
+    }
+  } catch {
+    checks.push({ name: "Stop hook", status: "warn", detail: "could not check stop hook" });
+  }
+
+  // 8. Auto-start (macOS launchd)
+  if (process.platform === "darwin") {
+    const plistFilePath = join(homedir(), "Library", "LaunchAgents", "com.hasna.mementos.plist");
+    checks.push({
+      name: "Auto-start",
+      status: existsSync(plistFilePath) ? "ok" : "warn",
+      detail: existsSync(plistFilePath) ? "configured (starts on login)" : "not configured  →  run: mementos init",
+    });
+  } else {
+    checks.push({ name: "Auto-start", status: "ok", detail: `n/a on ${process.platform}` });
+  }
+
+  outputDoctorResults(globalOpts, checks);
+  if (checks.some((c) => c.status === "fail")) {
+    process.exitCode = 1;
+  }
 }
 
 function outputDoctorResults(
