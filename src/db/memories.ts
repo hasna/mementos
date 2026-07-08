@@ -36,6 +36,27 @@ function runEntityExtraction(_memory: Memory, _projectId: string | undefined, _d
   // See src/lib/auto-memory.ts → linkEntitiesToMemory()
 }
 
+/**
+ * Persist a non-default content_type on a freshly written memory. Applied as a
+ * follow-up UPDATE (mirroring the trust_score pattern) so the hand-rolled test
+ * schemas that omit the column keep working; production and the cloud server
+ * carry `content_type` via migration 20.
+ */
+function applyContentType(
+  d: Database,
+  id: string,
+  memory: Memory,
+  contentType?: CreateMemoryInput["content_type"],
+): void {
+  if (!contentType || contentType === "text") return;
+  try {
+    d.run("UPDATE memories SET content_type = ? WHERE id = ?", [contentType, id]);
+    memory.content_type = contentType;
+  } catch {
+    // content_type column may not exist in test schemas — ignore
+  }
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -198,6 +219,7 @@ export function createMemory(
       }
 
       const merged = getMemory(existing.id, d)!;
+      applyContentType(d, existing.id, merged, input.content_type);
 
       // Compute and store trust_score for poisoning detection
       try {
@@ -274,6 +296,7 @@ export function createMemory(
   }
 
   const memory = getMemory(id, d)!;
+  applyContentType(d, id, memory, input.content_type);
 
   // Compute and store trust_score for poisoning detection
   try {
@@ -800,6 +823,115 @@ export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
   return rows.map(parseMemoryRow);
 }
 
+export interface MemoryBriefingResult {
+  new: Memory[];
+  updated: Memory[];
+  expired: Memory[];
+}
+
+/**
+ * Delta briefing: memories created / updated / expired since a timestamp,
+ * scoped by machine visibility. Transport-aware: in API mode the whole
+ * computation runs on the self-hosted server (the client has no DB).
+ *
+ * `visible_machine_id`: a resolved value (the caller resolves its own current
+ * machine). `null`/`undefined` restricts to machine-agnostic memories; a string
+ * also includes memories local to that machine.
+ */
+export function getMemoryBriefing(
+  opts: {
+    since: string;
+    scope?: string;
+    project_id?: string;
+    visible_machine_id?: string | null;
+    limit?: number;
+  },
+  db?: Database
+): MemoryBriefingResult {
+  const limit = opts.limit ?? 20;
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      since: opts.since,
+      scope: opts.scope,
+      project_id: opts.project_id,
+      machine_agnostic: opts.visible_machine_id === null || opts.visible_machine_id === undefined ? true : undefined,
+      visible_machine_id: typeof opts.visible_machine_id === "string" ? opts.visible_machine_id : undefined,
+      limit,
+    });
+    const { data } = apiJson<MemoryBriefingResult>("GET", `/memories/briefing${q}`);
+    return data ?? { new: [], updated: [], expired: [] };
+  }
+  const d = db || getDatabase();
+
+  const visibleMachineId = opts.visible_machine_id;
+  const scopeClause = opts.scope ? "AND scope = ?" : "";
+  const projectClause = opts.project_id ? "AND project_id = ?" : "";
+  const machineClause =
+    typeof visibleMachineId === "string"
+      ? "AND (machine_id IS NULL OR machine_id = ?)"
+      : "AND machine_id IS NULL";
+  const extraParams: SQLQueryBindings[] = [
+    ...(opts.scope ? [opts.scope] : []),
+    ...(opts.project_id ? [opts.project_id] : []),
+    ...(typeof visibleMachineId === "string" ? [visibleMachineId] : []),
+  ];
+
+  const newRows = d.prepare(
+    `SELECT * FROM memories
+     WHERE status = 'active' AND created_at > ? ${scopeClause} ${projectClause} ${machineClause}
+     ORDER BY importance DESC, created_at DESC LIMIT ?`
+  ).all(opts.since, ...extraParams, limit) as Record<string, unknown>[];
+
+  const updatedRows = d.prepare(
+    `SELECT * FROM memories
+     WHERE status = 'active' AND updated_at > ? AND created_at <= ? ${scopeClause} ${projectClause} ${machineClause}
+     ORDER BY importance DESC, updated_at DESC LIMIT ?`
+  ).all(opts.since, opts.since, ...extraParams, limit) as Record<string, unknown>[];
+
+  const expiredRows = d.prepare(
+    `SELECT * FROM memories
+     WHERE status != 'active' AND updated_at > ? ${scopeClause} ${projectClause} ${machineClause}
+     ORDER BY updated_at DESC LIMIT ?`
+  ).all(opts.since, ...extraParams, Math.min(limit, 10)) as Record<string, unknown>[];
+
+  return {
+    new: newRows.map(parseMemoryRow),
+    updated: updatedRows.map(parseMemoryRow),
+    expired: expiredRows.map(parseMemoryRow),
+  };
+}
+
+/**
+ * Low-trust memories (trust_score below a threshold) for poisoning review.
+ * Transport-aware: API mode reads from the self-hosted server.
+ */
+export function listLowTrustMemories(
+  opts: { threshold?: number; project_id?: string; limit?: number; offset?: number } = {},
+  db?: Database
+): Memory[] {
+  const threshold = opts.threshold ?? 0.8;
+  const limit = opts.limit ?? 20;
+  const offset = opts.offset ?? 0;
+  if (!db && isApiMode()) {
+    const q = toQuery({ threshold, project_id: opts.project_id, limit, offset });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories/audit${q}`);
+    return data?.memories ?? [];
+  }
+  const d = db || getDatabase();
+  const conditions: string[] = ["trust_score < ?", "status = 'active'"];
+  const params: SQLQueryBindings[] = [threshold];
+  if (opts.project_id) {
+    const resolved = resolvePartialId(d, "projects", opts.project_id);
+    conditions.push("project_id = ?");
+    params.push(resolved ?? opts.project_id);
+  }
+  params.push(limit, offset);
+  const rows = d.prepare(
+    `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY trust_score ASC LIMIT ? OFFSET ?`
+  ).all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
+}
+
 /**
  * List memories ordered by most-recently-accessed (the `history` surface).
  * Only returns memories that have been accessed at least once.
@@ -1214,6 +1346,7 @@ export async function semanticSearch(
     scope?: string;
     agent_id?: string;
     project_id?: string;
+    index_missing?: boolean;
   } = {},
   db?: Database
 ): Promise<SemanticSearchResult[]> {
@@ -1223,6 +1356,23 @@ export async function semanticSearch(
   }
   const d = db || getDatabase();
   const { threshold = 0.5, limit = 10, scope, agent_id, project_id } = options;
+
+  // Optionally backfill embeddings for any active memories that lack one, so a
+  // freshly-populated store can be searched semantically on first call. This is
+  // a store-side (local/server) operation; in API mode it runs on the server
+  // via the forwarded index_missing flag above.
+  if (options.index_missing) {
+    const unindexed = d.prepare(
+      `SELECT id, value, summary, when_to_use FROM memories
+       WHERE status = 'active' AND id NOT IN (SELECT memory_id FROM memory_embeddings)
+       LIMIT 100`
+    ).all() as Array<{ id: string; value: string; summary: string | null; when_to_use: string | null }>;
+    await Promise.all(
+      unindexed.map((m) =>
+        indexMemoryEmbedding(m.id, m.when_to_use || [m.value, m.summary].filter(Boolean).join(" "), d)
+      )
+    );
+  }
 
   // Generate query embedding
   const { embedding: queryEmbedding } = await generateEmbedding(queryText);

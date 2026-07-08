@@ -18,11 +18,20 @@
 //     is forbidden; the operator must remove it). This keeps the two transports
 //     mutually exclusive and never silently mixes them.
 //
-// Transport: a synchronous HTTP request via `Bun.spawnSync(["bash","-c", …])`
-// wrapping `curl`. The domain functions in this codebase are synchronous, so
-// the client transport must be too. The API key is passed to curl through the
-// child ENV (never argv), so it can't leak via `ps`/argv and is never logged.
+// Transport: a synchronous HTTP request via `Bun.spawnSync(["curl", …])`. The
+// domain functions in this codebase are synchronous, so the client transport
+// must be too. curl is spawned DIRECTLY (no `bash -c`), and the bearer key is
+// fed to curl on stdin via `-H @-` (curl reads one header line per stdin line).
+// The key therefore never appears in argv (`ps`/`/proc/<pid>/cmdline`) nor in
+// the child's environment, and is never logged. The request body, when present,
+// is written to a private 0600 temp file passed as `--data-binary @<file>` and
+// removed immediately after the call, so it never touches argv either.
 // ============================================================================
+
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { writeFileSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 export interface ApiConfig {
   baseUrl: string; // normalized, includes the /v1 (or /api) prefix, no trailing slash
@@ -86,8 +95,9 @@ const DEFAULT_TIMEOUT_S = "45";
 
 /**
  * Synchronous authed HTTP request to the cloud API. Returns the raw status +
- * body. The API key is injected via child ENV, never argv. Body (if any) is
- * streamed on stdin so it never appears in argv either.
+ * body. The bearer key is fed to curl on stdin (`-H @-`) so it never appears in
+ * argv or the environment. The body (if any) is written to a private 0600 temp
+ * file and passed as `--data-binary @file` so it never appears in argv either.
  */
 function apiRequestRaw(method: string, path: string, body?: unknown): RawResponse {
   const cfg = getApiConfig();
@@ -95,40 +105,69 @@ function apiRequestRaw(method: string, path: string, body?: unknown): RawRespons
 
   const url = `${cfg.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
   const hasBody = body !== undefined && body !== null;
-  const payload = hasBody ? JSON.stringify(body) : "";
+  const timeout = process.env["HASNA_MEMENTOS_API_TIMEOUT"] || DEFAULT_TIMEOUT_S;
 
-  // curl reads config (which carries the secret + url) from fd 3 via `-K /dev/fd/3`,
-  // and the request body from stdin. Neither the key nor the body touch argv.
-  const script = [
-    "curl -sS --fail-with-body",
-    `-m "$MEM_API_TIMEOUT"`,
-    `-X "$MEM_API_METHOD"`,
-    `-H "Authorization: Bearer $MEM_API_KEY"`,
-    `-H "x-api-key: $MEM_API_KEY"`,
-    `-H "Content-Type: application/json"`,
-    `-H "Accept: application/json"`,
-    hasBody ? "--data-binary @-" : "",
-    `-w '\\n%{http_code}'`,
-    `"$MEM_API_URL"`,
-  ]
-    .filter(Boolean)
-    .join(" ");
+  // Secret headers are read by curl from stdin via `-H @-` (one header per
+  // line). The key is NEVER placed on argv or in the process environment, so it
+  // cannot leak via `ps` / `/proc/<pid>/cmdline` / `/proc/<pid>/environ`.
+  const headerLines = `Authorization: Bearer ${cfg.apiKey}\nx-api-key: ${cfg.apiKey}\n`;
 
-  const proc = Bun.spawnSync(["bash", "-c", script], {
-    stdin: hasBody ? Buffer.from(payload) : undefined,
-    env: {
-      ...process.env,
-      MEM_API_KEY: cfg.apiKey,
-      MEM_API_URL: url,
-      MEM_API_METHOD: method,
-      MEM_API_TIMEOUT: process.env["HASNA_MEMENTOS_API_TIMEOUT"] || DEFAULT_TIMEOUT_S,
-    },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  // Only non-secret values ever reach argv (method, url, timeout, static headers).
+  const args = [
+    "curl",
+    "-sS",
+    "--fail-with-body",
+    "-m",
+    timeout,
+    "-X",
+    method,
+    "-H",
+    "@-", // read the auth headers from stdin
+    "-H",
+    "Content-Type: application/json",
+    "-H",
+    "Accept: application/json",
+    "-w",
+    "\\n%{http_code}",
+  ];
 
-  const out = proc.stdout ? new TextDecoder().decode(proc.stdout) : "";
-  const err = proc.stderr ? new TextDecoder().decode(proc.stderr) : "";
+  let bodyFile: string | undefined;
+  if (hasBody) {
+    bodyFile = join(tmpdir(), `mem-req-${process.pid}-${randomUUID()}.json`);
+    writeFileSync(bodyFile, JSON.stringify(body), { mode: 0o600 });
+    args.push("--data-binary", `@${bodyFile}`);
+  }
+  args.push(url);
+
+  // Hand curl an environment with the key vars stripped, so the secret is not
+  // even present in the child's `/proc/<pid>/environ` (it travels only on stdin).
+  const childEnv: Record<string, string> = {};
+  for (const [k, v] of Object.entries(process.env)) {
+    if (v === undefined) continue;
+    if (k === "HASNA_MEMENTOS_API_KEY" || k === "MEMENTOS_API_KEY") continue;
+    childEnv[k] = v;
+  }
+
+  let out = "";
+  let err = "";
+  try {
+    const proc = Bun.spawnSync(args, {
+      stdin: Buffer.from(headerLines),
+      stdout: "pipe",
+      stderr: "pipe",
+      env: childEnv,
+    });
+    out = proc.stdout ? new TextDecoder().decode(proc.stdout) : "";
+    err = proc.stderr ? new TextDecoder().decode(proc.stderr) : "";
+  } finally {
+    if (bodyFile) {
+      try {
+        unlinkSync(bodyFile);
+      } catch {
+        // temp file already gone — nothing to clean up
+      }
+    }
+  }
 
   // curl exit 7/28/etc → transport failure (server unreachable / timeout).
   // With --fail-with-body, a non-2xx still returns exit!=0 but we parse the code.

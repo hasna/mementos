@@ -1,4 +1,4 @@
-import { listMemories, createMemory, cleanExpiredMemories, touchMemory } from "../../db/memories.js";
+import { listMemories, createMemory, cleanExpiredMemories, touchMemory, getMemoryBriefing, listLowTrustMemories } from "../../db/memories.js";
 import { getDbPath } from "../../lib/config.js";
 import {
   resolveVisibleMachineId,
@@ -6,11 +6,43 @@ import {
 } from "../../lib/machine-visibility.js";
 import type { Memory, MemoryCategory, CreateMemoryInput } from "../../types/index.js";
 import { addRoute } from "../router.js";
-import { json, readJson, getSearchParams } from "../helpers.js";
+import { json, readJson, errorResponse, getSearchParams } from "../helpers.js";
 
 // GET /api/health — simple health
 addRoute("GET", "/api/health", () => {
   return json({ ok: true, version: "1", db: getDbPath() });
+});
+
+// GET /api/memories/briefing — delta briefing (new/updated/expired since a ts).
+// The client sends its own resolved machine visibility so cross-machine callers
+// see machine-agnostic + their-own-machine memories, never the server's.
+addRoute("GET", "/api/memories/briefing", (_req, url) => {
+  const q = getSearchParams(url);
+  const since = q["since"];
+  if (!since) return errorResponse("Missing required field: since", 400);
+  let visibleMachineId: string | null | undefined;
+  if (q["machine_agnostic"] === "true") visibleMachineId = null;
+  else if (q["visible_machine_id"]) visibleMachineId = q["visible_machine_id"];
+  const result = getMemoryBriefing({
+    since,
+    scope: q["scope"] || undefined,
+    project_id: q["project_id"] || undefined,
+    visible_machine_id: visibleMachineId,
+    limit: q["limit"] ? parseInt(q["limit"], 10) : undefined,
+  });
+  return json(result);
+});
+
+// GET /api/memories/audit — low-trust memories for poisoning review
+addRoute("GET", "/api/memories/audit", (_req, url) => {
+  const q = getSearchParams(url);
+  const memories = listLowTrustMemories({
+    threshold: q["threshold"] ? parseFloat(q["threshold"]) : undefined,
+    project_id: q["project_id"] || undefined,
+    limit: q["limit"] ? parseInt(q["limit"], 10) : undefined,
+    offset: q["offset"] ? parseInt(q["offset"], 10) : undefined,
+  });
+  return json({ memories, count: memories.length });
 });
 
 // POST /api/memories/extract — extract memories from a session summary
