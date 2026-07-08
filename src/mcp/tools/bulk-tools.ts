@@ -5,18 +5,11 @@ import {
   updateMemory,
   bulkDeleteMemories,
 } from "../../db/memories.js";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { resolveId } from "./memory-utils.js";
 
 function formatError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-function resolveId(partialId: string, table = "memories"): string {
-  const db = getDatabase();
-  const id = resolvePartialId(db, table, partialId);
-  if (!id) throw new Error(`Could not resolve ID: ${partialId}`);
-  return id;
 }
 
 export function registerBulkTools(server: McpServer): void {

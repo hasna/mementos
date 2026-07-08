@@ -307,3 +307,59 @@ export function findPath(
 
   return entities.length > 0 ? entities : null;
 }
+
+// ============================================================================
+// Graph statistics
+// ============================================================================
+
+export interface GraphStats {
+  entities: { total: number; by_type: Record<string, number> };
+  relations: { total: number; by_type: Record<string, number> };
+  memory_links: number;
+  orphan_entities: number;
+  avg_degree: number;
+  most_connected: { id: string; name: string; type: string; degree: number }[];
+}
+
+export function getGraphStats(db?: Database): GraphStats {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<GraphStats>("GET", "/graph/stats");
+    return {
+      entities: data?.entities ?? { total: 0, by_type: {} },
+      relations: data?.relations ?? { total: 0, by_type: {} },
+      memory_links: data?.memory_links ?? 0,
+      orphan_entities: data?.orphan_entities ?? 0,
+      avg_degree: data?.avg_degree ?? 0,
+      most_connected: data?.most_connected ?? [],
+    };
+  }
+  const d = db || getDatabase();
+  const entityTotal = (d.query("SELECT COUNT(*) as c FROM entities").get() as { c: number }).c;
+  const byType = d.query("SELECT type, COUNT(*) as c FROM entities GROUP BY type").all() as { type: string; c: number }[];
+  const relationTotal = (d.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }).c;
+  const byRelType = d.query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type").all() as { relation_type: string; c: number }[];
+  const linkTotal = (d.query("SELECT COUNT(*) as c FROM entity_memories").get() as { c: number }).c;
+
+  const mostConnected = d.query(`
+    SELECT e.id, e.name, e.type,
+      (SELECT COUNT(*) FROM relations WHERE source_entity_id = e.id) +
+      (SELECT COUNT(*) FROM relations WHERE target_entity_id = e.id) as degree
+    FROM entities e ORDER BY degree DESC LIMIT 10
+  `).all() as { id: string; name: string; type: string; degree: number }[];
+
+  const orphanCount = (d.query(`
+    SELECT COUNT(*) as c FROM entities e
+    WHERE NOT EXISTS (SELECT 1 FROM relations WHERE source_entity_id = e.id OR target_entity_id = e.id)
+  `).get() as { c: number }).c;
+
+  const avgDegree = entityTotal > 0 ? (relationTotal * 2) / entityTotal : 0;
+
+  return {
+    entities: { total: entityTotal, by_type: Object.fromEntries(byType.map((r) => [r.type, r.c])) },
+    relations: { total: relationTotal, by_type: Object.fromEntries(byRelType.map((r) => [r.relation_type, r.c])) },
+    memory_links: linkTotal,
+    orphan_entities: orphanCount,
+    avg_degree: avgDegree,
+    most_connected: mostConnected,
+  };
+}

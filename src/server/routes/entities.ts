@@ -1,5 +1,5 @@
 import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities } from "../../db/entities.js";
-import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../../db/relations.js";
+import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath, getGraphStats } from "../../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import { getDatabase } from "../../db/database.js";
 import {
@@ -242,31 +242,7 @@ addRoute("GET", "/api/graph/path", (_req, url) => {
 
 // GET /api/graph/stats — entity/relation counts by type
 addRoute("GET", "/api/graph/stats", () => {
-  const db = getDatabase();
-
-  const entityCount = (
-    db.query("SELECT COUNT(*) as c FROM entities").get() as { c: number }
-  ).c;
-  const relationCount = (
-    db.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }
-  ).c;
-  const entitiesByType = db
-    .query("SELECT type, COUNT(*) as c FROM entities GROUP BY type")
-    .all() as { type: string; c: number }[];
-  const relationsByType = db
-    .query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type")
-    .all() as { relation_type: string; c: number }[];
-
-  return json({
-    entities: {
-      total: entityCount,
-      by_type: Object.fromEntries(entitiesByType.map((r) => [r.type, r.c])),
-    },
-    relations: {
-      total: relationCount,
-      by_type: Object.fromEntries(relationsByType.map((r) => [r.relation_type, r.c])),
-    },
-  });
+  return json(getGraphStats(getDatabase()));
 });
 
 // GET /api/graph/:entityId — get connected graph

@@ -800,6 +800,92 @@ export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
   return rows.map(parseMemoryRow);
 }
 
+/**
+ * List memories ordered by most-recently-accessed (the `history` surface).
+ * Only returns memories that have been accessed at least once.
+ */
+export function listMemoryHistory(
+  opts: { limit?: number; offset?: number } = {},
+  db?: Database
+): Memory[] {
+  const limit = opts.limit ?? 20;
+  const offset = opts.offset ?? 0;
+  if (!db && isApiMode()) {
+    const q = toQuery({ limit, offset });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories/history${q}`);
+    return data?.memories ?? [];
+  }
+  const d = db || getDatabase();
+  const params: SQLQueryBindings[] = [limit];
+  let sql =
+    "SELECT * FROM memories WHERE status = 'active' AND accessed_at IS NOT NULL ORDER BY accessed_at DESC LIMIT ?";
+  if (offset) {
+    sql += " OFFSET ?";
+    params.push(offset);
+  }
+  const rows = d.query(sql).all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
+}
+
+/**
+ * Retrieve an ordered memory chain by sequence_group (the `chain` surface).
+ */
+export function getMemoryChain(
+  sequenceGroup: string,
+  projectId?: string,
+  db?: Database
+): Memory[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ project_id: projectId });
+    // Server returns already-parsed Memory objects (like /memories), so use them
+    // directly rather than re-running parseMemoryRow over a parsed shape.
+    const { data } = apiJson<{ chain: Memory[] }>(
+      "GET",
+      `/chains/${encodeURIComponent(sequenceGroup)}${q}`
+    );
+    return data?.chain ?? [];
+  }
+  const d = db || getDatabase();
+  const conditions = ["sequence_group = ?", "status = 'active'"];
+  const params: SQLQueryBindings[] = [sequenceGroup];
+  if (projectId) {
+    conditions.push("project_id = ?");
+    params.push(projectId);
+  }
+  const rows = d
+    .prepare(
+      `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY sequence_order ASC`
+    )
+    .all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
+}
+
+/**
+ * Load stored embeddings for a set of memory ids, for in-process re-ranking.
+ * API mode has no local embeddings table (the cloud store owns embeddings and
+ * ranks server-side), so it returns an empty map and callers gracefully fall
+ * back to importance/recency ordering.
+ */
+export function getMemoryEmbeddings(ids: string[], db?: Database): Map<string, number[]> {
+  const map = new Map<string, number[]>();
+  if (ids.length === 0) return map;
+  if (!db && isApiMode()) return map;
+  const d = db || getDatabase();
+  const rows = d
+    .prepare(
+      `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${ids.map(() => "?").join(",")})`
+    )
+    .all(...(ids as SQLQueryBindings[])) as Array<{ memory_id: string; embedding: string }>;
+  for (const row of rows) {
+    try {
+      map.set(row.memory_id, deserializeEmbedding(row.embedding));
+    } catch {
+      // skip malformed embedding
+    }
+  }
+  return map;
+}
+
 // ============================================================================
 // Update
 // ============================================================================
@@ -959,8 +1045,12 @@ export function deleteMemory(id: string, db?: Database): boolean {
 }
 
 export function bulkDeleteMemories(ids: string[], db?: Database): number {
-  const d = db || getDatabase();
   if (ids.length === 0) return 0;
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ deleted: number; total: number }>("POST", "/memories/bulk-forget", { ids });
+    return data?.deleted ?? 0;
+  }
+  const d = db || getDatabase();
 
   const placeholders = ids.map(() => "?").join(",");
   // Count first — result.changes includes FTS5 trigger operations

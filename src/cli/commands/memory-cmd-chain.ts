@@ -1,7 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getDatabase } from "../../db/database.js";
-import { parseMemoryRow } from "../../db/memories.js";
+import { getMemoryChain } from "../../db/memories.js";
 import { outputJson, makeHandleError, type GlobalOpts } from "../helpers.js";
 
 export function registerChainCommand(program: Command): void {
@@ -13,15 +12,8 @@ export function registerChainCommand(program: Command): void {
     .action((sequenceGroup: string) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const db = getDatabase();
 
-        const rows = db
-          .query(
-            "SELECT * FROM memories WHERE sequence_group = ? AND status = 'active' ORDER BY sequence_order ASC"
-          )
-          .all(sequenceGroup) as Record<string, unknown>[];
-
-        const memories = rows.map(parseMemoryRow);
+        const memories = getMemoryChain(sequenceGroup);
 
         if (globalOpts.json) {
           outputJson(memories);

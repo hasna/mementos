@@ -1,7 +1,9 @@
 import type { SystemToolDeps, CreateMemoryInput } from "./system-tools-shared.js";
 import { getStorageConnectionString } from "../../storage.js";
+import { createSubscription, deleteSubscription } from "../../db/subscriptions.js";
+import { saveFeedback } from "../../db/feedback.js";
 
-export function registerSystemEventTools({ server, z, createMemory, getDatabase, saveToolEvent, formatError }: SystemToolDeps): void {
+export function registerSystemEventTools({ server, z, createMemory, saveToolEvent, formatError }: SystemToolDeps): void {
   server.tool(
     "memory_subscribe",
     "Subscribe an agent to memory change notifications. Matches by key pattern (glob) and/or tag pattern.",
@@ -16,18 +18,17 @@ export function registerSystemEventTools({ server, z, createMemory, getDatabase,
         if (!args.key_pattern && !args.tag_pattern) {
           return { content: [{ type: "text" as const, text: "Error: Provide at least one of key_pattern or tag_pattern" }], isError: true };
         }
-        const db = getDatabase();
-        const id = crypto.randomUUID().slice(0, 8);
-        db.run(
-          `INSERT INTO memory_subscriptions (id, agent_id, key_pattern, tag_pattern, scope, created_at)
-           VALUES (?, ?, ?, ?, ?, datetime('now'))`,
-          [id, args.agent_id, args.key_pattern || null, args.tag_pattern || null, args.scope || null]
-        );
-        return { content: [{ type: "text" as const, text: JSON.stringify({
-          subscription_id: id,
+        const sub = createSubscription({
           agent_id: args.agent_id,
           key_pattern: args.key_pattern || null,
           tag_pattern: args.tag_pattern || null,
+          scope: args.scope || null,
+        });
+        return { content: [{ type: "text" as const, text: JSON.stringify({
+          subscription_id: sub.id,
+          agent_id: sub.agent_id,
+          key_pattern: sub.key_pattern,
+          tag_pattern: sub.tag_pattern,
         }) }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
@@ -43,9 +44,8 @@ export function registerSystemEventTools({ server, z, createMemory, getDatabase,
     },
     async (args) => {
       try {
-        const db = getDatabase();
-        const result = db.run("DELETE FROM memory_subscriptions WHERE id = ?", [args.id]);
-        if (result.changes === 0) {
+        const removed = deleteSubscription(args.id);
+        if (!removed) {
           return { content: [{ type: "text" as const, text: `Subscription not found: ${args.id}` }], isError: true };
         }
         return { content: [{ type: "text" as const, text: `Unsubscribed: ${args.id}` }] };
@@ -120,13 +120,15 @@ export function registerSystemEventTools({ server, z, createMemory, getDatabase,
     },
     async (params) => {
       try {
-        const db = getDatabase();
         const { createRequire } = await import("node:module");
         const _require = createRequire(import.meta.url);
         const pkg = _require("../../../package.json") as { version: string };
-        db.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [
-          params.message, params.email || null, params.category || "general", pkg.version,
-        ]);
+        saveFeedback({
+          message: params.message,
+          email: params.email || null,
+          category: params.category || "general",
+          version: pkg.version,
+        });
         return { content: [{ type: "text" as const, text: "Feedback saved. Thank you!" }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: String(e) }], isError: true };

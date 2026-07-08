@@ -1,4 +1,6 @@
 import { saveToolEvent, getToolEvents, getToolStats, getToolLessons } from "../../db/tool-events.js";
+import { saveFeedback } from "../../db/feedback.js";
+import { getDatabase } from "../../db/database.js";
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson, getSearchParams } from "../helpers.js";
 import type { CreateToolEventInput } from "../../types/index.js";
@@ -12,6 +14,24 @@ export function registerSystemToolRoutes(): void {
 
     const event = saveToolEvent(body as unknown as CreateToolEventInput);
     return json(event, 201);
+  });
+
+  // POST /api/feedback — record user feedback
+  addRoute("POST", "/api/feedback", async (req) => {
+    const body = (await readJson(req)) as Record<string, unknown> | null;
+    if (!body || typeof body["message"] !== "string" || !body["message"].trim()) {
+      return errorResponse("Missing required field: message", 400);
+    }
+    saveFeedback(
+      {
+        message: body["message"] as string,
+        email: (body["email"] as string | null) ?? null,
+        category: (body["category"] as string | null) ?? "general",
+        version: (body["version"] as string | null) ?? null,
+      },
+      getDatabase()
+    );
+    return json({ ok: true }, 201);
   });
 
   addRoute("GET", "/api/tool-events", (_req: Request, url: URL) => {

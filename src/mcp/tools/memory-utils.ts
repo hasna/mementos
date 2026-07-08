@@ -67,6 +67,18 @@ export function resolveId(partialId: string, table = "memories"): string {
   return id;
 }
 
+/**
+ * Best-effort partial-id resolution that never throws: returns the resolved id
+ * locally, or the input as-is when it cannot be expanded (and always as-is in
+ * API mode, where the server does the resolution). Returns undefined for empty
+ * input. Routes through the Store — no direct SQLite access in API mode.
+ */
+export function resolveOptionalId(partialId: string | undefined, table = "memories"): string | undefined {
+  if (!partialId) return undefined;
+  if (isApiMode()) return partialId;
+  return resolvePartialId(getDatabase(), table, partialId) ?? partialId;
+}
+
 // ============================================================================
 // Memory formatting
 // ============================================================================
