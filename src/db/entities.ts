@@ -1,6 +1,6 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
-import { getDatabase, now, shortUuid } from "./database.js";
+import { getDatabase, now, shortUuid, resolvePartialId } from "./database.js";
 import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 import type {
   Entity,
@@ -112,7 +112,13 @@ export function getEntity(id: string, db?: Database): Entity {
     return data;
   }
   const d = db || getDatabase();
-  const row = d.query("SELECT * FROM entities WHERE id = ?").get(id) as
+  // Resolve a partial-ID prefix to the full id. In local mode the CLI
+  // pre-resolves via resolvePartialId, but in API mode the client cannot
+  // prefix-match (no local table), so `entity show` / `graph show` /
+  // `relation list <partial-id>` reach the server with a prefix. Resolving
+  // here makes those work against the cloud exactly as they do locally.
+  const resolvedId = resolvePartialId(d, "entities", id) ?? id;
+  const row = d.query("SELECT * FROM entities WHERE id = ?").get(resolvedId) as
     | Record<string, unknown>
     | null;
   if (!row) throw new EntityNotFoundError(id);
@@ -301,45 +307,69 @@ export function mergeEntities(
   }
   const d = db || getDatabase();
 
-  // Verify both exist
-  getEntity(sourceId, d);
-  getEntity(targetId, d);
+  // Verify both exist and canonicalize to full ids (callers may pass partials).
+  const src = getEntity(sourceId, d).id;
+  const tgt = getEntity(targetId, d).id;
 
-  // Move relations where source is the source_entity_id
-  // Skip duplicates (unique constraint on source_entity_id, target_entity_id, relation_type)
+  // Move relations where source is the source_entity_id, without duplicating an
+  // existing target relation. SQLite's `UPDATE OR IGNORE` is NOT valid Postgres
+  // syntax (it 500s on the cloud server), so this is done in two portable steps:
+  // first delete the source rows that would collide with the unique constraint
+  // (source_entity_id, target_entity_id, relation_type), then move the rest.
   d.run(
-    `UPDATE OR IGNORE relations SET source_entity_id = ? WHERE source_entity_id = ?`,
-    [targetId, sourceId]
+    `DELETE FROM relations
+       WHERE source_entity_id = ?
+         AND EXISTS (
+           SELECT 1 FROM relations e
+           WHERE e.source_entity_id = ?
+             AND e.target_entity_id = relations.target_entity_id
+             AND e.relation_type = relations.relation_type
+         )`,
+    [src, tgt]
   );
+  d.run(`UPDATE relations SET source_entity_id = ? WHERE source_entity_id = ?`, [tgt, src]);
 
-  // Move relations where source is the target_entity_id
+  // Move relations where source is the target_entity_id, same collision guard.
   d.run(
-    `UPDATE OR IGNORE relations SET target_entity_id = ? WHERE target_entity_id = ?`,
-    [targetId, sourceId]
+    `DELETE FROM relations
+       WHERE target_entity_id = ?
+         AND EXISTS (
+           SELECT 1 FROM relations e
+           WHERE e.target_entity_id = ?
+             AND e.source_entity_id = relations.source_entity_id
+             AND e.relation_type = relations.relation_type
+         )`,
+    [src, tgt]
   );
+  d.run(`UPDATE relations SET target_entity_id = ? WHERE target_entity_id = ?`, [tgt, src]);
 
-  // Clean up any remaining relations that couldn't be moved (duplicates)
-  d.run("DELETE FROM relations WHERE source_entity_id = ? OR target_entity_id = ?", [
-    sourceId,
-    sourceId,
-  ]);
+  // Safety net: drop any relation still referencing the source (e.g. leftovers).
+  d.run("DELETE FROM relations WHERE source_entity_id = ? OR target_entity_id = ?", [src, src]);
 
-  // Move entity_memories — skip duplicates (PK on entity_id, memory_id)
+  // Move entity_memories, skipping links that would duplicate the PK
+  // (entity_id, memory_id) on the target.
   d.run(
-    `UPDATE OR IGNORE entity_memories SET entity_id = ? WHERE entity_id = ?`,
-    [targetId, sourceId]
+    `DELETE FROM entity_memories
+       WHERE entity_id = ?
+         AND EXISTS (
+           SELECT 1 FROM entity_memories e
+           WHERE e.entity_id = ?
+             AND e.memory_id = entity_memories.memory_id
+         )`,
+    [src, tgt]
   );
+  d.run(`UPDATE entity_memories SET entity_id = ? WHERE entity_id = ?`, [tgt, src]);
 
-  // Clean up remaining entity_memories that couldn't be moved
-  d.run("DELETE FROM entity_memories WHERE entity_id = ?", [sourceId]);
+  // Safety net: drop any entity_memory still referencing the source.
+  d.run("DELETE FROM entity_memories WHERE entity_id = ?", [src]);
 
   // Delete the source entity
-  d.run("DELETE FROM entities WHERE id = ?", [sourceId]);
+  d.run("DELETE FROM entities WHERE id = ?", [src]);
 
   // Update target's updated_at
-  d.run("UPDATE entities SET updated_at = ? WHERE id = ?", [now(), targetId]);
+  d.run("UPDATE entities SET updated_at = ? WHERE id = ?", [now(), tgt]);
 
-  return getEntity(targetId, d);
+  return getEntity(tgt, d);
 }
 
 // ============================================================================
