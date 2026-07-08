@@ -7,6 +7,31 @@ import { Worker } from "node:worker_threads";
 import pg from "pg";
 import type { Pool, PoolClient } from "pg";
 
+// ============================================================================
+// Server-only DSN boundary (project CLAUDE.md §2, NON-NEGOTIABLE)
+//
+// The raw RDS Postgres DSN is a SERVER concern and must NEVER be constructed or
+// used on a client machine. Only the `mementos-serve` process (which runs on our
+// AWS/ECS and legitimately holds the DSN via Secrets Manager) may open a direct
+// Postgres connection. Every client entrypoint — CLI, MCP, SDK — must reach the
+// self-hosted store over HTTPS with a bearer API key
+// (HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY), never a DSN.
+//
+// The server opts in explicitly by calling `markServerContext()` at startup.
+// Any client code path that tries to build the DSN fails closed here.
+// ============================================================================
+let _serverContext = false;
+
+/** Called once by the mementos-serve entrypoint; enables the server-only DSN path. */
+export function markServerContext(): void {
+  _serverContext = true;
+}
+
+/** True only inside the `mementos-serve` server process. */
+export function isServerContext(): boolean {
+  return _serverContext;
+}
+
 export interface RunResult {
   changes: number;
   lastInsertRowid: number | bigint;
@@ -752,6 +777,16 @@ function getConfiguredConnectionString(): string | undefined {
 }
 
 export function getStorageConnectionString(dbName = "mementos"): string {
+  // Fail closed on clients: the raw RDS DSN is server-only (CLAUDE.md §2). A
+  // client machine must use the HTTP API, never a Postgres DSN.
+  if (!isServerContext()) {
+    throw new Error(
+      "Refusing to construct an RDS Postgres DSN outside the mementos-serve server. " +
+        "The raw database DSN is NEVER distributed to client machines. " +
+        "Clients must use the self-hosted HTTP API: set HASNA_MEMENTOS_API_URL and " +
+        "HASNA_MEMENTOS_API_KEY (and unset HASNA_MEMENTOS_DATABASE_URL / HASNA_MEMENTOS_STORAGE_MODE)."
+    );
+  }
   const envConnectionString = getConfiguredConnectionString();
   if (envConnectionString) {
     return envConnectionString;

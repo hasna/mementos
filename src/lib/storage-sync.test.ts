@@ -13,8 +13,13 @@ import {
   getStorageMode,
   getStorageStatus,
   shouldUsePgSsl,
+  markServerContext,
   SqliteAdapter as Database,
 } from "../storage.js";
+
+// These tests exercise the server-side storage configuration + DSN builder,
+// which is gated to the server process (CLAUDE.md §2). Opt in.
+markServerContext();
 import { registerMachine, listMachines } from "../db/machines.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "./storage-sync.js";
 

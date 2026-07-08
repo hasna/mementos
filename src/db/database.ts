@@ -3,6 +3,7 @@ import {
   PgAdapter,
   getStorageMode,
   getStorageConnectionString,
+  isServerContext,
 } from "../storage.js";
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -106,6 +107,16 @@ let _pg: Database | null = null;
  */
 function getCloudDatabase(): Database {
   if (_pg) return _pg;
+  // Server-only. A client CLI/MCP/SDK process must never open a direct Postgres
+  // connection — it routes to the self-hosted HTTP API instead (CLAUDE.md §2).
+  if (!isServerContext()) {
+    throw new Error(
+      "Direct Postgres (cloud) storage is server-only. A client must use the " +
+        "self-hosted HTTP API (HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY), " +
+        "never a database DSN. Unset HASNA_MEMENTOS_DATABASE_URL / HASNA_MEMENTOS_STORAGE_MODE " +
+        "on this machine to use local SQLite, or configure the API client to reach the cloud."
+    );
+  }
   const connectionString = getStorageConnectionString();
   // Cast: PgAdapter implements the same DbAdapter surface (run/get/all/exec/
   // prepare/query/transaction/close) that call sites use. Structural `raw`

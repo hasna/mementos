@@ -14,7 +14,11 @@ import { loadWebhooksFromDb } from "../lib/built-in-hooks.js";
 import { startSessionQueueWorker } from "../lib/session-queue.js";
 import { startTaskRunner } from "../lib/task-runner.js";
 
-import { getStorageMode } from "../storage.js";
+import { getStorageMode, markServerContext } from "../storage.js";
+
+// This is the mementos-serve server process — the ONLY process permitted to open
+// a direct RDS Postgres connection (CLAUDE.md §2). Opt in before any DB access.
+markServerContext();
 import { matchRoute } from "./router.js";
 import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile } from "./helpers.js";
 import { checkApiKey } from "./auth.js";
