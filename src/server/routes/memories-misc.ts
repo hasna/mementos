@@ -1,5 +1,6 @@
 import { listMemories, createMemory, cleanExpiredMemories, touchMemory, getMemoryBriefing, listLowTrustMemories } from "../../db/memories.js";
-import { getDbPath } from "../../lib/config.js";
+import { getDbPath, loadConfig } from "../../lib/config.js";
+import { runCleanup } from "../../lib/retention.js";
 import {
   resolveVisibleMachineId,
   visibleToMachineFilter,
@@ -129,10 +130,20 @@ addRoute("POST", "/api/memories/extract", async (req) => {
   return json({ created: created.length, memory_ids: created, errors, session_id: sessionId }, 201);
 });
 
-// POST /api/memories/clean — cleanup expired
+// POST /api/memories/clean — cleanup expired (legacy: expired-only, kept stable)
 addRoute("POST", "/api/memories/clean", () => {
   const cleaned = cleanExpiredMemories();
   return json({ cleaned });
+});
+
+// POST /api/maintenance/cleanup — full retention sweep against the shared cloud
+// store: remove expired, enforce per-scope quotas, archive stale/unused, and
+// deprioritize stale memories. This is the server-side execution of the client
+// `mementos clean` command in API mode (no local SQLite island). Runs against
+// the server's own config + cloud Postgres via runCleanup().
+addRoute("POST", "/api/maintenance/cleanup", () => {
+  const result = runCleanup(loadConfig());
+  return json(result);
 });
 
 // GET /api/inject — get injection context
