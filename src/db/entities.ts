@@ -463,6 +463,23 @@ export function graphTraverse(
   } = {},
   db?: Database,
 ): GraphTraversalResult {
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      max_depth: options.max_depth,
+      direction: options.direction,
+      limit: options.limit,
+      relation_types: options.relation_types,
+    });
+    const { data } = apiJson<GraphTraversalResult>(
+      "GET",
+      `/graph/traverse/${encodeURIComponent(startEntityId)}${q}`
+    );
+    return {
+      paths: data?.paths ?? [],
+      visited_entities: data?.visited_entities ?? [],
+      total_paths: data?.total_paths ?? 0,
+    };
+  }
   const d = db || getDatabase();
   const maxDepth = options.max_depth ?? 2;
   const direction = options.direction ?? "both";

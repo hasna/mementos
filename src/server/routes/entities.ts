@@ -1,4 +1,4 @@
-import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities } from "../../db/entities.js";
+import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities, graphTraverse } from "../../db/entities.js";
 import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath, getGraphStats } from "../../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import { getDatabase } from "../../db/database.js";
@@ -243,6 +243,23 @@ addRoute("GET", "/api/graph/path", (_req, url) => {
 // GET /api/graph/stats — entity/relation counts by type
 addRoute("GET", "/api/graph/stats", () => {
   return json(getGraphStats(getDatabase()));
+});
+
+// GET /api/graph/traverse/:entityId — multi-hop traversal
+addRoute("GET", "/api/graph/traverse/:entityId", (_req, url, params) => {
+  const q = getSearchParams(url);
+  const relationTypes = q["relation_types"] ? q["relation_types"].split(",").filter(Boolean) : undefined;
+  const direction = q["direction"] as "outgoing" | "incoming" | "both" | undefined;
+  return json(graphTraverse(
+    params["entityId"]!,
+    {
+      max_depth: q["max_depth"] ? parseInt(q["max_depth"], 10) : undefined,
+      direction,
+      limit: q["limit"] ? parseInt(q["limit"], 10) : undefined,
+      relation_types: relationTypes,
+    },
+    getDatabase()
+  ));
 });
 
 // GET /api/graph/:entityId — get connected graph
