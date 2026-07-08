@@ -552,7 +552,14 @@ export function getMemory(id: string, db?: Database): Memory | null {
     return status === 404 ? null : (data ?? null);
   }
   const d = db || getDatabase();
-  const row = d.query("SELECT * FROM memories WHERE id = ?").get(id) as
+  // Resolve a partial-ID prefix to the full UUID. In local mode the CLI
+  // pre-resolves via resolveMemoryId, but in API mode the client cannot
+  // prefix-match (no local table), so `show`/`when-to-use <partial-id>` reach
+  // the server with a prefix. Resolving here makes those work against the cloud
+  // exactly as they do locally. A full 36-char id short-circuits to an exact
+  // match; anything shorter is a unique-prefix lookup.
+  const resolvedId = resolvePartialId(d, "memories", id) ?? id;
+  const row = d.query("SELECT * FROM memories WHERE id = ?").get(resolvedId) as
     | Record<string, unknown>
     | null;
   if (!row) return null;

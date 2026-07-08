@@ -76,6 +76,43 @@ describe("Amendment A1 — SQLite→Postgres SQL translation", () => {
     );
   });
 
+  test("literal boolean comparisons: success = 1/0 become TRUE/FALSE (tool-insights)", () => {
+    // Postgres has no `boolean = integer` operator; the tool-insights
+    // `SUM(CASE WHEN success = 1 ...)` 500s without this translation.
+    expect(
+      translateSql("SELECT SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) FROM tool_events")
+    ).toBe("SELECT SUM(CASE WHEN success = TRUE THEN 1 ELSE 0 END) FROM tool_events");
+    expect(
+      translateSql("SELECT COUNT(*) FROM tool_events WHERE success = 0")
+    ).toBe("SELECT COUNT(*) FROM tool_events WHERE success = FALSE");
+  });
+
+  test("literal boolean comparisons: is_primary = 1/0 become TRUE/FALSE (machines)", () => {
+    expect(translateSql("SELECT * FROM machines WHERE is_primary = 1 LIMIT 1")).toBe(
+      "SELECT * FROM machines WHERE is_primary = TRUE LIMIT 1"
+    );
+    expect(translateSql("UPDATE machines SET is_primary = 0 WHERE id != ?")).toBe(
+      "UPDATE machines SET is_primary = FALSE WHERE id != $1"
+    );
+  });
+
+  test("parameterized success = ? is left untouched (pg coerces the bound value)", () => {
+    expect(translateSql("SELECT * FROM tool_events WHERE success = ?")).toBe(
+      "SELECT * FROM tool_events WHERE success = $1"
+    );
+  });
+
+  test("COALESCE(accessed_at, created_at) casts the timestamptz side to ISO text (stale/health)", () => {
+    // accessed_at is `text` (ISO), created_at is `timestamptz`; a bare COALESCE
+    // 500s ("types text and timestamp with time zone cannot be matched"). The
+    // fallback must be rendered as the same ISO-8601 text so ordering is stable.
+    const out = translateSql(
+      "SELECT id FROM memories ORDER BY COALESCE(accessed_at, created_at) ASC"
+    );
+    expect(out).toContain("COALESCE(accessed_at, to_char(created_at AT TIME ZONE 'UTC'");
+    expect(out).not.toMatch(/COALESCE\(accessed_at,\s*created_at\)/);
+  });
+
   test("INSTR(haystack, needle) becomes Postgres STRPOS(...) (graph-path recursive CTE)", () => {
     const out = translateSql(
       "SELECT trail FROM path WHERE INSTR(p.trail, x.id) = 0"

@@ -148,6 +148,18 @@ export function translateSql(sql: string): string {
       return `to_char((now() ${op} INTERVAL '${absolute} ${pluralUnit}') AT TIME ZONE 'UTC', ${ISO_FMT})`;
     }
   );
+
+  // Mixed-type COALESCE: in the cloud schema `created_at` is `timestamptz` while
+  // `accessed_at` is `text` (JS ISO-8601). Postgres refuses
+  // `COALESCE(text, timestamptz)` ("types text and timestamp with time zone
+  // cannot be matched"), which 500s the `stale` (and health/retention) surfaces.
+  // Render created_at as the SAME ISO-8601 text as accessed_at so the COALESCE is
+  // type-consistent AND the fallback sorts/compares lexicographically alongside
+  // real accessed_at values (identical format => chronological order preserved).
+  translated = translated.replace(
+    /COALESCE\s*\(\s*accessed_at\s*,\s*created_at\s*\)/gi,
+    `COALESCE(accessed_at, to_char(created_at AT TIME ZONE 'UTC', ${ISO_FMT}))`
+  );
   translated = translated.replace(
     /lower\s*\(\s*hex\s*\(\s*randomblob\s*\(\s*\d+\s*\)\s*\)\s*\)/gi,
     "gen_random_uuid()::text"
@@ -178,12 +190,28 @@ export function translateSql(sql: string): string {
     "COALESCE(pinned, FALSE)"
   );
 
-  // Literal integer comparisons against the BOOLEAN `pinned` column. Postgres
-  // has no `boolean = integer` operator, so `pinned = 1`/`pinned = 0` literals
-  // (health, stats, report queries) must become TRUE/FALSE. Parameterized
-  // `pinned = ?` is unaffected — pg coerces the bound '1'/'0' text to boolean.
-  translated = translated.replace(/\bpinned\s*=\s*1\b/gi, "pinned = TRUE");
-  translated = translated.replace(/\bpinned\s*=\s*0\b/gi, "pinned = FALSE");
+  // Literal integer comparisons against BOOLEAN columns. Postgres has no
+  // `boolean = integer` operator, so `<col> = 1`/`<col> = 0` literals must
+  // become TRUE/FALSE. This covers every boolean column in the cloud schema
+  // (see pg-migrations.ts): `pinned` (health/stats/report), `success`
+  // (tool-insights — `SUM(CASE WHEN success = 1 ...)` 500s without this),
+  // `is_primary` (machines), plus blocking/enabled/useful/dry_run/applied.
+  // Parameterized `<col> = ?` is unaffected — pg coerces the bound '1'/'0'
+  // text to boolean. Only bare integer literals are rewritten.
+  const BOOLEAN_COLUMNS = [
+    "pinned",
+    "success",
+    "is_primary",
+    "blocking",
+    "enabled",
+    "useful",
+    "dry_run",
+    "applied",
+  ];
+  for (const col of BOOLEAN_COLUMNS) {
+    translated = translated.replace(new RegExp(`\\b${col}\\s*=\\s*1\\b`, "gi"), `${col} = TRUE`);
+    translated = translated.replace(new RegExp(`\\b${col}\\s*=\\s*0\\b`, "gi"), `${col} = FALSE`);
+  }
 
   return translated;
 }

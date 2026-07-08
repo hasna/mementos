@@ -343,7 +343,7 @@ export function getMemoryHealth(filter: HealthFilter = {}, db?: Database): Memor
   const dupes = d.prepare(
     `SELECT key, COUNT(*) as cnt, MAX(updated_at) as latest, MIN(created_at) as oldest
      FROM memories WHERE ${base}
-     GROUP BY key HAVING cnt > 1
+     GROUP BY key HAVING COUNT(*) > 1
      ORDER BY cnt DESC LIMIT ?`
   ).all(...scopeParams, limit) as MemoryHealth["dupes"];
 
