@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listMemories, semanticSearch } from "../../db/memories.js";
+import { semanticSearch } from "../../db/memories.js";
 import { resolveProjectId } from "../../lib/focus.js";
-import { hybridSearch, searchWithBm25 } from "../../lib/search.js";
+import { hybridSearch, searchWithBm25, searchMemories } from "../../lib/search.js";
 import { deepRecall } from "../../lib/asmr/recall.js";
 import { ensembleAnswer } from "../../lib/asmr/ensemble.js";
 import {
@@ -36,22 +36,24 @@ export function registerMemorySearchTools(server: McpServer): void {
       try {
         const limit = positiveLimit(args.limit, 10);
         const offset = args.offset ?? 0;
-        let effectiveProjectId = args.project_id;
-        if (!args.scope && !args.project_id && args.agent_id) {
-          effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
-        }
+        // Parity with the `search` CLI command: run the same relevance search
+        // (searchMemories → POST /memories/search in api mode; FTS5+LIKE
+        // locally) and apply ONLY the filters the caller explicitly supplied.
+        // The previous path used listMemories({search}) + auto-resolved the
+        // agent's project, which both narrowed the result set and hit a
+        // freshness-lagging endpoint — so the MCP tool under-returned versus
+        // the CLI against the same store. Do NOT auto-scope by resolved project.
         const filter: MemoryFilter = {
           scope: args.scope,
           category: args.category,
           tags: args.tags,
           agent_id: args.agent_id,
-          project_id: effectiveProjectId,
+          project_id: args.project_id,
           session_id: args.session_id,
-          search: args.query,
           limit: limit + 1,
           offset,
         };
-        const memories = listMemories(filter);
+        const memories = searchMemories(args.query, filter).map((r) => r.memory);
         if (memories.length === 0) {
           const sugKey = args.query.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
           return { content: [{ type: "text" as const, text: `No memories found matching "${args.query}".\n\n💡 Consider saving relevant information: memory_save(key="${sugKey}", value="...", scope="shared")` }] };

@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, shortUuid } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 // ============================================================================
 // Types
@@ -170,6 +171,19 @@ export function listSynthesisRuns(
   filter: { project_id?: string | null; status?: SynthesisRun["status"]; limit?: number },
   db?: Database
 ): SynthesisRun[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      project_id: filter.project_id ?? undefined,
+      limit: filter.limit,
+    });
+    const { data } = apiJson<{ runs: SynthesisRun[] }>("GET", `/synthesis/runs${q}`);
+    let runs = data?.runs ?? [];
+    // Server route filters only by project_id/limit; honor a status filter and
+    // the explicit project_id===null (unscoped) case client-side for parity.
+    if (filter.status) runs = runs.filter((r) => r.status === filter.status);
+    if (filter.project_id === null) runs = runs.filter((r) => r.project_id === null);
+    return runs;
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];

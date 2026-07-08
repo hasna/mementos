@@ -1,7 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { getStorageConnectionString } from "../../storage.js";
-import { getDatabase } from "../../db/database.js";
 
 export function registerMiscCommands(program: Command): void {
 
@@ -82,14 +81,19 @@ export function registerMiscCommands(program: Command): void {
     .option("--category <category>", "Category: bug, feature, general", "general")
     .action(async (message: string, opts) => {
       try {
-        const db = getDatabase();
         const { fileURLToPath: _ftu } = await import("node:url");
         const { dirname: _dir, join: _join } = await import("node:path");
         const { readFileSync: _rfs } = await import("node:fs");
         const pkg = JSON.parse(_rfs(_join(_dir(_ftu(import.meta.url)), "../../package.json"), "utf-8"));
-        db.run("INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)", [
-          message, opts.email || null, opts.category || "general", pkg.version,
-        ]);
+        // Route through the Store: api mode POSTs /feedback to the shared cloud;
+        // local mode inserts into SQLite. Never touch the DB directly here.
+        const { saveFeedback } = await import("../../db/feedback.js");
+        saveFeedback({
+          message,
+          email: opts.email || null,
+          category: opts.category || "general",
+          version: pkg.version,
+        });
         console.log(chalk.green("Feedback saved. Thank you!"));
       } catch (e) {
         console.error(chalk.red(`Failed to save feedback: ${e instanceof Error ? e.message : String(e)}`));

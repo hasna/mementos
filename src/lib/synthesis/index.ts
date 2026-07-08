@@ -1,5 +1,6 @@
 import { SqliteAdapter as Database } from "../../storage.js";
 import { getDatabase, now } from "../../db/database.js";
+import { isApiMode, apiJson, toQuery } from "../../db/api-mode.js";
 import {
   createSynthesisRun,
   createProposal,
@@ -235,6 +236,14 @@ export function getSynthesisStatus(
   projectId?: string,
   db?: Database
 ): { lastRun: SynthesisRun | null; recentRuns: SynthesisRun[] } {
+  if (!db && isApiMode()) {
+    const q = toQuery({ run_id: runId, project_id: projectId });
+    const { data } = apiJson<{ lastRun: SynthesisRun | null; recentRuns: SynthesisRun[] }>(
+      "GET",
+      `/synthesis/status${q}`,
+    );
+    return data ?? { lastRun: null, recentRuns: [] };
+  }
   const d = db || getDatabase();
 
   if (runId) {

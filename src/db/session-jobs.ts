@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, uuid } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 export type SessionJobSource = "claude-code" | "codex" | "manual" | "open-sessions";
 export type SessionJobStatus = "pending" | "processing" | "completed" | "failed";
@@ -106,6 +107,14 @@ export function createSessionJob(
 }
 
 export function getSessionJob(id: string, db?: Database): SessionMemoryJob | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<SessionMemoryJob>(
+      "GET",
+      `/sessions/jobs/${encodeURIComponent(id)}`,
+    );
+    if (status === 404 || !data) return null;
+    return data;
+  }
   const d = db || getDatabase();
   const row = d
     .query("SELECT * FROM session_memory_jobs WHERE id = ?")
@@ -118,6 +127,16 @@ export function listSessionJobs(
   filter?: SessionJobFilter,
   db?: Database
 ): SessionMemoryJob[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      agent_id: filter?.agent_id,
+      project_id: filter?.project_id,
+      status: filter?.status,
+      limit: filter?.limit,
+    });
+    const { data } = apiJson<{ jobs: SessionMemoryJob[] }>("GET", `/sessions/jobs${q}`);
+    return data?.jobs ?? [];
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
