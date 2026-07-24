@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { getActiveProfile, setActiveProfile, listProfiles, deleteProfile } from "../../lib/config.js";
+import { outputJson, type GlobalOpts } from "../helpers.js";
 
 export function registerProfileCommand(program: Command): void {
   // ============================================================================
@@ -13,8 +14,13 @@ export function registerProfileCommand(program: Command): void {
     .command("list")
     .description("List all available profiles")
     .action(() => {
+      const globalOpts = program.opts<GlobalOpts>();
       const profiles = listProfiles();
       const active = getActiveProfile();
+      if (globalOpts.json) {
+        outputJson({ profiles, active: active ?? null });
+        return;
+      }
       if (profiles.length === 0) {
         console.log(chalk.dim("No profiles yet. Create one with: mementos profile set <name>"));
         return;

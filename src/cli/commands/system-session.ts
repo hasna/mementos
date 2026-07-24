@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { outputJson, type GlobalOpts } from "../helpers.js";
 
 export function registerSessionCommand(program: Command): void {
   // ============================================================================
@@ -62,6 +63,7 @@ export function registerSessionCommand(program: Command): void {
     .option("--status <status>", "Filter by status")
     .option("--limit <n>", "Max results", "20")
     .action(async (opts: { agent?: string; project?: string; status?: string; limit: string }) => {
+      const globalOpts = program.opts<GlobalOpts>();
       const { listSessionJobs } = await import("../../db/session-jobs.js");
       const jobs = listSessionJobs({
         agent_id: opts.agent,
@@ -69,6 +71,10 @@ export function registerSessionCommand(program: Command): void {
         status: opts.status as "pending" | "processing" | "completed" | "failed" | undefined,
         limit: parseInt(opts.limit),
       });
+      if (globalOpts.json) {
+        outputJson(jobs);
+        return;
+      }
       if (jobs.length === 0) {
         console.log(chalk.gray("No session jobs found."));
         return;

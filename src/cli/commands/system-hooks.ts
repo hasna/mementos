@@ -4,9 +4,11 @@ import type { HookType } from "../../types/hooks.js";
 import {
   DEFAULT_COMPACT_LIMIT,
   cursorOrOffset,
+  outputJson,
   positiveIntOrDefault,
   printPageHint,
   truncateText,
+  type GlobalOpts,
 } from "../helpers.js";
 
 export function registerHooksCommand(program: Command): void {
@@ -26,6 +28,7 @@ export function registerHooksCommand(program: Command): void {
     .option("--offset <n>", "Offset for pagination", parseInt)
     .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .action(async (opts) => {
+      const globalOpts = program.opts<GlobalOpts>();
       const { hookRegistry } = await import("../../lib/hooks.js");
       const hooks = hookRegistry.list(opts.type);
       const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
@@ -33,6 +36,10 @@ export function registerHooksCommand(program: Command): void {
       const page = hooks.slice(offset, offset + limit + 1);
       const hasMore = page.length > limit;
       const visibleHooks = hasMore ? page.slice(0, limit) : page;
+      if (globalOpts.json) {
+        outputJson(visibleHooks);
+        return;
+      }
       if (visibleHooks.length === 0) {
         console.log(chalk.gray("No hooks registered."));
         return;
@@ -57,8 +64,13 @@ export function registerHooksCommand(program: Command): void {
     .command("stats")
     .description("Show hook registry statistics")
     .action(async () => {
+      const globalOpts = program.opts<GlobalOpts>();
       const { hookRegistry } = await import("../../lib/hooks.js");
       const stats = hookRegistry.stats();
+      if (globalOpts.json) {
+        outputJson(stats);
+        return;
+      }
       console.log(chalk.bold("Hook Registry Stats"));
       console.log(`  Total:       ${chalk.cyan(stats.total)}`);
       console.log(`  Blocking:    ${chalk.red(stats.blocking)}`);
