@@ -15,7 +15,9 @@ export function registerMemoryStatsTools(server: McpServer): void {
         const total = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'active'").get() as { c: number }).c;
         const byScope = db.query("SELECT scope, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY scope").all() as { scope: MemoryScope; c: number }[];
         const byCategory = db.query("SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY category").all() as { category: MemoryCategory; c: number }[];
-        const byStatus = db.query("SELECT status, COUNT(*) as c FROM memories GROUP BY status").all() as { status: string; c: number }[];
+        // Restrict to active so by_status buckets partition `total` exactly,
+        // matching the by_scope/by_category groupings (see #stats-status-buckets).
+        const byStatus = db.query("SELECT status, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY status").all() as { status: string; c: number }[];
         const pinnedCount = (db.query("SELECT COUNT(*) as c FROM memories WHERE pinned = 1 AND status = 'active'").get() as { c: number }).c;
         const expiredCount = (db.query("SELECT COUNT(*) as c FROM memories WHERE status = 'expired' OR (expires_at IS NOT NULL AND expires_at < datetime('now'))").get() as { c: number }).c;
 

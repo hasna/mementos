@@ -316,6 +316,30 @@ describe("CLI", () => {
     expect(parsed.by_category).toBeDefined();
   });
 
+  test("stats --json by_status buckets partition total (regression #stats-status-buckets)", async () => {
+    // Seed a memory and archive it so the store contains a non-active status.
+    // Before the fix, by_status tallied ALL statuses while total/by_scope/by_category
+    // counted only active rows, so the archived row inflated by_status beyond total.
+    await runCli("save", "bucket-regression-key", "bucket-regression-val");
+    const arch = await runCli("archive", "bucket-regression-key");
+    expect(arch.exitCode).toBe(0);
+
+    const { stdout, exitCode } = await runCli("--json", "stats");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+
+    const sum = (obj: Record<string, number>) =>
+      Object.values(obj).reduce((a, b) => a + b, 0);
+
+    // All three groupings must partition `total` exactly.
+    expect(sum(parsed.by_scope)).toBe(parsed.total);
+    expect(sum(parsed.by_category)).toBe(parsed.total);
+    expect(sum(parsed.by_status)).toBe(parsed.total);
+    // The active bucket must not exceed total (it previously equalled the full
+    // total while archived added even more on top).
+    expect(parsed.by_status.active).toBeLessThanOrEqual(parsed.total);
+  }, 20000);
+
   test("search --json returns parseable JSON", async () => {
     const { stdout, exitCode } = await runCli("--json", "search", "cli-test");
     expect(exitCode).toBe(0);
