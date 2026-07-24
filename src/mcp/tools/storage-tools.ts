@@ -1,7 +1,12 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getStorageConfig } from "../../storage.js";
+import {
+  getSafeStorageConfigSummary,
+  getStorageConfig,
+  getStorageStatus,
+} from "../../storage.js";
 import { saveFeedback } from "../../db/feedback.js";
+import { getPgMigrationDiagnostics } from "../../db/pg-migrate.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
 
 function parseTables(raw?: string): string[] | undefined {
@@ -35,9 +40,11 @@ export function registerMementosStorageTools(server: McpServer): void {
     {},
     async () => {
       try {
+        const config = getStorageConfig();
         return text({
           status: getStorageSyncStatus(),
-          config: getStorageConfig(),
+          runtime: getStorageStatus(),
+          config: getSafeStorageConfigSummary(config),
         });
       } catch (error) {
         return errorText(error);
@@ -88,6 +95,25 @@ export function registerMementosStorageTools(server: McpServer): void {
           push: pushStorageChanges({ tables: parsedTables }),
           pull: pullStorageChanges({ tables: parsedTables }),
         });
+      } catch (error) {
+        return errorText(error);
+      }
+    }
+  );
+
+  server.tool(
+    "mementos_storage_migrate_dry_run",
+    "Return safe PostgreSQL/RDS migration diagnostics without connecting or mutating remote storage",
+    {
+      connection_string: z.string().optional().describe("PostgreSQL connection string (overrides storage config)"),
+    },
+    async ({ connection_string }) => {
+      try {
+        const diagnostics = getPgMigrationDiagnostics(connection_string);
+        return {
+          ...text(diagnostics),
+          isError: !diagnostics.ok,
+        };
       } catch (error) {
         return errorText(error);
       }

@@ -7,6 +7,7 @@ import {
   MEMENTOS_STORAGE_TABLES,
   getStorageConfig,
   getStorageConnectionString,
+  getStorageStatus,
   incrementalSyncPull,
   incrementalSyncPush,
   getSyncMetaAll,
@@ -60,6 +61,7 @@ export interface MementosStorageStatus {
   enabled: boolean;
   db_path: string;
   current_machine_id: string | null;
+  runtime: ReturnType<typeof getStorageStatus>;
   generic_sync_meta: SyncMeta[];
   memory_sync_meta: MemoryStorageSyncMeta[];
 }
@@ -701,6 +703,7 @@ export function getStorageSyncStatus(
       enabled: config.mode === "cloud",
       db_path: getDbPath(),
       current_machine_id: currentMachineId,
+      runtime: getStorageStatus(),
       generic_sync_meta: getSyncMetaAll(local),
       memory_sync_meta: listMemorySyncMeta(local),
     };

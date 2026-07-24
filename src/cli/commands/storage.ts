@@ -1,6 +1,11 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getStorageConfig, getStorageConnectionString } from "../../storage.js";
+import {
+  getSafeStorageConfigSummary,
+  getStorageConfig,
+  getStorageConnectionString,
+  getStorageStatus,
+} from "../../storage.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
 
 function parseTables(raw?: string): string[] | undefined {
@@ -42,18 +47,31 @@ function installStorageSubcommands(storage: Command, program: Command): void {
       const useJson = Boolean(opts.json || program.opts().json);
       const status = getStorageSyncStatus();
       const config = getStorageConfig();
+      const runtime = getStorageStatus();
+      const safeConfig = getSafeStorageConfigSummary(config);
       if (useJson) {
-        outputJson(true, { ...status, config });
+        outputJson(true, { ...status, runtime, config: safeConfig });
         return;
       }
 
       console.log(`Mode: ${status.mode}`);
       console.log(`Enabled: ${status.enabled ? "yes" : "no"}`);
+      console.log(`Runtime: ${runtime.runtime.kind}`);
       console.log(`Database: ${status.db_path}`);
       console.log(`Machine: ${status.current_machine_id ?? "(not registered)"}`);
-      console.log(`Remote host: ${config.rds.host || "(not configured)"}`);
+      console.log(`Local SQLite: ${runtime.runtime.local.primary_runtime ? "primary runtime" : "disabled"}`);
+      console.log(`Local file sync: unsupported`);
+      console.log(`Remote PostgreSQL/RDS: ${runtime.runtime.remote.configured ? "configured" : "not configured"}`);
+      console.log(`Remote source: ${runtime.runtime.remote.source}`);
+      console.log(`S3/AWS mutation: unsupported`);
       console.log(`Generic sync tables: ${status.generic_sync_meta.length}`);
       console.log(`Memory sync tables: ${status.memory_sync_meta.length}`);
+      for (const issue of runtime.issues) {
+        console.error(chalk.red(`Issue: ${issue}`));
+      }
+      for (const warning of runtime.warnings) {
+        console.error(chalk.yellow(`Warning: ${warning}`));
+      }
     });
 
   storage
@@ -147,12 +165,39 @@ function installStorageSubcommands(storage: Command, program: Command): void {
     .command("migrate")
     .description("Apply PostgreSQL migrations to the remote database")
     .option("--connection-string <url>", "PostgreSQL connection string")
+    .option("--dry-run", "Print safe PostgreSQL/RDS migration diagnostics without connecting")
     .option("--json", "Output JSON")
     .action(async (opts) => {
       const useJson = Boolean(opts.json || program.opts().json);
       try {
+        const { applyPgMigrations, getPgMigrationDiagnostics } = await import("../../db/pg-migrate.js");
+        if (opts.dryRun) {
+          const diagnostics = getPgMigrationDiagnostics(opts.connectionString);
+          if (useJson) {
+            outputJson(true, diagnostics);
+            if (!diagnostics.ok) {
+              process.exitCode = 1;
+            }
+            return;
+          }
+          console.log(`Target: ${diagnostics.target}`);
+          console.log(`Configured: ${diagnostics.configured ? "yes" : "no"}`);
+          console.log(`Total migrations: ${diagnostics.total_migrations}`);
+          console.log("Network: not contacted");
+          console.log("Production approval: required before live apply");
+          for (const issue of diagnostics.issues) {
+            console.error(chalk.red(`Issue: ${issue}`));
+          }
+          for (const warning of diagnostics.warnings) {
+            console.error(chalk.yellow(`Warning: ${warning}`));
+          }
+          if (!diagnostics.ok) {
+            process.exitCode = 1;
+          }
+          return;
+        }
+
         const connectionString = opts.connectionString || getStorageConnectionString("mementos");
-        const { applyPgMigrations } = await import("../../db/pg-migrate.js");
         const result = await applyPgMigrations(connectionString);
         if (useJson) {
           outputJson(true, result);

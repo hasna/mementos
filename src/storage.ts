@@ -583,6 +583,7 @@ export interface StorageConfig {
   };
 }
 
+const LOCAL_DATA_DIR = join(homedir(), ".hasna", "mementos");
 const DEFAULT_STORAGE_CONFIG: StorageConfig = {
   rds: {
     host: "",
@@ -598,7 +599,7 @@ const DEFAULT_STORAGE_CONFIG: StorageConfig = {
     schedule_minutes: 0,
   },
 };
-const STORAGE_CONFIG_DIR = join(homedir(), ".hasna", "mementos", "storage");
+const STORAGE_CONFIG_DIR = join(LOCAL_DATA_DIR, "storage");
 const STORAGE_CONFIG_PATH = join(STORAGE_CONFIG_DIR, "config.json");
 
 const DATABASE_ENV_NAMES = [
@@ -622,15 +623,85 @@ export interface StorageEnvStatus {
   configured: boolean;
 }
 
+export type StorageRuntimeKind =
+  | "local-sqlite"
+  | "cloud-postgres";
+
+export interface StorageRuntimeContract {
+  contract: "mementos-cloud-runtime-v1";
+  kind: StorageRuntimeKind;
+  fail_closed: boolean;
+  local: {
+    adapter: "sqlite";
+    primary_runtime: boolean;
+    data_dir: string;
+    config_path: string;
+    local_file_sync: {
+      supported: false;
+      reason: string;
+    };
+  };
+  remote: {
+    adapter: "postgres";
+    purpose: "primary-runtime";
+    requested: boolean;
+    configured: boolean;
+    source: "env" | "config-file" | "none";
+    env_name: string | null;
+    redacted_url: string | null;
+    rds_compatible: boolean;
+    fail_closed: boolean;
+    missing: string[];
+  };
+  object_storage: {
+    s3: {
+      supported: false;
+      mutation_allowed: false;
+      reason: string;
+    };
+    aws: {
+      mutation_allowed: false;
+      reason: string;
+    };
+  };
+  migrations: {
+    target: "postgres-rds-compatible";
+    command: "mementos storage migrate";
+    dry_run_command: "mementos storage migrate --dry-run";
+    configured: boolean;
+    mutates_remote_on_apply: true;
+    requires_approval_for_live_run: true;
+  };
+}
+
+export interface SafeStorageConfigSummary {
+  mode: StorageMode;
+  auto_sync_interval_minutes: number;
+  feedback_endpoint_configured: boolean;
+  sync: StorageConfig["sync"];
+  rds: {
+    host_configured: boolean;
+    port: number;
+    username_configured: boolean;
+    password_env: string;
+    password_configured: boolean;
+    ssl: boolean;
+  };
+}
+
 export interface NativeStorageStatus {
   ok: boolean;
   service: "mementos";
   mode: StorageMode;
   local_default: boolean;
   remote_enabled: boolean;
+  runtime: StorageRuntimeContract;
   database: {
     configured: boolean;
     redacted_url: string | null;
+    source: "env" | "config-file" | "none";
+    env_name: string | null;
+    rds_compatible: boolean;
   };
   tables: readonly MementosStorageTable[];
   env: {
@@ -762,8 +833,100 @@ export function getStorageMode(): StorageMode {
   return getStorageConfig().mode;
 }
 
-function redactDatabaseUrl(value: string | null): string | null {
-  return value?.replace(/:[^:@/]+@/, ":***@") ?? null;
+const SECRET_QUERY_PARAMS = new Set([
+  "password",
+  "pass",
+  "pwd",
+  "token",
+  "secret",
+  "api_key",
+  "apikey",
+]);
+
+function isSecretQueryParam(key: string): boolean {
+  const normalized = key.trim().toLowerCase();
+  return (
+    SECRET_QUERY_PARAMS.has(normalized) ||
+    /(?:secret|token|password|passphrase|credential|api[_-]?key|apikey|private[_-]?key|auth|session)/i.test(normalized)
+  );
+}
+
+export function redactDatabaseUrl(value: string | null): string | null {
+  if (!value) {
+    return null;
+  }
+
+  try {
+    const url = new URL(value);
+    if (url.password) {
+      url.password = "***";
+    }
+    for (const key of Array.from(url.searchParams.keys())) {
+      if (isSecretQueryParam(key)) {
+        url.searchParams.set(key, "***");
+      }
+    }
+    return url.toString();
+  } catch {
+    return value
+      .replace(/:[^:@/\s]+@/, ":***@")
+      .replace(
+        /([?&\s][^=&\s]*(?:secret|token|password|passphrase|credential|api[_-]?key|apikey|private[_-]?key|auth|session)[^=&\s]*=)[^&\s]+/gi,
+        "$1***"
+      );
+  }
+}
+
+export interface PostgresConnectionStringValidation {
+  ok: boolean;
+  redacted_url: string | null;
+  issues: string[];
+}
+
+export function validatePostgresConnectionString(
+  value: string | null
+): PostgresConnectionStringValidation {
+  const redactedUrl = redactDatabaseUrl(value);
+  if (!value) {
+    return {
+      ok: false,
+      redacted_url: redactedUrl,
+      issues: ["Missing PostgreSQL/RDS connection string."],
+    };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return {
+      ok: false,
+      redacted_url: redactedUrl,
+      issues: ["PostgreSQL/RDS connection string must be a valid postgres:// or postgresql:// URL."],
+    };
+  }
+
+  if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") {
+    return {
+      ok: false,
+      redacted_url: redactedUrl,
+      issues: ["PostgreSQL/RDS connection string must use postgres:// or postgresql://."],
+    };
+  }
+
+  if (!url.hostname) {
+    return {
+      ok: false,
+      redacted_url: redactedUrl,
+      issues: ["PostgreSQL/RDS connection string must include a host."],
+    };
+  }
+
+  return {
+    ok: true,
+    redacted_url: redactedUrl,
+    issues: [],
+  };
 }
 
 function storageEnvStatus(key: MementosStorageEnvKey): StorageEnvStatus {
@@ -775,23 +938,172 @@ function storageEnvStatus(key: MementosStorageEnvKey): StorageEnvStatus {
   };
 }
 
-export function getStorageStatus(): NativeStorageStatus {
-  const mode = getStorageConfig().mode;
-  const databaseUrl = getStorageDatabaseUrl();
-  const issues: string[] = [];
-  if (mode === "cloud" && !databaseUrl) {
-    issues.push(`Missing ${MEMENTOS_STORAGE_ENV.databaseUrl}`);
+interface RemoteDatabaseConfigStatus {
+  configured: boolean;
+  source: "env" | "config-file" | "none";
+  env_name: string | null;
+  redacted_url: string | null;
+  missing: string[];
+  issues: string[];
+  rds_compatible: boolean;
+}
+
+function remoteDatabaseConfigStatus(
+  config: StorageConfig
+): RemoteDatabaseConfigStatus {
+  const env = getStorageDatabaseEnv();
+  const envUrl = env ? readEnv(env.name) : null;
+  if (env && envUrl) {
+    const validation = validatePostgresConnectionString(envUrl);
+    return {
+      configured: validation.ok,
+      source: "env",
+      env_name: env.name,
+      redacted_url: validation.redacted_url,
+      missing: [],
+      issues: validation.issues,
+      rds_compatible: validation.ok,
+    };
   }
+
+  const missing: string[] = [];
+  if (!config.rds.host) {
+    missing.push("storage.rds.host");
+  }
+  if (!config.rds.username) {
+    missing.push("storage.rds.username");
+  }
+  if (!readEnv(config.rds.password_env)) {
+    missing.push(config.rds.password_env);
+  }
+
+  const configured = missing.length === 0;
+  const redactedUrl = configured
+    ? `postgres://${config.rds.username}:***@${config.rds.host}:${config.rds.port}/mementos${config.rds.ssl ? "?sslmode=require" : ""}`
+    : null;
+  const issues = missing.length === 0
+    ? []
+    : [`Missing ${missing.join(", ")}.`];
+
+  return {
+    configured,
+    source: config.rds.host || config.rds.username ? "config-file" : "none",
+    env_name: null,
+    redacted_url: redactedUrl,
+    missing,
+    issues,
+    rds_compatible: configured,
+  };
+}
+
+function runtimeKindFor(mode: StorageMode): StorageRuntimeKind {
+  return mode === "cloud" ? "cloud-postgres" : "local-sqlite";
+}
+
+export function getSafeStorageConfigSummary(
+  config: StorageConfig = getStorageConfig()
+): SafeStorageConfigSummary {
+  return {
+    mode: config.mode,
+    auto_sync_interval_minutes: config.auto_sync_interval_minutes,
+    feedback_endpoint_configured: config.feedback_endpoint.trim() !== "",
+    sync: { ...config.sync },
+    rds: {
+      host_configured: config.rds.host.trim() !== "",
+      port: config.rds.port,
+      username_configured: config.rds.username.trim() !== "",
+      password_env: config.rds.password_env,
+      password_configured: readEnv(config.rds.password_env) !== null,
+      ssl: config.rds.ssl,
+    },
+  };
+}
+
+export function getStorageStatus(): NativeStorageStatus {
+  const config = getStorageConfig();
+  const mode = config.mode;
+  const remoteRequested = mode === "cloud";
+  const remote = remoteDatabaseConfigStatus(config);
+  const issues: string[] = [];
+  const warnings: string[] = [];
+
+  if (remoteRequested && !remote.configured) {
+    issues.push(
+      `Cloud PostgreSQL/RDS storage is requested but not configured. ${remote.issues.join(" ")}`
+    );
+  }
+  if (mode === "local" && remote.issues.length > 0 && remote.source !== "none") {
+    warnings.push(
+      `Cloud PostgreSQL/RDS configuration is present but invalid; cloud runtime stays disabled until fixed. ${remote.issues.join(" ")}`
+    );
+  }
+  if (mode === "local" && remote.configured) {
+    warnings.push(
+      "Cloud PostgreSQL/RDS configuration is present, but storage mode is local; cloud runtime stays disabled until mode is cloud."
+    );
+  }
+
+  const failClosed = remoteRequested && !remote.configured;
+  const runtime: StorageRuntimeContract = {
+    contract: "mementos-cloud-runtime-v1",
+    kind: runtimeKindFor(mode),
+    fail_closed: failClosed,
+    local: {
+      adapter: "sqlite",
+      primary_runtime: mode === "local",
+      data_dir: LOCAL_DATA_DIR,
+      config_path: STORAGE_CONFIG_PATH,
+      local_file_sync: {
+        supported: false,
+        reason: "Mementos stores local state in SQLite; it does not sync raw local data files.",
+      },
+    },
+    remote: {
+      adapter: "postgres",
+      purpose: "primary-runtime",
+      requested: remoteRequested,
+      configured: remote.configured,
+      source: remote.source,
+      env_name: remote.env_name,
+      redacted_url: remote.redacted_url,
+      rds_compatible: remote.rds_compatible,
+      fail_closed: failClosed,
+      missing: remote.missing,
+    },
+    object_storage: {
+      s3: {
+        supported: false,
+        mutation_allowed: false,
+        reason: "No S3 object-storage adapter is part of this runtime.",
+      },
+      aws: {
+        mutation_allowed: false,
+        reason: "Diagnostics do not store sensitive values, change AWS resources, deploy, or mutate production data.",
+      },
+    },
+    migrations: {
+      target: "postgres-rds-compatible",
+      command: "mementos storage migrate",
+      dry_run_command: "mementos storage migrate --dry-run",
+      configured: remote.configured,
+      mutates_remote_on_apply: true,
+      requires_approval_for_live_run: true,
+    },
+  };
 
   return {
     ok: issues.length === 0,
     service: "mementos",
     mode,
     local_default: mode === "local",
-    remote_enabled: mode === "cloud",
+    remote_enabled: remoteRequested,
+    runtime,
     database: {
-      configured: Boolean(databaseUrl),
-      redacted_url: redactDatabaseUrl(databaseUrl),
+      configured: remote.configured,
+      redacted_url: remote.redacted_url,
+      source: remote.source,
+      env_name: remote.env_name,
+      rds_compatible: remote.rds_compatible,
     },
     tables: MEMENTOS_STORAGE_TABLES,
     env: {
@@ -799,7 +1111,7 @@ export function getStorageStatus(): NativeStorageStatus {
       mode: storageEnvStatus("mode"),
     },
     issues,
-    warnings: [],
+    warnings,
     no_network: true,
   };
 }
@@ -828,14 +1140,27 @@ export function getStorageConnectionString(dbName = "mementos"): string {
   }
   const envConnectionString = getConfiguredConnectionString();
   if (envConnectionString) {
+    const validation = validatePostgresConnectionString(envConnectionString);
+    if (!validation.ok) {
+      throw new Error(
+        `Remote storage database is not configured. ${validation.issues.join(" ")}`
+      );
+    }
     return envConnectionString;
   }
 
   const config = getStorageConfig();
   const { host, port, username, password_env, ssl } = config.rds;
-  if (!host || !username) {
+  const missing = [];
+  if (!host) {
+    missing.push("storage.rds.host");
+  }
+  if (!username) {
+    missing.push("storage.rds.username");
+  }
+  if (missing.length > 0) {
     throw new Error(
-      "Remote storage database is not configured. Set HASNA_MEMENTOS_DATABASE_URL or configure ~/.hasna/mementos/storage/config.json."
+      `Remote storage database is not configured. Missing ${missing.join(", ")}. Set HASNA_MEMENTOS_DATABASE_URL or configure ~/.hasna/mementos/storage/config.json.`
     );
   }
 
