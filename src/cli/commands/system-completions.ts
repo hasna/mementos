@@ -1,12 +1,33 @@
 import type { Command } from "commander";
 
+/**
+ * Collect the real top-level subcommand names registered on the program.
+ *
+ * Deriving these from commander (rather than a hand-maintained string) keeps the
+ * shell completion script in sync with the actual CLI as commands are added or
+ * removed. Enumeration happens at action time, so every command group registered
+ * on `program` — including ones registered after the completions command itself —
+ * is included.
+ */
+export function collectSubcommandNames(program: Command): string[] {
+  const names = new Set<string>();
+  for (const cmd of program.commands) {
+    // Skip commander's implicit help command and any hidden commands.
+    if ((cmd as { _hidden?: boolean })._hidden) continue;
+    const name = cmd.name();
+    if (!name || name === "help") continue;
+    names.add(name);
+  }
+  return [...names].sort();
+}
+
 export function registerCompletionsCommand(program: Command): void {
   program
     .command("completions <shell>")
     .description("Output shell completion script (bash, zsh, fish)")
     .action((shell: string) => {
-      const commands = "init setup save recall list update forget search stats export import clean inject context pin unpin archive versions stale doctor tail diff register-agent agents projects bulk completions config backup restore report profile mcp";
-      const commandList = commands.split(" ");
+      const commandList = collectSubcommandNames(program);
+      const commands = commandList.join(" ");
 
       switch (shell.toLowerCase()) {
         case "bash": {
@@ -34,34 +55,9 @@ compdef _mementos mementos`);
           break;
         }
         case "fish": {
-          const descriptions: Record<string, string> = {
-            save: "Save a memory",
-            recall: "Recall a memory by key",
-            list: "List memories",
-            update: "Update a memory",
-            forget: "Delete a memory",
-            search: "Search memories",
-            stats: "Show memory statistics",
-            export: "Export memories to JSON",
-            import: "Import memories from JSON",
-            clean: "Clean expired memories",
-            inject: "Inject memories into a prompt",
-            context: "Get context-relevant memories",
-            pin: "Pin a memory",
-            unpin: "Unpin a memory",
-            doctor: "Check database health",
-            tail: "Watch recent memories",
-            diff: "Show memory changes",
-            init: "One-command onboarding setup (MCP + hook + auto-start)",
-            "register-agent": "Register an agent (returns ID)",
-            agents: "Manage agents",
-            projects: "Manage projects",
-            bulk: "Bulk operations",
-            completions: "Output shell completion script",
-            config: "Manage configuration",
-            backup: "Backup the database",
-            restore: "Restore from a backup",
-          };
+          const descriptions: Record<string, string> = Object.fromEntries(
+            program.commands.map((cmd) => [cmd.name(), cmd.description()])
+          );
           const lines = commandList.map(
             (cmd) => `complete -c mementos -n "__fish_use_subcommand" -a "${cmd}" -d "${descriptions[cmd] || cmd}"`
           );

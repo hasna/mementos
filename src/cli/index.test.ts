@@ -79,6 +79,38 @@ describe("CLI", () => {
     expect(stdout).not.toContain("cloud  ");
   });
 
+  test("completions bash lists every real top-level subcommand", async () => {
+    // Regression: the completion script used to carry a hand-maintained command
+    // string that drifted from the real CLI, omitting ~22 registered subcommands
+    // (entity, relation, graph, storage, brains, events, hooks, etc.). The list
+    // is now derived from commander, so it must stay in sync with `--help`.
+    const help = await runCli("--help");
+    const commandSection = help.stdout.slice(help.stdout.indexOf("Commands:"));
+    const realCommands = new Set<string>();
+    for (const line of commandSection.split("\n").slice(1)) {
+      const match = line.match(/^\s{2,}([a-z][a-z-]*)/);
+      if (!match) continue;
+      const name = match[1];
+      if (name === "help") continue;
+      realCommands.add(name);
+    }
+    // Sanity: help parsing found a meaningful set of commands.
+    expect(realCommands.size).toBeGreaterThan(30);
+
+    const bash = await runCli("completions", "bash");
+    const listMatch = bash.stdout.match(/local commands="([^"]*)"/);
+    expect(listMatch).not.toBeNull();
+    const completionCommands = new Set((listMatch?.[1] ?? "").split(/\s+/).filter(Boolean));
+
+    const missing = [...realCommands].filter((c) => !completionCommands.has(c));
+    expect(missing).toEqual([]);
+
+    // Spot-check subcommands that were specifically missing before the fix.
+    for (const cmd of ["entity", "relation", "graph", "storage", "brains", "events", "hooks", "auto-memory", "consolidate", "reflect", "when-to-use", "chain", "heartbeat", "project-panel", "tool-events", "synthesized-profile"]) {
+      expect(completionCommands.has(cmd)).toBe(true);
+    }
+  });
+
   test("--help shows short global option aliases", async () => {
     const { stdout } = await runCli("--help");
     expect(stdout).toContain("-j, --json");
