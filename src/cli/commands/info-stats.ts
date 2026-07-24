@@ -41,9 +41,14 @@ export function registerStatsCommand(program: Command): void {
           )
           .all() as { category: MemoryCategory; c: number }[];
 
+        // Count by_status over the SAME universe as total/by_scope/by_category
+        // (active memories only) so the buckets partition `total` exactly.
+        // Without the status filter, GROUP BY status also tallies archived and
+        // expired rows, so the buckets summed to more than `total` and the
+        // active bucket alone equalled the full active total (see #stats-status-buckets).
         const byStatus = db
           .query(
-            "SELECT status, COUNT(*) as c FROM memories GROUP BY status"
+            "SELECT status, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY status"
           )
           .all() as { status: string; c: number }[];
 

@@ -22,8 +22,10 @@ addRoute("GET", "/api/memories/stats", (_req) => {
       "SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY category"
     )
     .all() as { category: MemoryCategory; c: number }[];
+  // Restrict to active so the by_status buckets partition `total` exactly,
+  // matching the by_scope/by_category groupings (see #stats-status-buckets).
   const byStatus = db
-    .query("SELECT status, COUNT(*) as c FROM memories GROUP BY status")
+    .query("SELECT status, COUNT(*) as c FROM memories WHERE status = 'active' GROUP BY status")
     .all() as { status: string; c: number }[];
   const pinnedCount = (
     db
