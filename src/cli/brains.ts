@@ -237,11 +237,12 @@ export function makeBrainsCommand(): Command {
     .command("get")
     .description("Show the currently active fine-tuned model")
     .option("--json", "Output as JSON")
-    .action((opts: { json?: boolean }) => {
+    .action((_opts: { json?: boolean }, cmd: Command) => {
       try {
+        const json = Boolean(cmd.optsWithGlobals().json);
         const active = getActiveModel();
         const isDefault = active === DEFAULT_MODEL;
-        if (opts.json) {
+        if (json) {
           console.log(JSON.stringify({ activeModel: active, isDefault }));
         } else {
           if (isDefault) {
@@ -285,11 +286,12 @@ export function makeBrainsCommand(): Command {
     });
 
   // Default "model" with no subcommand shows the active model
-  modelCmd.action((opts: { json?: boolean }) => {
+  modelCmd.action((_opts: { json?: boolean }, cmd: Command) => {
     try {
+      const json = Boolean(cmd.optsWithGlobals().json);
       const active = getActiveModel();
       const isDefault = active === DEFAULT_MODEL;
-      if ((opts as { json?: boolean }).json) {
+      if (json) {
         console.log(JSON.stringify({ activeModel: active, isDefault }));
       } else {
         if (isDefault) {

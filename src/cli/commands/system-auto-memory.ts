@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
+import { outputJson, type GlobalOpts } from "../helpers.js";
 
 export function registerAutoMemoryCommand(program: Command): void {
   // ============================================================================
@@ -56,11 +57,16 @@ export function registerAutoMemoryCommand(program: Command): void {
     .command("status")
     .description("Show auto-memory queue stats and provider health")
     .action(async () => {
+      const globalOpts = program.opts<GlobalOpts>();
       const { getAutoMemoryStats } = await import("../../lib/auto-memory.js");
       const { providerRegistry } = await import("../../lib/providers/registry.js");
       const stats = getAutoMemoryStats();
       const config = providerRegistry.getConfig();
       const health = providerRegistry.health();
+      if (globalOpts.json) {
+        outputJson({ config, queue: stats, health });
+        return;
+      }
       console.log(chalk.bold("Auto-Memory Status"));
       console.log(`  Provider:    ${config.enabled ? chalk.green(config.provider) : chalk.red("disabled")} / ${config.model ?? "default"}`);
       console.log(`  Queue:       ${stats.pending} pending · ${stats.processing} processing · ${stats.processed} processed`);

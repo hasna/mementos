@@ -199,10 +199,14 @@ export function registerAgentCommands(program: Command): void {
     .description("Show the current project focus for an agent")
     .option("--agent <id>", "Agent ID")
     .action((opts?: { agent?: string }) => {
-      const globalOpts = program.opts() as { agent?: string };
+      const globalOpts = program.opts<GlobalOpts>();
       const agentId = opts?.agent || globalOpts.agent;
       if (!agentId) { process.stderr.write("Agent ID required. Use --agent.\n"); process.exit(1); }
       const focus = getFocus(agentId);
+      if (globalOpts.json) {
+        outputJson({ agent: agentId, focus: focus ?? null });
+        return;
+      }
       if (focus) console.log(chalk.cyan(`Focus: ${focus}`));
       else console.log(chalk.dim("No focus set."));
     });
