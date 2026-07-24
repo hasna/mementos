@@ -4,7 +4,12 @@
  * Tracks applied migrations in a `_pg_migrations` table (separate from the
  * `_migrations` table used within individual migration SQL blocks).
  */
-import { PgAdapterAsync } from "../storage.js";
+import {
+  PgAdapterAsync,
+  getStorageConnectionString,
+  redactDatabaseUrl,
+  validatePostgresConnectionString,
+} from "../storage.js";
 import { PG_MIGRATIONS } from "./pg-migrations.js";
 
 export interface PgMigrationResult {
@@ -12,6 +17,57 @@ export interface PgMigrationResult {
   alreadyApplied: number[];
   errors: string[];
   totalMigrations: number;
+}
+
+export interface PgMigrationDiagnostics {
+  ok: boolean;
+  target: "postgres-rds-compatible";
+  configured: boolean;
+  redacted_connection_string: string | null;
+  total_migrations: number;
+  mutates_remote_on_apply: true;
+  requires_approval_for_live_run: true;
+  no_network: true;
+  issues: string[];
+  warnings: string[];
+}
+
+export function getPgMigrationDiagnostics(
+  connectionString?: string
+): PgMigrationDiagnostics {
+  let resolvedConnectionString: string | null = connectionString ?? null;
+  const issues: string[] = [];
+
+  if (!resolvedConnectionString) {
+    try {
+      resolvedConnectionString = getStorageConnectionString("mementos");
+    } catch (error) {
+      issues.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  if (resolvedConnectionString) {
+    const validation = validatePostgresConnectionString(resolvedConnectionString);
+    if (!validation.ok) {
+      issues.push(...validation.issues);
+    }
+  }
+
+  return {
+    ok: issues.length === 0,
+    target: "postgres-rds-compatible",
+    configured: resolvedConnectionString !== null && issues.length === 0,
+    redacted_connection_string: redactDatabaseUrl(resolvedConnectionString),
+    total_migrations: PG_MIGRATIONS.length,
+    mutates_remote_on_apply: true,
+    requires_approval_for_live_run: true,
+    no_network: true,
+    issues,
+    warnings: [
+      "Dry-run diagnostics do not connect to PostgreSQL/RDS and do not mutate AWS or production data.",
+      "Applying migrations is a live remote database mutation and requires explicit approval for production targets.",
+    ],
+  };
 }
 
 /**
@@ -23,6 +79,13 @@ export interface PgMigrationResult {
 export async function applyPgMigrations(
   connectionString: string
 ): Promise<PgMigrationResult> {
+  const validation = validatePostgresConnectionString(connectionString);
+  if (!validation.ok) {
+    throw new Error(
+      `Remote storage database is not configured. ${validation.issues.join(" ")}`
+    );
+  }
+
   const pg = new PgAdapterAsync(connectionString);
 
   const result: PgMigrationResult = {

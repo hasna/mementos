@@ -141,9 +141,19 @@ export function registerSystemEventTools({ server, z, createMemory, saveToolEven
     "Apply PostgreSQL schema migrations to the configured RDS instance",
     {
       connection_string: z.string().optional().describe("PostgreSQL connection string (overrides storage config)"),
+      dry_run: z.boolean().optional().describe("Return safe PostgreSQL/RDS migration diagnostics without connecting"),
     },
-    async ({ connection_string }) => {
+    async ({ connection_string, dry_run }) => {
       try {
+        const { applyPgMigrations, getPgMigrationDiagnostics } = await import("../../db/pg-migrate.js");
+        if (dry_run) {
+          const diagnostics = getPgMigrationDiagnostics(connection_string);
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify(diagnostics, null, 2) }],
+            isError: !diagnostics.ok,
+          };
+        }
+
         let connStr: string;
         if (connection_string) {
           connStr = connection_string;
@@ -151,7 +161,6 @@ export function registerSystemEventTools({ server, z, createMemory, saveToolEven
           connStr = getStorageConnectionString("mementos");
         }
 
-        const { applyPgMigrations } = await import("../../db/pg-migrate.js");
         const result = await applyPgMigrations(connStr);
 
         const lines: string[] = [];

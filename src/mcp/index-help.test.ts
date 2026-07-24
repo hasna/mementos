@@ -46,7 +46,11 @@ describe("mementos-mcp entrypoint", () => {
     expect(source).toContain('"mementos_storage_push"');
     expect(source).toContain('"mementos_storage_pull"');
     expect(source).toContain('"mementos_storage_sync"');
+    expect(source).toContain('"mementos_storage_migrate_dry_run"');
     expect(entrypoint).toContain("registerMementosStorageTools");
+    expect(source).toContain("getStorageStatus");
+    expect(source).toContain("getSafeStorageConfigSummary");
+    expect(source).toContain("getPgMigrationDiagnostics");
 
     const oldPrefix = ["mementos", "cloud"].join("_");
     expect(source).not.toContain(`"${oldPrefix}_status"`);
@@ -62,5 +66,13 @@ describe("mementos-mcp entrypoint", () => {
     expect(tools).toContain('"memory_consolidate"');
     expect(tools).toContain('"memory_reflect"');
     expect(entrypoint).toContain("registerConsolidationTools");
+  });
+
+  test("registers safe PostgreSQL migration dry-run diagnostics", () => {
+    const source = readFileSync(join(import.meta.dir, "tools", "system-tools-events.ts"), "utf8");
+
+    expect(source).toContain('"migrate_pg"');
+    expect(source).toContain("dry_run");
+    expect(source).toContain("getPgMigrationDiagnostics");
   });
 });

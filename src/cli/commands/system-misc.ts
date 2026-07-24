@@ -12,10 +12,35 @@ export function registerMiscCommands(program: Command): void {
     .command("migrate-pg")
     .description("Apply PostgreSQL migrations to the configured RDS instance")
     .option("--connection-string <url>", "PostgreSQL connection string (overrides storage config)")
+    .option("--dry-run", "Print safe PostgreSQL/RDS migration diagnostics without connecting")
     .option("--json", "Output as JSON")
     .action(async (opts) => {
       const globalOpts = program.opts();
       const useJson = opts.json || globalOpts.json;
+
+      const { applyPgMigrations, getPgMigrationDiagnostics } = await import("../../db/pg-migrate.js");
+      if (opts.dryRun) {
+        const diagnostics = getPgMigrationDiagnostics(opts.connectionString);
+        if (useJson) {
+          console.log(JSON.stringify(diagnostics, null, 2));
+        } else {
+          console.log(`Target: ${diagnostics.target}`);
+          console.log(`Configured: ${diagnostics.configured ? "yes" : "no"}`);
+          console.log(`Total migrations: ${diagnostics.total_migrations}`);
+          console.log("Network: not contacted");
+          console.log("Production approval: required before live apply");
+          for (const issue of diagnostics.issues) {
+            console.error(chalk.red(`Issue: ${issue}`));
+          }
+          for (const warning of diagnostics.warnings) {
+            console.error(chalk.yellow(`Warning: ${warning}`));
+          }
+        }
+        if (!diagnostics.ok) {
+          process.exit(1);
+        }
+        return;
+      }
 
       let connStr: string;
       if (opts.connectionString) {
@@ -35,7 +60,6 @@ export function registerMiscCommands(program: Command): void {
       }
 
       try {
-        const { applyPgMigrations } = await import("../../db/pg-migrate.js");
         const result = await applyPgMigrations(connStr);
 
         if (useJson) {

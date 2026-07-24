@@ -27,6 +27,11 @@ async function runCli(
       OPENAI_API_KEY: "",
       CEREBRAS_API_KEY: "",
       XAI_API_KEY: "",
+      HASNA_MEMENTOS_DATABASE_URL: "",
+      MEMENTOS_DATABASE_URL: "",
+      HASNA_MEMENTOS_STORAGE_MODE: "",
+      MEMENTOS_STORAGE_MODE: "",
+      MEMENTOS_DATABASE_PASSWORD: "",
     },
     stdout: "pipe",
     stderr: "pipe",
@@ -126,11 +131,94 @@ describe("CLI", () => {
     const parsed = JSON.parse(stdout) as {
       mode: string;
       enabled: boolean;
-      config: { mode: string };
+      runtime: {
+        runtime: {
+          kind: string;
+          local: { adapter: string; local_file_sync: { supported: boolean } };
+          remote: { adapter: string };
+          object_storage: { s3: { supported: boolean }; aws: { mutation_allowed: boolean } };
+        };
+      };
+      config: {
+        mode: string;
+        rds: { password_configured: boolean };
+      };
     };
     expect(parsed.mode).toBe("local");
     expect(parsed.enabled).toBe(false);
+    expect(parsed.runtime.runtime.kind).toBe("local-sqlite");
+    expect(parsed.runtime.runtime.local.adapter).toBe("sqlite");
+    expect(parsed.runtime.runtime.local.local_file_sync.supported).toBe(false);
+    expect(parsed.runtime.runtime.remote.adapter).toBe("postgres");
+    expect(parsed.runtime.runtime.object_storage.s3.supported).toBe(false);
+    expect(parsed.runtime.runtime.object_storage.aws.mutation_allowed).toBe(false);
     expect(parsed.config.mode).toBe("local");
+    expect(parsed.config.rds.password_configured).toBe(false);
+  });
+
+  test("storage migrate --dry-run --json fails closed without remote config", async () => {
+    const { stdout, exitCode } = await runCli("storage", "migrate", "--dry-run", "--json");
+    expect(exitCode).toBe(1);
+    const parsed = JSON.parse(stdout) as {
+      ok: boolean;
+      no_network: boolean;
+      issues: string[];
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.no_network).toBe(true);
+    // The CLI runs as a client, where the server-side DSN gate refuses to
+    // construct an RDS Postgres connection string. Diagnostics must still fail
+    // closed and surface that reason (never contact the network).
+    expect(parsed.issues.length).toBeGreaterThan(0);
+    expect(parsed.issues.join("\n")).toContain("mementos-serve");
+  });
+
+  test("storage migrate --dry-run --json redacts connection strings", async () => {
+    const { stdout, exitCode } = await runCli(
+      "storage",
+      "migrate",
+      "--dry-run",
+      "--json",
+      "--connection-string",
+      "postgres://user:secret@example.test/mementos?sslmode=require"
+    );
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout) as {
+      ok: boolean;
+      redacted_connection_string: string;
+      mutates_remote_on_apply: boolean;
+      requires_approval_for_live_run: boolean;
+    };
+    expect(parsed.ok).toBe(true);
+    expect(parsed.redacted_connection_string).toBe(
+      "postgres://user:***@example.test/mementos?sslmode=require"
+    );
+    expect(parsed.mutates_remote_on_apply).toBe(true);
+    expect(parsed.requires_approval_for_live_run).toBe(true);
+    expect(stdout).not.toContain(":secret");
+  });
+
+  test("storage migrate --dry-run --json rejects non-Postgres connection strings", async () => {
+    const { stdout, exitCode } = await runCli(
+      "storage",
+      "migrate",
+      "--dry-run",
+      "--json",
+      "--connection-string",
+      "sqlite:///tmp/mementos.db?access_token=local-secret"
+    );
+    expect(exitCode).toBe(1);
+    const parsed = JSON.parse(stdout) as {
+      ok: boolean;
+      configured: boolean;
+      redacted_connection_string: string;
+      issues: string[];
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.configured).toBe(false);
+    expect(parsed.redacted_connection_string).toBe("sqlite:///tmp/mementos.db?access_token=***");
+    expect(parsed.issues.join("\n")).toContain("postgres:// or postgresql://");
+    expect(stdout).not.toContain("local-secret");
   });
 
   test("consolidate --dry-run --json reports planned actions without applying", async () => {

@@ -95,17 +95,26 @@ mementos-serve
 
 ## Storage Sync
 
-Mementos owns its local and remote storage path. Local data stays in the
-SQLite database under `~/.hasna/mementos/` by default. Remote sync uses the
-native `mementos storage` commands and the `HASNA_MEMENTOS_DATABASE_URL` or
-`MEMENTOS_DATABASE_URL` environment variable when PostgreSQL storage is
-configured.
+Mementos owns its local and remote storage path. The primary local runtime is
+SQLite under `~/.hasna/mementos/` by default, with config under
+`~/.hasna/mementos/storage/config.json`. Mementos does not sync raw local data
+files.
+
+Cloud storage is PostgreSQL/RDS-compatible. Enable it with
+`HASNA_MEMENTOS_STORAGE_MODE=cloud` plus `HASNA_MEMENTOS_DATABASE_URL` or
+`MEMENTOS_DATABASE_URL`, or set RDS host/user fields in the storage config.
+Legacy `hybrid` and `remote` mode values are accepted only as deprecated aliases
+for `cloud`. Cloud commands fail closed when PostgreSQL/RDS is requested but not
+configured. Status and dry-run diagnostics redact credentials and do not contact AWS.
+There is no S3 object-storage adapter in this runtime, and diagnostics do not
+store sensitive values, mutate AWS resources, deploy, or migrate production data.
 
 ```bash
 mementos storage status
 mementos storage push
 mementos storage pull
 mementos storage sync
+mementos storage migrate --dry-run
 ```
 
 ## Data Directory

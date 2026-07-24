@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.14.68 — Harden storage cloud-runtime diagnostics
+
+Adds an explicit, fail-closed cloud-runtime status contract and safe migration
+diagnostics for the storage subsystem (rebased onto the reconciled `main`).
+
+- `getStorageStatus()` now publishes a structured `runtime`
+  (`mementos-cloud-runtime-v1`) contract describing the local SQLite primary
+  runtime, unsupported local file sync, PostgreSQL/RDS remote adapter, and
+  unsupported S3/AWS mutation, with fail-closed flags and redacted URLs.
+- Remote PostgreSQL/RDS configuration fails closed for missing, invalid, or
+  non-Postgres connection strings via `validatePostgresConnectionString`, and
+  `redactDatabaseUrl` now redacts credential-bearing URL userinfo **and**
+  secret-like query parameters (password/token/secret/api_key/…).
+- Adds `mementos storage migrate --dry-run` (CLI + MCP) safe diagnostics via
+  `getPgMigrationDiagnostics`: no network, no AWS/production mutation,
+  credentials redacted; live apply still validates and requires approval.
+- README and regression coverage updated for env precedence, redaction,
+  fail-closed behavior, and CLI/MCP parity.
+
 ## 0.14.67 — Reconcile `main` with the published npm line
 
 `main` (0.14.52) had diverged from the deployed/published npm line: it was
