@@ -1,6 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { resolvePartialId, getDatabase } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import { getEntity } from "../../db/entities.js";
 import { createRelation, listRelations, deleteRelation } from "../../db/relations.js";
 import type { Entity, RelationType } from "../../types/index.js";
@@ -155,11 +156,16 @@ export function registerRelationCommands(program: Command): void {
     .action((id: string) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const db = getDatabase();
-        const resolvedId = resolvePartialId(db, "relations", id);
-        if (!resolvedId) {
-          console.error(chalk.red(`Relation not found: ${id}`));
-          process.exit(1);
+        // API mode: trust the id and let the cloud resolve/404 it (routed
+        // deleteRelation). Local: expand a partial id first.
+        let resolvedId = id;
+        if (!isApiMode()) {
+          const full = resolvePartialId(getDatabase(), "relations", id);
+          if (!full) {
+            console.error(chalk.red(`Relation not found: ${id}`));
+            process.exit(1);
+          }
+          resolvedId = full;
         }
 
         deleteRelation(resolvedId);

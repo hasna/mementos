@@ -17,6 +17,18 @@
 import { parentPort, workerData } from "node:worker_threads";
 import pg from "pg";
 
+// Postgres returns int8/BIGINT values — including COUNT()/SUM() aggregates —
+// as strings by default (node-pg avoids precision loss for true 64-bit ints).
+// Every analytics/count surface in this codebase treats those values as JS
+// numbers (e.g. `rows.reduce((s, r) => s + r.memories_created, 0)`), so without
+// this the sums *string-concatenate* into garbage — the `report` "Recent"
+// count came back as "05361123794747 new / ~670140474343/day". The schema has
+// no true bigint columns (ids are text/uuid, counters are int4/SERIAL), so
+// coercing OID 20 (int8) to a JS number only affects aggregate results and is
+// safe. Set on the worker's pg module, which owns the server's only live
+// client.
+pg.types.setTypeParser(20, (val: string) => parseInt(val, 10));
+
 interface WorkerData {
   dsn: string;
   ssl: boolean | { rejectUnauthorized: boolean } | undefined;

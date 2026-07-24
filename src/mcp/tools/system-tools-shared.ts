@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { createMemory, getMemory } from "../../db/memories.js";
 import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import { saveToolEvent } from "../../db/tool-events.js";
 import { detectProject } from "../../lib/project-detect.js";
 import type { Memory, CreateMemoryInput } from "../../types/index.js";
@@ -12,6 +13,9 @@ export function formatError(error: unknown): string {
 }
 
 export function resolveId(partialId: string, table = "memories"): string {
+  // Cloud path: no local table to prefix-match against, so trust the caller's id
+  // as-is (cloud list/search/save return full UUIDs); the server validates it.
+  if (isApiMode()) return partialId;
   const db = getDatabase();
   const id = resolvePartialId(db, table, partialId);
   if (!id) throw new Error(`Could not resolve ID: ${partialId}`);

@@ -456,6 +456,48 @@ describe("mergeEntities", () => {
     expect(links).toHaveLength(1);
   });
 
+  test("dedups incoming (target-side) relation conflicts without throwing", () => {
+    const db = getDatabase(":memory:");
+    const source = createEntity({ name: "Sin", type: "tool" }, db);
+    const target = createEntity({ name: "Tin", type: "tool" }, db);
+    const other = createEntity({ name: "Oin", type: "tool" }, db);
+
+    // `other` points at BOTH source and target with the same relation type; after
+    // the merge only the pre-existing other->target edge may survive.
+    db.run(
+      "INSERT INTO relations (id, source_entity_id, target_entity_id, relation_type) VALUES (?, ?, ?, ?)",
+      [shortUuid(), other.id, source.id, "knows"]
+    );
+    db.run(
+      "INSERT INTO relations (id, source_entity_id, target_entity_id, relation_type) VALUES (?, ?, ?, ?)",
+      [shortUuid(), other.id, target.id, "knows"]
+    );
+
+    const merged = mergeEntities(source.id, target.id, db);
+    expect(merged.id).toBe(target.id);
+
+    const rels = db
+      .query(
+        "SELECT * FROM relations WHERE source_entity_id = ? AND target_entity_id = ? AND relation_type = 'knows'"
+      )
+      .all(other.id, target.id) as Record<string, unknown>[];
+    expect(rels).toHaveLength(1);
+    // No relation should still reference the deleted source.
+    const dangling = db
+      .query("SELECT * FROM relations WHERE source_entity_id = ? OR target_entity_id = ?")
+      .all(source.id, source.id) as Record<string, unknown>[];
+    expect(dangling).toHaveLength(0);
+  });
+
+  test("accepts partial ids for source and target", () => {
+    const db = getDatabase(":memory:");
+    const source = createEntity({ name: "Sp", type: "tool" }, db);
+    const target = createEntity({ name: "Tp", type: "tool" }, db);
+    const merged = mergeEntities(source.id.slice(0, 4), target.id.slice(0, 4), db);
+    expect(merged.id).toBe(target.id);
+    expect(() => getEntity(source.id, db)).toThrow(EntityNotFoundError);
+  });
+
   test("throws EntityNotFoundError if source does not exist", () => {
     const target = createEntity({ name: "T3", type: "tool" });
     expect(() => mergeEntities("nonexistent", target.id)).toThrow(EntityNotFoundError);

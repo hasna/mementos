@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 import type { Memory, MemoryScope } from "../types/index.js";
 import { getDatabase, now, shortUuid } from "../db/database.js";
+import { isApiMode, apiJson } from "../db/api-mode.js";
 import { createMemory, getMemory, listMemories, updateMemory } from "../db/memories.js";
 import { createMemoryLink } from "../db/memory-links.js";
 import { computeDecayScore } from "./decay.js";
@@ -559,6 +560,24 @@ function buildSummary(actions: ConsolidationAction[]): ConsolidationResult["summ
 }
 
 export async function runConsolidation(options: ConsolidationOptions = {}): Promise<ConsolidationResult> {
+  // API mode: consolidation is a heavy multi-statement operation that must run
+  // against the shared cloud store, not a local SQLite island. Route it to the
+  // server (POST /consolidate), which runs this exact function server-side
+  // against cloud Postgres. Without this the op hits the split-brain guard in
+  // getDatabase(). The server passes an explicit `db`, so it never recurses here.
+  if (!options.db && isApiMode()) {
+    const { data } = apiJson<ConsolidationResult>("POST", "/consolidate", {
+      dry_run: options.dryRun ?? false,
+      scope: options.scope,
+      project_id: options.projectId,
+      agent_id: options.agentId,
+      duplicate_threshold: options.duplicateThreshold,
+      stale_days: options.staleDays,
+      decay_threshold: options.decayThreshold,
+      limit: options.limit,
+    });
+    return data;
+  }
   const db = options.db || getDatabase();
   const dryRun = options.dryRun ?? false;
   let run = createRun({ ...options, dryRun }, db);

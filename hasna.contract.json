@@ -4,13 +4,9 @@
   "name": "mementos",
   "class": "service",
   "contractVersion": "v1",
-  "kitVersion": "0.4.2",
+  "kitVersion": "0.4.1",
   "description": "Universal memory system for AI agents — CLI + MCP server + REST serve API + typed SDK. self_hosted service backed by pure-remote Postgres (Amendment A1).",
-  "bins": [
-    "mementos",
-    "mementos-mcp",
-    "mementos-serve"
-  ],
+  "bins": ["mementos", "mementos-mcp", "mementos-serve"],
   "storage": {
     "mode": "cloud",
     "envPrefix": "HASNA_MEMENTOS_",

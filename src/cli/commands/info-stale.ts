@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
-import { getDatabase } from "../../db/database.js";
+import { getStaleMemories } from "../../db/analytics.js";
 import { getProject } from "../../db/projects.js";
 import { getAgent } from "../../db/agents.js";
 import {
@@ -53,19 +53,13 @@ export function registerStaleCommand(program: Command): void {
           if (agent) agentId = agent.id;
         }
 
-        const db = getDatabase();
-        const conds = [
-          "status = 'active'",
-          `(accessed_at IS NULL OR accessed_at < datetime('now', '-${days} days'))`,
-          "pinned = 0",
-        ];
-        const params: string[] = [];
-        if (projectId) { conds.push("project_id = ?"); params.push(projectId); }
-        if (agentId) { conds.push("agent_id = ?"); params.push(agentId); }
-
-        const rows = db.query(
-          `SELECT id, key, value, importance, scope, category, accessed_at, access_count FROM memories WHERE ${conds.join(" AND ")} ORDER BY COALESCE(accessed_at, created_at) ASC LIMIT ?${offset ? " OFFSET ?" : ""}`
-        ).all(...params, isJson ? limit : limit + 1, ...(offset ? [offset] : [])) as { id: string; key: string; value: string; importance: number; scope: string; category: string; accessed_at: string | null; access_count: number }[];
+        const rows = getStaleMemories({
+          days,
+          project_id: projectId,
+          agent_id: agentId,
+          limit: isJson ? limit : limit + 1,
+          offset,
+        });
         const hasMore = !isJson && rows.length > limit;
         const displayRows = hasMore ? rows.slice(0, limit) : rows;
 

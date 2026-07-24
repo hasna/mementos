@@ -1,9 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
-import { getEntityGraph, findPath } from "../../db/relations.js";
+import { getEntityGraph, findPath, getGraphStats } from "../../db/relations.js";
 import { graphTraverse } from "../../db/entities.js";
 import { resolveEntityParam, formatGraphError } from "./graph-utils.js";
+import { resolveOptionalId } from "./memory-utils.js";
 import { buildFileDependencyGraph } from "../../lib/file-deps.js";
 import { getToolStats, getToolLessons, getToolEvents } from "../../db/tool-events.js";
 
@@ -73,43 +73,24 @@ export function registerGraphQueryTools(server: McpServer): void {
     {},
     async () => {
       try {
-        const db = getDatabase();
-        const entityTotal = (db.query("SELECT COUNT(*) as c FROM entities").get() as { c: number }).c;
-        const byType = db.query("SELECT type, COUNT(*) as c FROM entities GROUP BY type").all() as { type: string; c: number }[];
-        const relationTotal = (db.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }).c;
-        const byRelType = db.query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type").all() as { relation_type: string; c: number }[];
-        const linkTotal = (db.query("SELECT COUNT(*) as c FROM entity_memories").get() as { c: number }).c;
-
-        // Most-connected entities (top 10 by total degree)
-        const mostConnected = db.query(`
-          SELECT e.id, e.name, e.type,
-            (SELECT COUNT(*) FROM relations WHERE source_entity_id = e.id) +
-            (SELECT COUNT(*) FROM relations WHERE target_entity_id = e.id) as degree
-          FROM entities e ORDER BY degree DESC LIMIT 10
-        `).all() as { id: string; name: string; type: string; degree: number }[];
-
-        // Orphan entities (no relations)
-        const orphanCount = (db.query(`
-          SELECT COUNT(*) as c FROM entities e
-          WHERE NOT EXISTS (SELECT 1 FROM relations WHERE source_entity_id = e.id OR target_entity_id = e.id)
-        `).get() as { c: number }).c;
-
-        // Average degree
-        const avgDegree = entityTotal > 0 ? (relationTotal * 2) / entityTotal : 0;
+        const stats = getGraphStats();
+        const byType = Object.entries(stats.entities.by_type);
+        const byRelType = Object.entries(stats.relations.by_type);
+        const mostConnected = stats.most_connected;
 
         const lines = [
-          `Entities: ${entityTotal}`,
+          `Entities: ${stats.entities.total}`,
         ];
         if (byType.length > 0) {
-          lines.push(`  By type: ${byType.map(r => `${r.type}=${r.c}`).join(", ")}`);
+          lines.push(`  By type: ${byType.map(([t, c]) => `${t}=${c}`).join(", ")}`);
         }
-        lines.push(`Relations: ${relationTotal}`);
+        lines.push(`Relations: ${stats.relations.total}`);
         if (byRelType.length > 0) {
-          lines.push(`  By type: ${byRelType.map(r => `${r.relation_type}=${r.c}`).join(", ")}`);
+          lines.push(`  By type: ${byRelType.map(([t, c]) => `${t}=${c}`).join(", ")}`);
         }
-        lines.push(`Entity-memory links: ${linkTotal}`);
-        lines.push(`Avg degree: ${avgDegree.toFixed(1)}`);
-        lines.push(`Orphan entities: ${orphanCount}`);
+        lines.push(`Entity-memory links: ${stats.memory_links}`);
+        lines.push(`Avg degree: ${stats.avg_degree.toFixed(1)}`);
+        lines.push(`Orphan entities: ${stats.orphan_entities}`);
         if (mostConnected.length > 0 && mostConnected[0]!.degree > 0) {
           lines.push(`Most connected:`);
           for (const e of mostConnected.filter(e => e.degree > 0)) {
@@ -183,7 +164,7 @@ export function registerGraphQueryTools(server: McpServer): void {
       try {
         const result = await buildFileDependencyGraph({
           root_dir: args.root_dir,
-          project_id: args.project_id ? resolvePartialId(getDatabase(), "projects", args.project_id) ?? args.project_id : undefined,
+          project_id: resolveOptionalId(args.project_id, "projects"),
           extensions: args.extensions,
           exclude_patterns: args.exclude_patterns,
           incremental: args.incremental ?? true,
@@ -207,8 +188,7 @@ export function registerGraphQueryTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const db = getDatabase();
-        const projId = args.project_id ? resolvePartialId(db, "projects", args.project_id) ?? args.project_id : undefined;
+        const projId = resolveOptionalId(args.project_id, "projects");
         const limit = args.limit ?? 10;
 
         // Determine which tools to report on

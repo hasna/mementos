@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getStorageConfig } from "../../storage.js";
-import { getDatabase } from "../../db/database.js";
+import { saveFeedback } from "../../db/feedback.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
 
 function parseTables(raw?: string): string[] | undefined {
@@ -104,14 +104,12 @@ export function registerMementosStorageTools(server: McpServer): void {
     },
     async ({ message, email, category }) => {
       try {
-        const db = getDatabase();
-        db.run(
-          "INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)",
+        saveFeedback({
           message,
-          email || null,
-          category || "general",
-          "mementos"
-        );
+          email: email || null,
+          category: category || "general",
+          version: "mementos",
+        });
         return text({ saved: true });
       } catch (error) {
         return errorText(error);

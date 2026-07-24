@@ -1,5 +1,6 @@
 import { SqliteAdapter as Database } from "../storage.js";
 import { getDatabase, now, shortUuid } from "./database.js";
+import { isApiMode, apiJson, toQuery, ApiRequestError } from "./api-mode.js";
 
 export type ResourceType = "project" | "memory" | "entity" | "agent" | "connector" | "file";
 export type LockType = "advisory" | "exclusive";
@@ -42,6 +43,22 @@ export function acquireLock(
   ttlSeconds = 300,
   db?: Database
 ): ResourceLock | null {
+  if (!db && isApiMode()) {
+    try {
+      const { data } = apiJson<ResourceLock>("POST", "/locks", {
+        agent_id: agentId,
+        resource_type: resourceType,
+        resource_id: resourceId,
+        lock_type: lockType,
+        ttl_seconds: ttlSeconds,
+      });
+      return data;
+    } catch (e) {
+      // 409 = lock held by another agent → mirror the local `null` contract.
+      if (e instanceof ApiRequestError && e.status === 409) return null;
+      throw e;
+    }
+  }
   const d = db || getDatabase();
 
   // Clean expired locks first
@@ -103,6 +120,14 @@ export function acquireLock(
  * Returns true if released, false if not found or not owned.
  */
 export function releaseLock(lockId: string, agentId: string, db?: Database): boolean {
+  if (!db && isApiMode()) {
+    const { status } = apiJson<{ released: boolean }>(
+      "DELETE",
+      `/locks/${encodeURIComponent(lockId)}`,
+      { agent_id: agentId },
+    );
+    return status !== 404;
+  }
   const d = db || getDatabase();
   const result = d.run(
     "DELETE FROM resource_locks WHERE id = ? AND agent_id = ?",
@@ -132,6 +157,13 @@ export function releaseResourceLocks(
  * Release all locks held by an agent (e.g., on session end).
  */
 export function releaseAllAgentLocks(agentId: string, db?: Database): number {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ released: number }>(
+      "DELETE",
+      `/agents/${encodeURIComponent(agentId)}/locks`,
+    );
+    return data?.released ?? 0;
+  }
   const d = db || getDatabase();
   const result = d.run("DELETE FROM resource_locks WHERE agent_id = ?", [agentId]);
   return result.changes;
@@ -147,6 +179,11 @@ export function checkLock(
   lockType?: LockType,
   db?: Database
 ): ResourceLock[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ resource_type: resourceType, resource_id: resourceId, lock_type: lockType });
+    const { data } = apiJson<ResourceLock[]>("GET", `/locks${q}`);
+    return data ?? [];
+  }
   const d = db || getDatabase();
 
   cleanExpiredLocks(d);
@@ -193,6 +230,10 @@ export function agentHoldsLock(
  * List all active locks for an agent.
  */
 export function listAgentLocks(agentId: string, db?: Database): ResourceLock[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<ResourceLock[]>("GET", `/agents/${encodeURIComponent(agentId)}/locks`);
+    return data ?? [];
+  }
   const d = db || getDatabase();
   cleanExpiredLocks(d);
   const rows = d
@@ -229,6 +270,10 @@ export function cleanExpiredLocksWithInfo(db?: Database): ExpiredLockInfo[] {
 }
 
 export function cleanExpiredLocks(db?: Database): number {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ cleaned: number }>("POST", "/locks/clean");
+    return data?.cleaned ?? 0;
+  }
   const d = db || getDatabase();
   const result = d.run("DELETE FROM resource_locks WHERE expires_at <= datetime('now')");
   return result.changes;

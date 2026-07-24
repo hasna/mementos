@@ -49,6 +49,15 @@ export function addRoute(
   });
 }
 
+/** Decode a percent-encoded path param; return the raw value on malformed input. */
+function safeDecodeParam(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function matchRoute(
   method: string,
   pathname: string
@@ -66,7 +75,10 @@ export function matchRoute(
     if (match) {
       const params: Record<string, string> = {};
       route.paramNames.forEach((name, i) => {
-        params[name] = match[i + 1]!;
+        // Path params arrive percent-encoded (e.g. a project path "/tmp" is sent
+        // by the client as "%2Ftmp"). Decode so handlers resolve by the real
+        // id/path/name; fall back to the raw value on a malformed sequence.
+        params[name] = safeDecodeParam(match[i + 1]!);
       });
 
       if (
