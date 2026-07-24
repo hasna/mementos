@@ -14,7 +14,6 @@ import {
   MemoryConflictError,
 } from "../types/index.js";
 import { getDatabase, now, uuid, resolvePartialId } from "./database.js";
-import { cloudStoreFor, isCloudMode } from "./cloud-store.js";
 import { generateEmbedding, cosineSimilarity, serializeEmbedding, deserializeEmbedding } from "../lib/embeddings.js";
 import { redactSecrets } from "../lib/redact.js";
 import { hookRegistry } from "../lib/hooks.js";
@@ -23,6 +22,7 @@ import { computeTrustScore } from "../lib/poisoning.js";
 // The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
 // Keeping this comment so the migration intent is clear.
 import { unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 // ============================================================================
 // Entity extraction helper
@@ -34,6 +34,27 @@ import { unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.
 function runEntityExtraction(_memory: Memory, _projectId: string | undefined, _d: Database): void {
   // No-op: async LLM extraction handled by PostMemorySave hook in auto-memory pipeline.
   // See src/lib/auto-memory.ts → linkEntitiesToMemory()
+}
+
+/**
+ * Persist a non-default content_type on a freshly written memory. Applied as a
+ * follow-up UPDATE (mirroring the trust_score pattern) so the hand-rolled test
+ * schemas that omit the column keep working; production and the cloud server
+ * carry `content_type` via migration 20.
+ */
+function applyContentType(
+  d: Database,
+  id: string,
+  memory: Memory,
+  contentType?: CreateMemoryInput["content_type"],
+): void {
+  if (!contentType || contentType === "text") return;
+  try {
+    d.run("UPDATE memories SET content_type = ? WHERE id = ?", [contentType, id]);
+    memory.content_type = contentType;
+  } catch {
+    // content_type column may not exist in test schemas — ignore
+  }
 }
 
 // ============================================================================
@@ -80,230 +101,6 @@ export function parseMemoryRow(row: Record<string, unknown>): Memory {
 }
 
 // ============================================================================
-// Cloud (self_hosted) routing helpers
-// ============================================================================
-
-// When the client-flip resolves to cloud (mode=self_hosted + API_URL + API_KEY),
-// the `memories` resource is served by the app's cloud HTTP API instead of the
-// local SQLite store. An explicit `db` argument always means "use this local
-// database" (tests, import/export, transactions), so cloud routing is skipped
-// whenever a caller passes `db`.
-const MEMORY_RESOURCE = "memories";
-
-function cloudMemories(db?: Database) {
-  if (db) return null;
-  if (!isCloudMode()) return null;
-  return cloudStoreFor(MEMORY_RESOURCE);
-}
-
-/** Map a cloud API entity (tags array, metadata object, pinned boolean) to a Memory. */
-function apiEntityToMemory(entity: Record<string, unknown>): Memory {
-  const row: Record<string, unknown> = { ...entity };
-  if (Array.isArray(entity["tags"])) row["tags"] = JSON.stringify(entity["tags"]);
-  else if (entity["tags"] == null) row["tags"] = "[]";
-  if (entity["metadata"] && typeof entity["metadata"] === "object") {
-    row["metadata"] = JSON.stringify(entity["metadata"]);
-  } else if (entity["metadata"] == null) {
-    row["metadata"] = "{}";
-  }
-  if (typeof entity["pinned"] === "boolean") row["pinned"] = entity["pinned"] ? 1 : 0;
-  return parseMemoryRow(row);
-}
-
-/** Apply a MemoryFilter to an in-memory list, mirroring listMemories() SQL semantics. */
-function applyMemoryFilter(memories: Memory[], filter?: MemoryFilter): Memory[] {
-  const inSet = <T>(value: T, spec: T | T[] | undefined): boolean => {
-    if (spec === undefined) return true;
-    return Array.isArray(spec) ? (spec as T[]).includes(value) : spec === value;
-  };
-
-  let out = memories;
-  const f = (filter ?? {}) as MemoryFilter & Record<string, unknown>;
-
-  // Status: default to active when not specified.
-  if (f.status !== undefined) out = out.filter((m) => inSet(m.status, f.status));
-  else out = out.filter((m) => m.status === "active");
-
-  if (f.scope !== undefined) out = out.filter((m) => inSet(m.scope, f.scope));
-  if (f.category !== undefined) out = out.filter((m) => inSet(m.category, f.category));
-  if (f.source !== undefined) out = out.filter((m) => inSet(m.source, f.source));
-  if (f.project_id) out = out.filter((m) => m.project_id === f.project_id);
-  if (f.agent_id) out = out.filter((m) => m.agent_id === f.agent_id);
-  if (f.session_id) out = out.filter((m) => m.session_id === f.session_id);
-  if ("machine_id" in f) {
-    if (f.machine_id === null) out = out.filter((m) => m.machine_id == null);
-    else if (f.machine_id) out = out.filter((m) => m.machine_id === f.machine_id);
-  }
-  if ("visible_to_machine_id" in f && f["visible_to_machine_id"] !== undefined) {
-    const vis = f["visible_to_machine_id"] as string | null;
-    if (vis === null) out = out.filter((m) => m.machine_id == null);
-    else out = out.filter((m) => m.machine_id == null || m.machine_id === vis);
-  }
-  if (f.min_importance) out = out.filter((m) => m.importance >= (f.min_importance as number));
-  if (f.pinned !== undefined) out = out.filter((m) => m.pinned === Boolean(f.pinned));
-  if (f["flagged"] === true) out = out.filter((m) => m.flag != null);
-  else if (f["flag"]) out = out.filter((m) => m.flag === f["flag"]);
-  if (f.tags && f.tags.length > 0) {
-    out = out.filter((m) => (f.tags as string[]).every((t) => m.tags.includes(t)));
-  }
-  if (f.namespace) out = out.filter((m) => m.namespace === f.namespace);
-  if (f.search) {
-    const term = String(f.search).toLowerCase();
-    out = out.filter(
-      (m) =>
-        m.key.toLowerCase().includes(term) ||
-        m.value.toLowerCase().includes(term) ||
-        (m.summary ?? "").toLowerCase().includes(term),
-    );
-  }
-  if (f.as_of) {
-    const asOf = f.as_of as string;
-    out = out.filter(
-      (m) => (m.valid_from == null || m.valid_from <= asOf) && (m.valid_until == null || m.valid_until > asOf),
-    );
-  }
-
-  // ORDER BY importance DESC, created_at DESC
-  out = [...out].sort((a, b) => {
-    if (b.importance !== a.importance) return b.importance - a.importance;
-    return (b.created_at ?? "").localeCompare(a.created_at ?? "");
-  });
-
-  const offset = f.offset ?? 0;
-  const limit = f.limit;
-  if (offset || limit !== undefined) {
-    out = out.slice(offset, limit !== undefined ? offset + limit : undefined);
-  }
-  return out;
-}
-
-type CloudStore = NonNullable<ReturnType<typeof cloudStoreFor>>;
-
-/** Create (or merge) a memory against the cloud HTTP API, honoring dedupe mode. */
-function cloudCreateMemory(store: CloudStore, input: CreateMemoryInput, dedupeMode: DedupeMode): Memory {
-  // Handle TTL / working-scope expiry identically to the local path.
-  let expiresAt = input.expires_at || null;
-  if (input.ttl_ms && !expiresAt) expiresAt = new Date(Date.now() + input.ttl_ms).toISOString();
-  if (input.scope === "working" && !expiresAt) expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
-
-  const safeValue = redactSecrets(input.value);
-  const safeSummary = input.summary ? redactSecrets(input.summary) : null;
-
-  const body: Record<string, unknown> = {
-    key: input.key,
-    value: safeValue,
-    category: input.category ?? "knowledge",
-    scope: input.scope ?? "private",
-    summary: safeSummary,
-    tags: input.tags ?? [],
-    importance: input.importance ?? 5,
-    metadata: input.metadata ?? {},
-    expires_at: expiresAt,
-    when_to_use: input.when_to_use ?? null,
-    source: input.source,
-    agent_id: input.agent_id,
-    project_id: input.project_id,
-    session_id: input.session_id,
-  };
-
-  const effectiveMode =
-    dedupeMode === "overwrite" ? "merge" : dedupeMode === "version-fork" ? "create" : dedupeMode;
-
-  if (effectiveMode !== "create") {
-    // Find candidates with the same key (server filtering is best-effort; match client-side).
-    const candidates = (store.list({ key: input.key, limit: 500 }) as Record<string, unknown>[])
-      .map(apiEntityToMemory)
-      .filter((m) => m.key === input.key && m.status === "active");
-
-    if (effectiveMode === "error") {
-      const clash = candidates.find(
-        (m) => m.scope === (input.scope ?? "private") && (m.project_id ?? "") === (input.project_id ?? ""),
-      );
-      if (clash) {
-        throw new MemoryConflictError(input.key, {
-          id: clash.id,
-          agent_id: clash.agent_id,
-          updated_at: clash.updated_at,
-        });
-      }
-    }
-
-    if (effectiveMode === "merge") {
-      const existing = candidates.find(
-        (m) =>
-          m.scope === (input.scope ?? "private") &&
-          (m.agent_id ?? "") === (input.agent_id ?? "") &&
-          (m.project_id ?? "") === (input.project_id ?? "") &&
-          (m.session_id ?? "") === (input.session_id ?? ""),
-      );
-      if (existing) {
-        const patch: Record<string, unknown> = {
-          value: safeValue,
-          category: input.category ?? "knowledge",
-          summary: safeSummary,
-          tags: input.tags ?? [],
-          importance: input.importance ?? 5,
-          metadata: input.metadata ?? {},
-          expires_at: expiresAt,
-          when_to_use: input.when_to_use ?? null,
-        };
-        const updated = store.update(existing.id, patch) as Record<string, unknown>;
-        return apiEntityToMemory(updated);
-      }
-    }
-  }
-
-  const created = store.create(body) as Record<string, unknown>;
-  return apiEntityToMemory(created);
-}
-
-/** Update a memory against the cloud HTTP API with the same optimistic-locking contract. */
-function cloudUpdateMemory(store: CloudStore, id: string, input: UpdateMemoryInput): Memory {
-  const existingEntity = store.get(id) as Record<string, unknown> | null;
-  if (!existingEntity) throw new MemoryNotFoundError(id);
-  const existing = apiEntityToMemory(existingEntity);
-  if (existing.version !== input.version) {
-    throw new VersionConflictError(id, input.version, existing.version);
-  }
-
-  const patch: Record<string, unknown> = {};
-  if (input.value !== undefined) patch["value"] = redactSecrets(input.value);
-  if (input.category !== undefined) patch["category"] = input.category;
-  if (input.scope !== undefined) patch["scope"] = input.scope;
-  if (input.summary !== undefined) patch["summary"] = input.summary;
-  if (input.importance !== undefined) patch["importance"] = input.importance;
-  if (input.pinned !== undefined) patch["pinned"] = input.pinned;
-  if (input.status !== undefined) patch["status"] = input.status;
-  if (input.metadata !== undefined) patch["metadata"] = input.metadata;
-  if (input.expires_at !== undefined) patch["expires_at"] = input.expires_at;
-  if (input.flag !== undefined) patch["flag"] = input.flag ?? null;
-  if (input.when_to_use !== undefined) patch["when_to_use"] = input.when_to_use ?? null;
-  if (input.tags !== undefined) patch["tags"] = input.tags;
-
-  const updated = store.update(id, patch) as Record<string, unknown>;
-  const memory = apiEntityToMemory(updated);
-  void hookRegistry.runHooks("PostMemoryUpdate", {
-    memory,
-    previousValue: existing.value,
-    agentId: existing.agent_id ?? undefined,
-    projectId: existing.project_id ?? undefined,
-    sessionId: existing.session_id ?? undefined,
-    timestamp: Date.now(),
-  });
-  return memory;
-}
-
-/** Fetch the cloud page for the memories resource (server-side hints + client-side parity). */
-function cloudListMemories(store: CloudStore, filter?: MemoryFilter): Memory[] {
-  const query: Record<string, string | number | boolean | undefined> = {};
-  if (filter?.limit) query["limit"] = filter.limit;
-  if (filter?.offset) query["offset"] = filter.offset;
-  const entities = store.list(query) as Record<string, unknown>[];
-  const mapped = entities.map(apiEntityToMemory);
-  return applyMemoryFilter(mapped, filter);
-}
-
-// ============================================================================
 // Create
 // ============================================================================
 
@@ -312,11 +109,10 @@ export function createMemory(
   dedupeMode: DedupeMode = "merge",
   db?: Database
 ): Memory {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    return cloudCreateMemory(cloud, input, dedupeMode);
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Memory>("POST", "/memories", { ...input, dedupe: dedupeMode });
+    return data;
   }
-
   const d = db || getDatabase();
   const timestamp = now();
 
@@ -423,6 +219,7 @@ export function createMemory(
       }
 
       const merged = getMemory(existing.id, d)!;
+      applyContentType(d, existing.id, merged, input.content_type);
 
       // Compute and store trust_score for poisoning detection
       try {
@@ -448,6 +245,14 @@ export function createMemory(
       return merged;
     }
   }
+
+  // Ensure FK-referenced rows exist before inserting. On the cloud server and
+  // during cross-machine imports, a memory can reference an agent/project/
+  // session/machine id created on another machine that is absent here; with
+  // `PRAGMA foreign_keys = ON` (and the equivalent FK constraints on Postgres)
+  // that INSERT throws a FK error (opaque HTTP 500) and drops the write.
+  // Provision minimal stubs so authorship is preserved.
+  ensureMemoryReferences(d, input);
 
   // Insert new
   d.run(
@@ -491,6 +296,7 @@ export function createMemory(
   }
 
   const memory = getMemory(id, d)!;
+  applyContentType(d, id, memory, input.content_type);
 
   // Compute and store trust_score for poisoning detection
   try {
@@ -518,8 +324,215 @@ export function createMemory(
 }
 
 // ============================================================================
+// Bulk restore / backfill
+// ============================================================================
+
+export interface BulkUpsertResult {
+  inserted: number;
+  skipped: number;
+  errors: string[];
+  total: number;
+}
+
+/**
+ * Faithful, idempotent bulk restore of memories into the current store.
+ *
+ * Unlike {@link createMemory}, this primitive:
+ *  - PRESERVES the original `id` (does not regenerate a UUID);
+ *  - PRESERVES `status` (archived stays archived — never resurrected to active);
+ *  - PRESERVES timestamps, `version`, `pinned`, `access_count` and scope fields;
+ *  - does NOT dedupe by key/scope/agent and does NOT fire hooks / entity
+ *    extraction / embedding work (those run asynchronously elsewhere).
+ *
+ * Idempotency is by primary-key `id`: `INSERT OR IGNORE` maps to
+ * `ON CONFLICT DO NOTHING` on Postgres, so a row whose `id` already exists is
+ * left untouched and re-runs never create duplicate rows. This is the
+ * cross-machine → cloud backfill path for the fleet self-host cutover: a
+ * machine's local memories are shipped to the cloud store verbatim without
+ * mutating rows that are already present.
+ *
+ * FK-referenced agent/project/session/machine rows are stubbed via
+ * {@link ensureMemoryReferences} so cross-machine authorship ids never fail the
+ * write. Values and summaries are still passed through {@link redactSecrets}.
+ */
+export function bulkUpsertMemories(
+  memories: Array<Record<string, unknown>>,
+  db?: Database
+): BulkUpsertResult {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<BulkUpsertResult>("POST", "/memories/bulk-upsert", { memories });
+    return data;
+  }
+  const d = db || getDatabase();
+  let inserted = 0;
+  let skipped = 0;
+  const errors: string[] = [];
+
+  const insert = d.prepare(
+    `INSERT OR IGNORE INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, when_to_use, sequence_group, sequence_order, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const insertTag = d.prepare(
+    "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
+  );
+
+  for (const mem of memories) {
+    const key = mem["key"] as string | undefined;
+    const id = (mem["id"] as string) || uuid();
+    try {
+      if (!key) {
+        errors.push(`skipped row without key (id=${id})`);
+        continue;
+      }
+      const timestamp = now();
+
+      // tags may arrive as an array (JSON body) or a serialized JSON string (row dump)
+      let tags: string[] = [];
+      const rawTags = mem["tags"];
+      if (Array.isArray(rawTags)) {
+        tags = rawTags as string[];
+      } else if (typeof rawTags === "string" && rawTags.trim()) {
+        try {
+          const parsed = JSON.parse(rawTags);
+          if (Array.isArray(parsed)) tags = parsed as string[];
+        } catch {
+          // leave tags empty on malformed input
+        }
+      }
+      const tagsJson = JSON.stringify(tags);
+
+      // metadata may arrive as an object or a serialized JSON string
+      let metadataJson = "{}";
+      const rawMeta = mem["metadata"];
+      if (rawMeta && typeof rawMeta === "object") {
+        metadataJson = JSON.stringify(rawMeta);
+      } else if (typeof rawMeta === "string" && rawMeta.trim()) {
+        metadataJson = rawMeta;
+      }
+
+      const safeValue = redactSecrets(String(mem["value"] ?? ""));
+      const safeSummary = mem["summary"] ? redactSecrets(String(mem["summary"])) : null;
+
+      const agentId = (mem["agent_id"] as string) ?? null;
+      const projectId = (mem["project_id"] as string) ?? null;
+      const sessionId = (mem["session_id"] as string) ?? null;
+      const machineId = (mem["machine_id"] as string) ?? null;
+
+      // Satisfy FK constraints for ids that were created on another machine.
+      ensureMemoryReferences(d, {
+        key,
+        value: safeValue,
+        agent_id: agentId ?? undefined,
+        project_id: projectId ?? undefined,
+        session_id: sessionId ?? undefined,
+        machine_id: machineId ?? undefined,
+      } as CreateMemoryInput);
+
+      const res = insert.run(
+        id,
+        key,
+        safeValue,
+        (mem["category"] as string) || "knowledge",
+        (mem["scope"] as string) || "private",
+        safeSummary,
+        tagsJson,
+        (mem["importance"] as number) ?? 5,
+        (mem["source"] as string) || "imported",
+        (mem["status"] as string) || "active",
+        Boolean(mem["pinned"]),
+        agentId,
+        projectId,
+        sessionId,
+        machineId,
+        (mem["namespace"] as string) ?? null,
+        (mem["created_by_agent"] as string) ?? agentId,
+        (mem["when_to_use"] as string) ?? null,
+        (mem["sequence_group"] as string) ?? null,
+        (mem["sequence_order"] as number) ?? null,
+        metadataJson,
+        (mem["access_count"] as number) ?? 0,
+        (mem["version"] as number) ?? 1,
+        (mem["expires_at"] as string) ?? null,
+        (mem["valid_from"] as string) ?? timestamp,
+        (mem["valid_until"] as string) ?? null,
+        (mem["ingested_at"] as string) ?? timestamp,
+        (mem["created_at"] as string) ?? timestamp,
+        (mem["updated_at"] as string) ?? timestamp
+      );
+
+      if ((res?.changes ?? 0) > 0) {
+        inserted++;
+        for (const tag of tags) {
+          try {
+            insertTag.run(id, tag);
+          } catch {
+            // tag table may be absent in reduced schemas — never block the row
+          }
+        }
+      } else {
+        // id already present — left untouched (idempotent, non-destructive)
+        skipped++;
+      }
+    } catch (e) {
+      errors.push(
+        `Failed "${String(key)}": ${e instanceof Error ? e.message : String(e)}`
+      );
+    }
+  }
+
+  return { inserted, skipped, errors, total: memories.length };
+}
+
+// ============================================================================
 // Internal helpers
 // ============================================================================
+
+/**
+ * Ensure the agent/project/session/machine rows referenced by a memory exist,
+ * inserting minimal stubs when they do not. Idempotent (INSERT OR IGNORE keyed
+ * on the primary id, so existing real rows are never modified). This keeps the
+ * FK constraints on `memories` satisfiable for writes that originate on another
+ * machine (the cloud/self_hosted flip and cross-machine imports) instead of
+ * failing the whole write with a foreign-key error.
+ */
+function ensureMemoryReferences(d: Database, input: CreateMemoryInput): void {
+  const t = now();
+  // Each stub is best-effort and independently guarded: a referenced table may
+  // be absent in reduced/test schemas, and a missing stub must never block the
+  // write (the FK, when present, is what we are satisfying).
+  const tryRun = (sql: string, params: unknown[]): void => {
+    try {
+      d.run(sql, params as never[]);
+    } catch {
+      // Table/column may not exist in this schema variant — ignore.
+    }
+  };
+  if (input.agent_id) {
+    tryRun(
+      "INSERT OR IGNORE INTO agents (id, name, role, created_at, last_seen_at) VALUES (?, ?, 'agent', ?, ?)",
+      [input.agent_id, `imported-${input.agent_id}`, t, t]
+    );
+  }
+  if (input.project_id) {
+    tryRun(
+      "INSERT OR IGNORE INTO projects (id, name, path, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      [input.project_id, `imported-${input.project_id}`, `imported://${input.project_id}`, t, t]
+    );
+  }
+  if (input.machine_id) {
+    tryRun(
+      "INSERT OR IGNORE INTO machines (id, name, hostname, platform, created_at, last_seen_at) VALUES (?, ?, ?, 'unknown', ?, ?)",
+      [input.machine_id, `imported-${input.machine_id}`, `imported-${input.machine_id}`, t, t]
+    );
+  }
+  if (input.session_id) {
+    // sessions.agent_id / project_id reference agents/projects (stubbed above).
+    tryRun(
+      "INSERT OR IGNORE INTO sessions (id, agent_id, project_id, started_at, last_activity) VALUES (?, ?, ?, ?, ?)",
+      [input.session_id, input.agent_id ?? null, input.project_id ?? null, t, t]
+    );
+  }
+}
 
 /** List active memories with the same key (for trust_score contradiction check). */
 function listMemoriesByKey(key: string, db: Database): Memory[] {
@@ -534,14 +547,19 @@ function listMemoriesByKey(key: string, db: Database): Memory[] {
 // ============================================================================
 
 export function getMemory(id: string, db?: Database): Memory | null {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    const entity = cloud.get(id) as Record<string, unknown> | null;
-    return entity ? apiEntityToMemory(entity) : null;
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Memory>("GET", `/memories/${encodeURIComponent(id)}`);
+    return status === 404 ? null : (data ?? null);
   }
-
   const d = db || getDatabase();
-  const row = d.query("SELECT * FROM memories WHERE id = ?").get(id) as
+  // Resolve a partial-ID prefix to the full UUID. In local mode the CLI
+  // pre-resolves via resolveMemoryId, but in API mode the client cannot
+  // prefix-match (no local table), so `show`/`when-to-use <partial-id>` reach
+  // the server with a prefix. Resolving here makes those work against the cloud
+  // exactly as they do locally. A full 36-char id short-circuits to an exact
+  // match; anything shorter is a unique-prefix lookup.
+  const resolvedId = resolvePartialId(d, "memories", id) ?? id;
+  const row = d.query("SELECT * FROM memories WHERE id = ?").get(resolvedId) as
     | Record<string, unknown>
     | null;
   if (!row) return null;
@@ -557,16 +575,11 @@ export function getMemoryByKey(
   db?: Database,
   as_of?: string
 ): Memory | null {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    const matches = applyMemoryFilter(
-      (cloud.list({ key, limit: 500 }) as Record<string, unknown>[]).map(apiEntityToMemory),
-      { scope: scope as MemoryFilter["scope"], agent_id: agentId, project_id: projectId, session_id: sessionId, as_of, status: "active" },
-    ).filter((m) => m.key === key);
-    // ORDER BY importance DESC LIMIT 1
-    return matches[0] ?? null;
+  if (!db && isApiMode()) {
+    const q = toQuery({ key, scope, agent_id: agentId, project_id: projectId, session_id: sessionId, as_of, status: "active", limit: 1 });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories${q}`);
+    return data?.memories?.[0] ?? null;
   }
-
   const d = db || getDatabase();
 
   let sql = "SELECT * FROM memories WHERE key = ?";
@@ -613,14 +626,13 @@ export function getMemoriesByKey(
   projectId?: string,
   db?: Database
 ): Memory[] {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    return applyMemoryFilter(
-      (cloud.list({ key, limit: 500 }) as Record<string, unknown>[]).map(apiEntityToMemory),
-      { scope: scope as MemoryFilter["scope"], agent_id: agentId, project_id: projectId, status: "active" },
-    ).filter((m) => m.key === key);
+  if (!db && isApiMode()) {
+    // Cloud path: return ALL active matches for this key so callers (e.g. the
+    // `forget <key>` CLI command) can find/delete cloud-resident memories.
+    const q = toQuery({ key, scope, agent_id: agentId, project_id: projectId, status: "active" });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories${q}`);
+    return data?.memories ?? [];
   }
-
   const d = db || getDatabase();
 
   let sql = "SELECT * FROM memories WHERE key = ?";
@@ -650,16 +662,36 @@ export function getMemoriesByKey(
 // ============================================================================
 
 export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    return cloudListMemories(cloud, filter);
+  if (!db && isApiMode()) {
+    const f = filter || {};
+    const q = toQuery({
+      key: f.key,
+      scope: f.scope,
+      category: f.category,
+      status: f.status,
+      tags: f.tags,
+      min_importance: f.min_importance,
+      pinned: f.pinned,
+      agent_id: f.agent_id,
+      project_id: f.project_id,
+      session_id: f.session_id,
+      namespace: f.namespace,
+      as_of: f.as_of,
+      limit: f.limit,
+      offset: f.offset,
+    });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories${q}`);
+    return data?.memories ?? [];
   }
-
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
 
   if (filter) {
+    if (filter.key) {
+      conditions.push("key = ?");
+      params.push(filter.key);
+    }
     if (filter.scope) {
       if (Array.isArray(filter.scope)) {
         conditions.push(`scope IN (${filter.scope.map(() => "?").join(",")})`);
@@ -798,6 +830,201 @@ export function listMemories(filter?: MemoryFilter, db?: Database): Memory[] {
   return rows.map(parseMemoryRow);
 }
 
+export interface MemoryBriefingResult {
+  new: Memory[];
+  updated: Memory[];
+  expired: Memory[];
+}
+
+/**
+ * Delta briefing: memories created / updated / expired since a timestamp,
+ * scoped by machine visibility. Transport-aware: in API mode the whole
+ * computation runs on the self-hosted server (the client has no DB).
+ *
+ * `visible_machine_id`: a resolved value (the caller resolves its own current
+ * machine). `null`/`undefined` restricts to machine-agnostic memories; a string
+ * also includes memories local to that machine.
+ */
+export function getMemoryBriefing(
+  opts: {
+    since: string;
+    scope?: string;
+    project_id?: string;
+    visible_machine_id?: string | null;
+    limit?: number;
+  },
+  db?: Database
+): MemoryBriefingResult {
+  const limit = opts.limit ?? 20;
+  if (!db && isApiMode()) {
+    const q = toQuery({
+      since: opts.since,
+      scope: opts.scope,
+      project_id: opts.project_id,
+      machine_agnostic: opts.visible_machine_id === null || opts.visible_machine_id === undefined ? true : undefined,
+      visible_machine_id: typeof opts.visible_machine_id === "string" ? opts.visible_machine_id : undefined,
+      limit,
+    });
+    const { data } = apiJson<MemoryBriefingResult>("GET", `/memories/briefing${q}`);
+    return data ?? { new: [], updated: [], expired: [] };
+  }
+  const d = db || getDatabase();
+
+  const visibleMachineId = opts.visible_machine_id;
+  const scopeClause = opts.scope ? "AND scope = ?" : "";
+  const projectClause = opts.project_id ? "AND project_id = ?" : "";
+  const machineClause =
+    typeof visibleMachineId === "string"
+      ? "AND (machine_id IS NULL OR machine_id = ?)"
+      : "AND machine_id IS NULL";
+  const extraParams: SQLQueryBindings[] = [
+    ...(opts.scope ? [opts.scope] : []),
+    ...(opts.project_id ? [opts.project_id] : []),
+    ...(typeof visibleMachineId === "string" ? [visibleMachineId] : []),
+  ];
+
+  const newRows = d.prepare(
+    `SELECT * FROM memories
+     WHERE status = 'active' AND created_at > ? ${scopeClause} ${projectClause} ${machineClause}
+     ORDER BY importance DESC, created_at DESC LIMIT ?`
+  ).all(opts.since, ...extraParams, limit) as Record<string, unknown>[];
+
+  const updatedRows = d.prepare(
+    `SELECT * FROM memories
+     WHERE status = 'active' AND updated_at > ? AND created_at <= ? ${scopeClause} ${projectClause} ${machineClause}
+     ORDER BY importance DESC, updated_at DESC LIMIT ?`
+  ).all(opts.since, opts.since, ...extraParams, limit) as Record<string, unknown>[];
+
+  const expiredRows = d.prepare(
+    `SELECT * FROM memories
+     WHERE status != 'active' AND updated_at > ? ${scopeClause} ${projectClause} ${machineClause}
+     ORDER BY updated_at DESC LIMIT ?`
+  ).all(opts.since, ...extraParams, Math.min(limit, 10)) as Record<string, unknown>[];
+
+  return {
+    new: newRows.map(parseMemoryRow),
+    updated: updatedRows.map(parseMemoryRow),
+    expired: expiredRows.map(parseMemoryRow),
+  };
+}
+
+/**
+ * Low-trust memories (trust_score below a threshold) for poisoning review.
+ * Transport-aware: API mode reads from the self-hosted server.
+ */
+export function listLowTrustMemories(
+  opts: { threshold?: number; project_id?: string; limit?: number; offset?: number } = {},
+  db?: Database
+): Memory[] {
+  const threshold = opts.threshold ?? 0.8;
+  const limit = opts.limit ?? 20;
+  const offset = opts.offset ?? 0;
+  if (!db && isApiMode()) {
+    const q = toQuery({ threshold, project_id: opts.project_id, limit, offset });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories/audit${q}`);
+    return data?.memories ?? [];
+  }
+  const d = db || getDatabase();
+  const conditions: string[] = ["trust_score < ?", "status = 'active'"];
+  const params: SQLQueryBindings[] = [threshold];
+  if (opts.project_id) {
+    const resolved = resolvePartialId(d, "projects", opts.project_id);
+    conditions.push("project_id = ?");
+    params.push(resolved ?? opts.project_id);
+  }
+  params.push(limit, offset);
+  const rows = d.prepare(
+    `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY trust_score ASC LIMIT ? OFFSET ?`
+  ).all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
+}
+
+/**
+ * List memories ordered by most-recently-accessed (the `history` surface).
+ * Only returns memories that have been accessed at least once.
+ */
+export function listMemoryHistory(
+  opts: { limit?: number; offset?: number } = {},
+  db?: Database
+): Memory[] {
+  const limit = opts.limit ?? 20;
+  const offset = opts.offset ?? 0;
+  if (!db && isApiMode()) {
+    const q = toQuery({ limit, offset });
+    const { data } = apiJson<{ memories: Memory[] }>("GET", `/memories/history${q}`);
+    return data?.memories ?? [];
+  }
+  const d = db || getDatabase();
+  const params: SQLQueryBindings[] = [limit];
+  let sql =
+    "SELECT * FROM memories WHERE status = 'active' AND accessed_at IS NOT NULL ORDER BY accessed_at DESC LIMIT ?";
+  if (offset) {
+    sql += " OFFSET ?";
+    params.push(offset);
+  }
+  const rows = d.query(sql).all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
+}
+
+/**
+ * Retrieve an ordered memory chain by sequence_group (the `chain` surface).
+ */
+export function getMemoryChain(
+  sequenceGroup: string,
+  projectId?: string,
+  db?: Database
+): Memory[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ project_id: projectId });
+    // Server returns already-parsed Memory objects (like /memories), so use them
+    // directly rather than re-running parseMemoryRow over a parsed shape.
+    const { data } = apiJson<{ chain: Memory[] }>(
+      "GET",
+      `/chains/${encodeURIComponent(sequenceGroup)}${q}`
+    );
+    return data?.chain ?? [];
+  }
+  const d = db || getDatabase();
+  const conditions = ["sequence_group = ?", "status = 'active'"];
+  const params: SQLQueryBindings[] = [sequenceGroup];
+  if (projectId) {
+    conditions.push("project_id = ?");
+    params.push(projectId);
+  }
+  const rows = d
+    .prepare(
+      `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY sequence_order ASC`
+    )
+    .all(...params) as Record<string, unknown>[];
+  return rows.map(parseMemoryRow);
+}
+
+/**
+ * Load stored embeddings for a set of memory ids, for in-process re-ranking.
+ * API mode has no local embeddings table (the cloud store owns embeddings and
+ * ranks server-side), so it returns an empty map and callers gracefully fall
+ * back to importance/recency ordering.
+ */
+export function getMemoryEmbeddings(ids: string[], db?: Database): Map<string, number[]> {
+  const map = new Map<string, number[]>();
+  if (ids.length === 0) return map;
+  if (!db && isApiMode()) return map;
+  const d = db || getDatabase();
+  const rows = d
+    .prepare(
+      `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${ids.map(() => "?").join(",")})`
+    )
+    .all(...(ids as SQLQueryBindings[])) as Array<{ memory_id: string; embedding: string }>;
+  for (const row of rows) {
+    try {
+      map.set(row.memory_id, deserializeEmbedding(row.embedding));
+    } catch {
+      // skip malformed embedding
+    }
+  }
+  return map;
+}
+
 // ============================================================================
 // Update
 // ============================================================================
@@ -807,11 +1034,11 @@ export function updateMemory(
   input: UpdateMemoryInput,
   db?: Database
 ): Memory {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    return cloudUpdateMemory(cloud, id, input);
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input);
+    if (status === 404) throw new MemoryNotFoundError(id);
+    return data;
   }
-
   const d = db || getDatabase();
   const existing = getMemory(id, d);
   if (!existing) throw new MemoryNotFoundError(id);
@@ -940,15 +1167,10 @@ export function updateMemory(
 // ============================================================================
 
 export function deleteMemory(id: string, db?: Database): boolean {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    const existed = cloud.del(id);
-    if (existed) {
-      void hookRegistry.runHooks("PostMemoryDelete", { memoryId: id, timestamp: Date.now() });
-    }
-    return existed;
+  if (!db && isApiMode()) {
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/memories/${encodeURIComponent(id)}`);
+    return status !== 404;
   }
-
   const d = db || getDatabase();
   // Fire PostMemoryDelete hook (non-blocking)
   const result = d.run("DELETE FROM memories WHERE id = ?", [id]);
@@ -962,17 +1184,12 @@ export function deleteMemory(id: string, db?: Database): boolean {
 }
 
 export function bulkDeleteMemories(ids: string[], db?: Database): number {
-  const cloud = cloudMemories(db);
-  if (cloud) {
-    let count = 0;
-    for (const id of ids) {
-      if (cloud.del(id)) count++;
-    }
-    return count;
-  }
-
-  const d = db || getDatabase();
   if (ids.length === 0) return 0;
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ deleted: number; total: number }>("POST", "/memories/bulk-forget", { ids });
+    return data?.deleted ?? 0;
+  }
+  const d = db || getDatabase();
 
   const placeholders = ids.map(() => "?").join(",");
   // Count first — result.changes includes FTS5 trigger operations
@@ -996,6 +1213,8 @@ export function bulkDeleteMemories(ids: string[], db?: Database): number {
 // ============================================================================
 
 export function touchMemory(id: string, db?: Database): void {
+  // In API mode the server touches on GET; avoid an extra round-trip.
+  if (!db && isApiMode()) return;
   const d = db || getDatabase();
   d.run(
     "UPDATE memories SET access_count = access_count + 1, accessed_at = ? WHERE id = ?",
@@ -1012,6 +1231,7 @@ export function touchMemory(id: string, db?: Database): void {
 const RECALL_PROMOTE_THRESHOLD = 3;
 
 export function incrementRecallCount(id: string, db?: Database): void {
+  if (!db && isApiMode()) return;
   const d = db || getDatabase();
   try {
     // Increment recall_count and access_count atomically
@@ -1040,6 +1260,10 @@ export function incrementRecallCount(id: string, db?: Database): void {
 // ============================================================================
 
 export function cleanExpiredMemories(db?: Database): number {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ cleaned: number }>("POST", "/memories/clean");
+    return data?.cleaned ?? 0;
+  }
   const d = db || getDatabase();
   const timestamp = now();
   // Count first — result.changes includes FTS5 trigger operations
@@ -1063,6 +1287,10 @@ export function cleanExpiredMemories(db?: Database): number {
 // ============================================================================
 
 export function getMemoryVersions(memoryId: string, db?: Database): MemoryVersion[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ versions: MemoryVersion[] }>("GET", `/memories/${encodeURIComponent(memoryId)}/versions`);
+    return data?.versions ?? [];
+  }
   const d = db || getDatabase();
   try {
     const rows = d
@@ -1129,11 +1357,33 @@ export async function semanticSearch(
     scope?: string;
     agent_id?: string;
     project_id?: string;
+    index_missing?: boolean;
   } = {},
   db?: Database
 ): Promise<SemanticSearchResult[]> {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ results: SemanticSearchResult[] }>("POST", "/memories/search/semantic", { query: queryText, ...options });
+    return data?.results ?? [];
+  }
   const d = db || getDatabase();
   const { threshold = 0.5, limit = 10, scope, agent_id, project_id } = options;
+
+  // Optionally backfill embeddings for any active memories that lack one, so a
+  // freshly-populated store can be searched semantically on first call. This is
+  // a store-side (local/server) operation; in API mode it runs on the server
+  // via the forwarded index_missing flag above.
+  if (options.index_missing) {
+    const unindexed = d.prepare(
+      `SELECT id, value, summary, when_to_use FROM memories
+       WHERE status = 'active' AND id NOT IN (SELECT memory_id FROM memory_embeddings)
+       LIMIT 100`
+    ).all() as Array<{ id: string; value: string; summary: string | null; when_to_use: string | null }>;
+    await Promise.all(
+      unindexed.map((m) =>
+        indexMemoryEmbedding(m.id, m.when_to_use || [m.value, m.summary].filter(Boolean).join(" "), d)
+      )
+    );
+  }
 
   // Generate query embedding
   const { embedding: queryEmbedding } = await generateEmbedding(queryText);

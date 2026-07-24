@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 import type { Project } from "../types/index.js";
 import { getDatabase, now, uuid } from "./database.js";
+import { isApiMode, apiJson } from "./api-mode.js";
 
 function parseProjectRow(row: Record<string, unknown>): Project {
   return {
@@ -21,6 +22,15 @@ export function registerProject(
   memoryPrefix?: string,
   db?: Database
 ): Project {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Project>("POST", "/projects", {
+      name,
+      path,
+      description,
+      memory_prefix: memoryPrefix,
+    });
+    return data;
+  }
   const d = db || getDatabase();
   const timestamp = now();
 
@@ -51,6 +61,11 @@ export function getProject(
   idOrPath: string,
   db?: Database
 ): Project | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Project>("GET", `/projects/${encodeURIComponent(idOrPath)}`);
+    if (status === 404 || !data) return null;
+    return data;
+  }
   const d = db || getDatabase();
 
   let row = d.query("SELECT * FROM projects WHERE id = ?").get(idOrPath) as
@@ -73,6 +88,10 @@ export function getProject(
 }
 
 export function listProjects(db?: Database): Project[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ projects: Project[] }>("GET", "/projects");
+    return data?.projects ?? [];
+  }
   const d = db || getDatabase();
   const rows = d
     .query("SELECT * FROM projects ORDER BY updated_at DESC")

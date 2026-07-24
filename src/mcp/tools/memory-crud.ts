@@ -13,6 +13,7 @@ import {
 import { touchAgent } from "../../db/agents.js";
 import { resolveProjectId } from "../../lib/focus.js";
 import { getDatabase } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import { getCurrentMachineId } from "../../db/machines.js";
 import { searchMemories } from "../../lib/search.js";
 import { parseDuration } from "../../lib/duration.js";
@@ -82,7 +83,9 @@ export function registerMemoryCrudTools(server: McpServer): void {
 
         // Vector clock conflict detection
         // Before creating/updating, check if existing memory has a diverged vector clock
-        if (conflictStrategy === "reject" && input.agent_id) {
+        // Vector-clock conflict detection is a store-side concern. In API mode
+        // the self-hosted server owns it; the client must not open sqlite.
+        if (conflictStrategy === "reject" && input.agent_id && !isApiMode()) {
           const db = getDatabase();
           try {
             const existing = db.query(
@@ -201,8 +204,9 @@ export function registerMemoryCrudTools(server: McpServer): void {
 
         const memory = createMemory(input as unknown as CreateMemoryInput, dedupeMode);
 
-        // Update vector_clock with agent_id entry incremented
-        if (input.agent_id) {
+        // Update vector_clock with agent_id entry incremented (store-side only;
+        // the cloud server maintains its own clocks in API mode).
+        if (input.agent_id && !isApiMode()) {
           try {
             const db = getDatabase();
             const row = db.query("SELECT vector_clock FROM memories WHERE id = ?").get(memory.id) as { vector_clock: string } | null;
@@ -261,8 +265,9 @@ export function registerMemoryCrudTools(server: McpServer): void {
           if (args.agent_id) touchAgent(args.agent_id);
           let text = formatMemory(memory);
 
-          // If memory belongs to a chain, include chain context
-          if (memory.sequence_group) {
+          // If memory belongs to a chain, include chain context (local store
+          // only; skipped in API mode rather than opening sqlite on the client).
+          if (memory.sequence_group && !isApiMode()) {
             try {
               const db = getDatabase();
               const chainRows = db.prepare(

@@ -124,6 +124,11 @@ export function deprioritizeStale(days: number, db?: Database): number {
   // Find active memories not accessed in `days` days.
   // Use accessed_at if available, otherwise fall back to updated_at.
   // Skip pinned memories. Lower importance by 1 (floor at 1) and bump version.
+  // The WHERE guard `importance > 1` guarantees importance >= 2, so
+  // `importance - 1 >= 1` already — no scalar floor is needed. We deliberately
+  // avoid SQLite's two-arg scalar `MAX(x, 1)`: it is NOT portable to the cloud
+  // Postgres backend (Postgres MAX is an aggregate; the scalar form is GREATEST),
+  // and this UPDATE runs server-side against Postgres in cloud mode.
   const deprioWhere = `status = 'active' AND pinned = 0 AND importance > 1 AND COALESCE(accessed_at, updated_at) < ?`;
   // Count first — result.changes includes FTS5 trigger operations
   const count = (d
@@ -132,7 +137,7 @@ export function deprioritizeStale(days: number, db?: Database): number {
   if (count > 0) {
     d.run(
       `UPDATE memories
-       SET importance = MAX(importance - 1, 1),
+       SET importance = importance - 1,
            version = version + 1,
            updated_at = ?
        WHERE ${deprioWhere}`,

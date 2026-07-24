@@ -2,6 +2,7 @@ import { z } from "zod";
 import { SqliteAdapter as Database } from "../storage.js";
 import type { Memory } from "../types/index.js";
 import { getDatabase, now, shortUuid } from "../db/database.js";
+import { isApiMode, apiJson } from "../db/api-mode.js";
 import { createMemory, listMemories } from "../db/memories.js";
 import { createMemoryLink } from "../db/memory-links.js";
 
@@ -498,6 +499,28 @@ Return concise lessons. Each lesson must be actionable, evidence-backed, and use
 }
 
 export async function reflectOnTrajectory(options: ReflectionOptions): Promise<ReflectionResult> {
+  // API mode: reflection reads a trajectory and writes lesson memories, so it
+  // must run against the shared cloud store. Route to the server (POST /reflect),
+  // which runs this exact function server-side (with its own critic provider)
+  // against cloud Postgres. Without this the op hits the getDatabase() split-brain
+  // guard. The server passes an explicit `db`, so it never recurses here. The
+  // `critic` option is a function and is intentionally not serialized — the
+  // server constructs its default critic from provider/model.
+  if (!options.db && isApiMode()) {
+    const { data } = apiJson<ReflectionResult>("POST", "/reflect", {
+      on: options.on,
+      source: options.source,
+      dry_run: options.dryRun ?? false,
+      project_id: options.projectId,
+      agent_id: options.agentId,
+      since: options.since,
+      until: options.until,
+      provider: options.provider,
+      model: options.model,
+      max_tokens: options.maxTokens,
+    });
+    return data;
+  }
   const db = options.db || getDatabase();
   const dryRun = options.dryRun ?? false;
   const provider = options.provider ?? process.env["MEMENTOS_REFLECT_PROVIDER"] ?? DEFAULT_REFLECTION_PROVIDER;

@@ -1,7 +1,8 @@
 import type { SystemToolDeps, Memory, CreateMemoryInput } from "./system-tools-shared.js";
 import { compactPageHint, compactText, positiveLimit } from "./memory-utils.js";
+import { listLowTrustMemories } from "../../db/memories.js";
 
-export function registerSystemMemoryAdminTools({ server, z, createMemory, getMemory, getDatabase, formatError, resolveId, ensureAutoProject }: SystemToolDeps): void {
+export function registerSystemMemoryAdminTools({ server, z, createMemory, getMemory, formatError, resolveId, ensureAutoProject }: SystemToolDeps): void {
   server.tool(
     "memory_audit",
     "Review low-trust memories (trust_score < threshold). Returns memories flagged by the poisoning detection heuristic for manual review.",
@@ -13,27 +14,22 @@ export function registerSystemMemoryAdminTools({ server, z, createMemory, getMem
     },
     async (args) => {
       try {
-        const db = getDatabase();
         const threshold = args.threshold ?? 0.8;
         const limit = positiveLimit(args.limit, 20);
         const offset = args.offset ?? 0;
-        const conditions: string[] = ["trust_score < ?", "status = 'active'"];
-        const params: (string | number)[] = [threshold];
-        if (args.project_id) {
-          const { resolvePartialId } = await import("../../db/database.js");
-          const resolved = resolvePartialId(db, "projects", args.project_id);
-          conditions.push("project_id = ?");
-          params.push(resolved ?? args.project_id);
-        }
-        params.push(limit + 1, offset);
-        const sql = `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY trust_score ASC LIMIT ?`;
-        const rows = db.query(`${sql} OFFSET ?`).all(...params) as Record<string, unknown>[];
+        // Fetch limit+1 to detect a further page. Routes through the Store
+        // (local SQLite or the self-hosted API), never touches sqlite directly.
+        const rows = listLowTrustMemories({
+          threshold,
+          project_id: args.project_id,
+          limit: limit + 1,
+          offset,
+        });
         if (rows.length === 0) {
           return { content: [{ type: "text" as const, text: `No low-trust memories found (threshold: ${threshold})` }] };
         }
-        const { parseMemoryRow } = await import("../../db/memories.js");
         const hasMore = rows.length > limit;
-        const memories = (hasMore ? rows.slice(0, limit) : rows).map(parseMemoryRow);
+        const memories = hasMore ? rows.slice(0, limit) : rows;
         const lines = memories.map((m) =>
           `[trust=${(m.trust_score ?? 1.0).toFixed(2)}] ${m.id.slice(0, 8)} ${m.key}: ${compactText(m.value, 100)}`
         );
@@ -228,10 +224,8 @@ export function registerSystemMemoryAdminTools({ server, z, createMemory, getMem
           project_id: args.project_id,
           session_id: args.session_id,
           metadata,
+          content_type: "image",
         });
-
-        const db = getDatabase();
-        db.run("UPDATE memories SET content_type = 'image' WHERE id = ?", [memory.id]);
 
         return { content: [{ type: "text" as const, text: JSON.stringify({
           saved: memory.key,

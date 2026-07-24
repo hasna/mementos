@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, shortUuid } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 import type { Entity, Relation, CreateRelationInput, RelationType } from "../types/index.js";
 import { hookRegistry } from "../lib/hooks.js";
 
@@ -38,6 +39,10 @@ export function parseEntityRow(row: Record<string, unknown>): Entity {
 // ============================================================================
 
 export function createRelation(input: CreateRelationInput, db?: Database): Relation {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Relation>("POST", "/relations", input);
+    return data;
+  }
   const d = db || getDatabase();
   const id = shortUuid();
   const timestamp = now();
@@ -79,6 +84,11 @@ export function createRelation(input: CreateRelationInput, db?: Database): Relat
 // ============================================================================
 
 export function getRelation(id: string, db?: Database): Relation {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Relation>("GET", `/relations/${encodeURIComponent(id)}`);
+    if (status === 404 || !data) throw new Error(`Relation not found: ${id}`);
+    return data;
+  }
   const d = db || getDatabase();
   const row = d.query("SELECT * FROM relations WHERE id = ?").get(id) as Record<string, unknown> | null;
   if (!row) throw new Error(`Relation not found: ${id}`);
@@ -97,6 +107,19 @@ export function listRelations(
   },
   db?: Database
 ): Relation[] {
+  if (!db && isApiMode()) {
+    // The cloud exposes relations for a given entity at
+    // GET /entities/:id/relations. A general (entity-less) relation listing has
+    // no cloud endpoint; the fail-closed getDatabase() guard covers that case.
+    if (filter.entity_id) {
+      const q = toQuery({ type: filter.relation_type, direction: filter.direction });
+      const { data } = apiJson<{ relations: Relation[] }>(
+        "GET",
+        `/entities/${encodeURIComponent(filter.entity_id)}/relations${q}`,
+      );
+      return data?.relations ?? [];
+    }
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: unknown[] = [];
@@ -130,6 +153,11 @@ export function listRelations(
 // ============================================================================
 
 export function deleteRelation(id: string, db?: Database): void {
+  if (!db && isApiMode()) {
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/relations/${encodeURIComponent(id)}`);
+    if (status === 404) throw new Error(`Relation not found: ${id}`);
+    return;
+  }
   const d = db || getDatabase();
   const result = d.run("DELETE FROM relations WHERE id = ?", [id]);
   if (result.changes === 0) throw new Error(`Relation not found: ${id}`);
@@ -147,6 +175,14 @@ export function getRelatedEntities(
   relationType?: RelationType,
   db?: Database
 ): Entity[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ type: relationType });
+    const { data } = apiJson<{ entities: Entity[] }>(
+      "GET",
+      `/entities/${encodeURIComponent(entityId)}/related${q}`,
+    );
+    return data?.entities ?? [];
+  }
   const d = db || getDatabase();
 
   let sql: string;
@@ -186,6 +222,14 @@ export function getEntityGraph(
   depth: number = 2,
   db?: Database
 ): { entities: Entity[]; relations: Relation[] } {
+  if (!db && isApiMode()) {
+    const q = toQuery({ depth });
+    const { data } = apiJson<{ entities: Entity[]; relations: Relation[] }>(
+      "GET",
+      `/graph/${encodeURIComponent(entityId)}${q}`,
+    );
+    return { entities: data?.entities ?? [], relations: data?.relations ?? [] };
+  }
   const d = db || getDatabase();
 
   // Get entities via recursive CTE
@@ -233,6 +277,12 @@ export function findPath(
   maxDepth: number = 5,
   db?: Database
 ): Entity[] | null {
+  if (!db && isApiMode()) {
+    const q = toQuery({ from: fromEntityId, to: toEntityId, max_depth: maxDepth });
+    const { data } = apiJson<{ path: Entity[] | null; found: boolean }>("GET", `/graph/path${q}`);
+    if (!data || !data.found || !data.path) return null;
+    return data.path;
+  }
   const d = db || getDatabase();
 
   // Use recursive CTE that tracks the full path
@@ -264,4 +314,60 @@ export function findPath(
   }
 
   return entities.length > 0 ? entities : null;
+}
+
+// ============================================================================
+// Graph statistics
+// ============================================================================
+
+export interface GraphStats {
+  entities: { total: number; by_type: Record<string, number> };
+  relations: { total: number; by_type: Record<string, number> };
+  memory_links: number;
+  orphan_entities: number;
+  avg_degree: number;
+  most_connected: { id: string; name: string; type: string; degree: number }[];
+}
+
+export function getGraphStats(db?: Database): GraphStats {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<GraphStats>("GET", "/graph/stats");
+    return {
+      entities: data?.entities ?? { total: 0, by_type: {} },
+      relations: data?.relations ?? { total: 0, by_type: {} },
+      memory_links: data?.memory_links ?? 0,
+      orphan_entities: data?.orphan_entities ?? 0,
+      avg_degree: data?.avg_degree ?? 0,
+      most_connected: data?.most_connected ?? [],
+    };
+  }
+  const d = db || getDatabase();
+  const entityTotal = (d.query("SELECT COUNT(*) as c FROM entities").get() as { c: number }).c;
+  const byType = d.query("SELECT type, COUNT(*) as c FROM entities GROUP BY type").all() as { type: string; c: number }[];
+  const relationTotal = (d.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }).c;
+  const byRelType = d.query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type").all() as { relation_type: string; c: number }[];
+  const linkTotal = (d.query("SELECT COUNT(*) as c FROM entity_memories").get() as { c: number }).c;
+
+  const mostConnected = d.query(`
+    SELECT e.id, e.name, e.type,
+      (SELECT COUNT(*) FROM relations WHERE source_entity_id = e.id) +
+      (SELECT COUNT(*) FROM relations WHERE target_entity_id = e.id) as degree
+    FROM entities e ORDER BY degree DESC LIMIT 10
+  `).all() as { id: string; name: string; type: string; degree: number }[];
+
+  const orphanCount = (d.query(`
+    SELECT COUNT(*) as c FROM entities e
+    WHERE NOT EXISTS (SELECT 1 FROM relations WHERE source_entity_id = e.id OR target_entity_id = e.id)
+  `).get() as { c: number }).c;
+
+  const avgDegree = entityTotal > 0 ? (relationTotal * 2) / entityTotal : 0;
+
+  return {
+    entities: { total: entityTotal, by_type: Object.fromEntries(byType.map((r) => [r.type, r.c])) },
+    relations: { total: relationTotal, by_type: Object.fromEntries(byRelType.map((r) => [r.relation_type, r.c])) },
+    memory_links: linkTotal,
+    orphan_entities: orphanCount,
+    avg_degree: avgDegree,
+    most_connected: mostConnected,
+  };
 }

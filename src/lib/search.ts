@@ -6,6 +6,24 @@ import { listEntities, getEntityByName } from "../db/entities.js";
 import { getMemoriesForEntity } from "../db/entity-memories.js";
 import { semanticSearch, type SemanticSearchResult } from "../db/memories.js";
 import { computeDecayScore } from "./decay.js";
+import { isApiMode, apiJson } from "../db/api-mode.js";
+
+/** Shape a MemoryFilter into the JSON body the cloud search routes accept. */
+function searchBody(query: string, filter?: MemoryFilter, extra?: Record<string, unknown>): Record<string, unknown> {
+  const f = filter || {};
+  return {
+    query,
+    scope: f.scope,
+    category: f.category,
+    tags: f.tags,
+    agent_id: f.agent_id,
+    project_id: f.project_id,
+    session_id: f.session_id,
+    namespace: f.namespace,
+    limit: f.limit,
+    ...extra,
+  };
+}
 
 // ============================================================================
 // Helpers
@@ -652,6 +670,10 @@ export function searchMemories(
   filter?: MemoryFilter,
   db?: Database
 ): MemorySearchResult[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ results: MemorySearchResult[] }>("POST", "/memories/search", searchBody(query, filter));
+    return data?.results ?? [];
+  }
   const d = db || getDatabase();
   query = preprocessQuery(query);
   if (!query) return []; // empty after trim
@@ -731,6 +753,10 @@ export function searchWithBm25(
   filter?: MemoryFilter,
   db?: Database
 ): MemorySearchResult[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ results: MemorySearchResult[] }>("POST", "/memories/search/bm25", searchBody(query, filter));
+    return data?.results ?? [];
+  }
   const d = db || getDatabase();
   query = preprocessQuery(query);
   if (!query) return [];
@@ -833,6 +859,15 @@ export async function hybridSearch(
   } = {},
   db?: Database
 ): Promise<HybridSearchResult[]> {
+  if (!db && isApiMode()) {
+    const { filter: f, semantic_threshold, limit: lim } = options;
+    const { data } = apiJson<{ results: HybridSearchResult[] }>(
+      "POST",
+      "/memories/search/hybrid",
+      searchBody(query, f, { semantic_threshold, limit: lim }),
+    );
+    return data?.results ?? [];
+  }
   const d = db || getDatabase();
   const {
     filter,

@@ -1,8 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listMemories, touchMemory, semanticSearch } from "../../db/memories.js";
+import { listMemories, touchMemory, semanticSearch, getMemoryEmbeddings } from "../../db/memories.js";
+import { getSubscriptionNotifications } from "../../db/subscriptions.js";
 import { hookRegistry } from "../../lib/hooks.js";
-import { getDatabase } from "../../db/database.js";
 import {
   isMemoryVisibleToMachine,
   resolveVisibleMachineId,
@@ -143,20 +143,13 @@ export function registerMemoryInjectTools(server: McpServer): void {
 
         // Smart strategy: score by embedding similarity + importance + recency
         if (args.strategy === "smart" && args.query) {
-          const { generateEmbedding: genEmb, cosineSimilarity: cosSim, deserializeEmbedding: deserEmb } = await import("../../lib/embeddings.js");
-          const d = getDatabase();
+          const { generateEmbedding: genEmb, cosineSimilarity: cosSim } = await import("../../lib/embeddings.js");
           const { embedding: queryEmbedding } = await genEmb(args.query);
 
-          // Load embeddings for candidate memories
-          const embeddingMap = new Map<string, number[]>();
-          if (unique.length > 0) {
-            const rows = d.prepare(
-              `SELECT memory_id, embedding FROM memory_embeddings WHERE memory_id IN (${unique.map(() => "?").join(",")})`
-            ).all(...unique.map((m) => m.id)) as Array<{ memory_id: string; embedding: string }>;
-            for (const row of rows) {
-              try { embeddingMap.set(row.memory_id, deserEmb(row.embedding)); } catch { /* skip malformed */ }
-            }
-          }
+          // Load embeddings for candidate memories via the Store (empty in API
+          // mode, where the cloud ranks server-side — scoring degrades to
+          // importance/recency order).
+          const embeddingMap = getMemoryEmbeddings(unique.map((m) => m.id));
 
           if (embeddingMap.size > 0) {
             // Compute recency reference
@@ -332,46 +325,11 @@ export function registerMemoryInjectTools(server: McpServer): void {
           timestamp: Date.now(),
         });
 
-        // Task 6: Check for subscription notifications
+        // Task 6: Check for subscription notifications (routed through the Store)
         if (args.agent_id) {
-          try {
-            const db = getDatabase();
-            const subs = db.query(
-              "SELECT key_pattern, tag_pattern, scope FROM memory_subscriptions WHERE agent_id = ?"
-            ).all(args.agent_id) as Array<{ key_pattern: string | null; tag_pattern: string | null; scope: string | null }>;
-
-            if (subs.length > 0) {
-              // Find recently changed memories matching subscriptions (last 10 minutes)
-              const cutoff = new Date(Date.now() - 10 * 60 * 1000).toISOString();
-              const changes: string[] = [];
-              for (const sub of subs) {
-                let sql = "SELECT key, updated_at FROM memories WHERE updated_at > ? AND status = 'active'";
-                const params: (string | null)[] = [cutoff];
-                if (sub.key_pattern) {
-                  const like = sub.key_pattern.replace(/\*/g, "%");
-                  sql += " AND key LIKE ?";
-                  params.push(like);
-                }
-                if (sub.scope) {
-                  sql += " AND scope = ?";
-                  params.push(sub.scope);
-                }
-                // Exclude agent's own writes
-                sql += " AND COALESCE(agent_id, '') != ?";
-                params.push(args.agent_id);
-                sql += " LIMIT 5";
-                const matches = db.query(sql).all(...params) as Array<{ key: string; updated_at: string }>;
-                for (const m of matches) {
-                  changes.push(`${m.key} (updated ${m.updated_at})`);
-                }
-              }
-              if (changes.length > 0) {
-                const changeSection = `\n\n## Changes\n${changes.map((c) => `- ${c}`).join("\n")}`;
-                context += changeSection;
-              }
-            }
-          } catch {
-            // memory_subscriptions table may not exist — ignore
+          const changes = getSubscriptionNotifications(args.agent_id);
+          if (changes.length > 0) {
+            context += `\n\n## Changes\n${changes.map((c) => `- ${c}`).join("\n")}`;
           }
         }
 

@@ -2,6 +2,7 @@ import { SqliteAdapter as Database } from "../storage.js";
 import type { Agent } from "../types/index.js";
 import { AgentConflictError } from "../types/index.js";
 import { getDatabase, now, shortUuid, resolvePartialId } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
 
@@ -27,6 +28,16 @@ export function registerAgent(
   projectId?: string,
   db?: Database
 ): Agent {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<Agent>("POST", "/agents", {
+      name,
+      session_id: sessionId,
+      description,
+      role,
+      project_id: projectId,
+    });
+    return data;
+  }
   const d = db || getDatabase();
   const timestamp = now();
   const normalizedName = name.trim().toLowerCase();
@@ -96,6 +107,11 @@ export function getAgent(
   idOrName: string,
   db?: Database
 ): Agent | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Agent>("GET", `/agents/${encodeURIComponent(idOrName)}`);
+    if (status === 404 || !data) return null;
+    return data;
+  }
   const d = db || getDatabase();
 
   // Try by ID first
@@ -120,6 +136,10 @@ export function getAgent(
 }
 
 export function listAgents(db?: Database): Agent[] {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<{ agents: Agent[] }>("GET", "/agents");
+    return data?.agents ?? [];
+  }
   const d = db || getDatabase();
   const rows = d
     .query("SELECT * FROM agents ORDER BY last_seen_at DESC")
@@ -128,6 +148,14 @@ export function listAgents(db?: Database): Agent[] {
 }
 
 export function touchAgent(idOrName: string, db?: Database): void {
+  if (!db && isApiMode()) {
+    // No dedicated "touch" endpoint; PATCH with an empty body bumps last_seen_at
+    // server-side (updateAgent always refreshes last_seen_at). Best-effort.
+    const agent = getAgent(idOrName);
+    if (!agent) return;
+    apiJson("PATCH", `/agents/${encodeURIComponent(agent.id)}`, {});
+    return;
+  }
   const d = db || getDatabase();
   const agent = getAgent(idOrName, d);
   if (!agent) return;
@@ -135,6 +163,11 @@ export function touchAgent(idOrName: string, db?: Database): void {
 }
 
 export function listAgentsByProject(projectId: string, db?: Database): Agent[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ project_id: projectId });
+    const { data } = apiJson<{ agents: Agent[] }>("GET", `/agents${q}`);
+    return data?.agents ?? [];
+  }
   const d = db || getDatabase();
   // Resolve partial project ID to full UUID
   const resolvedId = resolvePartialId(d, "projects", projectId) || projectId;
@@ -149,6 +182,11 @@ export function updateAgent(
   updates: { name?: string; description?: string; role?: string; metadata?: Record<string, unknown>; active_project_id?: string | null },
   db?: Database
 ): Agent | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<Agent>("PATCH", `/agents/${encodeURIComponent(id)}`, updates);
+    if (status === 404 || !data) return null;
+    return data;
+  }
   const d = db || getDatabase();
   const agent = getAgent(id, d);
   if (!agent) return null;

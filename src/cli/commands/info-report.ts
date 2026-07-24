@@ -1,7 +1,7 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
-import { getDatabase } from "../../db/database.js";
+import { getMemoryReport } from "../../db/analytics.js";
 import { getProject } from "../../db/projects.js";
 
 export function registerReportCommand(program: Command): void {
@@ -25,35 +25,16 @@ export function registerReportCommand(program: Command): void {
           if (project) projectId = project.id;
         }
 
-        const db = getDatabase();
-
-        const conditions = projectId ? "AND project_id = ?" : "";
-        const params = projectId ? [projectId] : [];
-        const total = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' ${conditions}`).get(...params) as { c: number }).c;
-        const pinned = (db.query(`SELECT COUNT(*) as c FROM memories WHERE status = 'active' AND pinned = 1 ${conditions}`).get(...params) as { c: number }).c;
-
-        // Activity trend (last N days)
-        const activityRows = db.query(`
-          SELECT date(created_at) AS d, COUNT(*) AS cnt
-          FROM memories WHERE status = 'active' AND date(created_at) >= date('now', '-${days} days') ${conditions}
-          GROUP BY d ORDER BY d ASC
-        `).all(...params) as { d: string; cnt: number }[];
-        const recentTotal = activityRows.reduce((s, r) => s + r.cnt, 0);
+        // Route through the Store (api mode → GET /api/report; local → sqlite).
+        const report = getMemoryReport({ days, project_id: projectId });
+        const { total, pinned } = report;
+        const activityRows = report.recent.activity;
+        const recentTotal = report.recent.total;
         const avgPerDay = activityRows.length > 0 ? (recentTotal / activityRows.length).toFixed(1) : "0";
-
-        // By scope
-        const byScopeRows = db.query(`SELECT scope, COUNT(*) as c FROM memories WHERE status = 'active' ${conditions} GROUP BY scope`).all(...params) as { scope: string; c: number }[];
-        const byScope = Object.fromEntries(byScopeRows.map(r => [r.scope, r.c]));
-
-        // By category
-        const byCatRows = db.query(`SELECT category, COUNT(*) as c FROM memories WHERE status = 'active' ${conditions} GROUP BY category`).all(...params) as { category: string; c: number }[];
-        const byCat = Object.fromEntries(byCatRows.map(r => [r.category, r.c]));
-
-        // Top memories by importance
-        const topMems = db.query(`SELECT key, value, importance, scope, category FROM memories WHERE status = 'active' ${conditions} ORDER BY importance DESC, access_count DESC LIMIT 5`).all(...params) as { key: string; value: string; importance: number; scope: string; category: string }[];
-
-        // Top agents by memory count
-        const topAgents = db.query(`SELECT agent_id, COUNT(*) as c FROM memories WHERE status = 'active' AND agent_id IS NOT NULL ${conditions} GROUP BY agent_id ORDER BY c DESC LIMIT 5`).all(...params) as { agent_id: string; c: number }[];
+        const byScope = report.by_scope;
+        const byCat = report.by_category;
+        const topMems = report.top_memories;
+        const topAgents = report.top_agents;
 
         if (isJson) {
           console.log(JSON.stringify({ total, pinned, recent: { days, total: recentTotal, avg_per_day: parseFloat(avgPerDay) }, by_scope: byScope, by_category: byCat, top_memories: topMems, top_agents: topAgents }, null, 2));
@@ -82,8 +63,8 @@ export function registerReportCommand(program: Command): void {
         // Default human-readable output
         const sparkline = activityRows.map(r => {
           const bars = "▁▂▃▄▅▆▇█";
-          const maxC = Math.max(...activityRows.map(x => x.cnt), 1);
-          return bars[Math.round((r.cnt / maxC) * 7)] || "▁";
+          const maxC = Math.max(...activityRows.map(x => x.memories_created), 1);
+          return bars[Math.round((r.memories_created / maxC) * 7)] || "▁";
         }).join("");
 
         console.log(chalk.bold(`\nmementos report — last ${days} days\n`));

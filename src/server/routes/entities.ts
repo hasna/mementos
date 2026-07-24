@@ -1,5 +1,5 @@
-import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities } from "../../db/entities.js";
-import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath } from "../../db/relations.js";
+import { createEntity, getEntity, listEntities, updateEntity, deleteEntity, mergeEntities, graphTraverse } from "../../db/entities.js";
+import { createRelation, getRelation, listRelations, deleteRelation, getEntityGraph, findPath, getGraphStats, getRelatedEntities } from "../../db/relations.js";
 import { linkEntityToMemory, unlinkEntityFromMemory, getMemoriesForEntity } from "../../db/entity-memories.js";
 import { getDatabase } from "../../db/database.js";
 import {
@@ -116,6 +116,24 @@ addRoute("GET", "/api/entities/:id/relations", (_req, url, params) => {
       direction: q["direction"] as "outgoing" | "incoming" | "both" | undefined,
     });
     return json({ relations, count: relations.length });
+  } catch (e) {
+    if (e instanceof EntityNotFoundError) {
+      return errorResponse(e.message, 404);
+    }
+    throw e;
+  }
+});
+
+// GET /api/entities/:id/related — list entities directly related to this one
+addRoute("GET", "/api/entities/:id/related", (_req, url, params) => {
+  const q = getSearchParams(url);
+  try {
+    getEntity(params["id"]!); // verify entity exists
+    const entities = getRelatedEntities(
+      params["id"]!,
+      q["type"] as RelationType | undefined,
+    );
+    return json({ entities, count: entities.length });
   } catch (e) {
     if (e instanceof EntityNotFoundError) {
       return errorResponse(e.message, 404);
@@ -242,31 +260,24 @@ addRoute("GET", "/api/graph/path", (_req, url) => {
 
 // GET /api/graph/stats — entity/relation counts by type
 addRoute("GET", "/api/graph/stats", () => {
-  const db = getDatabase();
+  return json(getGraphStats(getDatabase()));
+});
 
-  const entityCount = (
-    db.query("SELECT COUNT(*) as c FROM entities").get() as { c: number }
-  ).c;
-  const relationCount = (
-    db.query("SELECT COUNT(*) as c FROM relations").get() as { c: number }
-  ).c;
-  const entitiesByType = db
-    .query("SELECT type, COUNT(*) as c FROM entities GROUP BY type")
-    .all() as { type: string; c: number }[];
-  const relationsByType = db
-    .query("SELECT relation_type, COUNT(*) as c FROM relations GROUP BY relation_type")
-    .all() as { relation_type: string; c: number }[];
-
-  return json({
-    entities: {
-      total: entityCount,
-      by_type: Object.fromEntries(entitiesByType.map((r) => [r.type, r.c])),
+// GET /api/graph/traverse/:entityId — multi-hop traversal
+addRoute("GET", "/api/graph/traverse/:entityId", (_req, url, params) => {
+  const q = getSearchParams(url);
+  const relationTypes = q["relation_types"] ? q["relation_types"].split(",").filter(Boolean) : undefined;
+  const direction = q["direction"] as "outgoing" | "incoming" | "both" | undefined;
+  return json(graphTraverse(
+    params["entityId"]!,
+    {
+      max_depth: q["max_depth"] ? parseInt(q["max_depth"], 10) : undefined,
+      direction,
+      limit: q["limit"] ? parseInt(q["limit"], 10) : undefined,
+      relation_types: relationTypes,
     },
-    relations: {
-      total: relationCount,
-      by_type: Object.fromEntries(relationsByType.map((r) => [r.relation_type, r.c])),
-    },
-  });
+    getDatabase()
+  ));
 });
 
 // GET /api/graph/:entityId — get connected graph

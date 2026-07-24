@@ -97,6 +97,7 @@ export interface CreateMemoryInput {
   sequence_group?: string;
   sequence_order?: number;
   namespace?: string;
+  content_type?: "text" | "code" | "image" | "resource";
 }
 
 export interface UpdateMemoryInput {
@@ -120,6 +121,7 @@ export interface UpdateMemoryInput {
 // ============================================================================
 
 export interface MemoryFilter {
+  key?: string;
   scope?: MemoryScope | MemoryScope[];
   category?: MemoryCategory | MemoryCategory[];
   source?: MemorySource | MemorySource[];

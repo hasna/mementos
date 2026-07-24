@@ -1,16 +1,49 @@
-import { listMemories, createMemory, cleanExpiredMemories, touchMemory } from "../../db/memories.js";
-import { getDbPath } from "../../lib/config.js";
+import { listMemories, createMemory, cleanExpiredMemories, touchMemory, getMemoryBriefing, listLowTrustMemories } from "../../db/memories.js";
+import { getDbPath, loadConfig } from "../../lib/config.js";
+import { runCleanup } from "../../lib/retention.js";
 import {
   resolveVisibleMachineId,
   visibleToMachineFilter,
 } from "../../lib/machine-visibility.js";
 import type { Memory, MemoryCategory, CreateMemoryInput } from "../../types/index.js";
 import { addRoute } from "../router.js";
-import { json, readJson, getSearchParams } from "../helpers.js";
+import { json, readJson, errorResponse, getSearchParams } from "../helpers.js";
 
 // GET /api/health — simple health
 addRoute("GET", "/api/health", () => {
   return json({ ok: true, version: "1", db: getDbPath() });
+});
+
+// GET /api/memories/briefing — delta briefing (new/updated/expired since a ts).
+// The client sends its own resolved machine visibility so cross-machine callers
+// see machine-agnostic + their-own-machine memories, never the server's.
+addRoute("GET", "/api/memories/briefing", (_req, url) => {
+  const q = getSearchParams(url);
+  const since = q["since"];
+  if (!since) return errorResponse("Missing required field: since", 400);
+  let visibleMachineId: string | null | undefined;
+  if (q["machine_agnostic"] === "true") visibleMachineId = null;
+  else if (q["visible_machine_id"]) visibleMachineId = q["visible_machine_id"];
+  const result = getMemoryBriefing({
+    since,
+    scope: q["scope"] || undefined,
+    project_id: q["project_id"] || undefined,
+    visible_machine_id: visibleMachineId,
+    limit: q["limit"] ? parseInt(q["limit"], 10) : undefined,
+  });
+  return json(result);
+});
+
+// GET /api/memories/audit — low-trust memories for poisoning review
+addRoute("GET", "/api/memories/audit", (_req, url) => {
+  const q = getSearchParams(url);
+  const memories = listLowTrustMemories({
+    threshold: q["threshold"] ? parseFloat(q["threshold"]) : undefined,
+    project_id: q["project_id"] || undefined,
+    limit: q["limit"] ? parseInt(q["limit"], 10) : undefined,
+    offset: q["offset"] ? parseInt(q["offset"], 10) : undefined,
+  });
+  return json({ memories, count: memories.length });
 });
 
 // POST /api/memories/extract — extract memories from a session summary
@@ -97,10 +130,20 @@ addRoute("POST", "/api/memories/extract", async (req) => {
   return json({ created: created.length, memory_ids: created, errors, session_id: sessionId }, 201);
 });
 
-// POST /api/memories/clean — cleanup expired
+// POST /api/memories/clean — cleanup expired (legacy: expired-only, kept stable)
 addRoute("POST", "/api/memories/clean", () => {
   const cleaned = cleanExpiredMemories();
   return json({ cleaned });
+});
+
+// POST /api/maintenance/cleanup — full retention sweep against the shared cloud
+// store: remove expired, enforce per-scope quotas, archive stale/unused, and
+// deprioritize stale memories. This is the server-side execution of the client
+// `mementos clean` command in API mode (no local SQLite island). Runs against
+// the server's own config + cloud Postgres via runCleanup().
+addRoute("POST", "/api/maintenance/cleanup", () => {
+  const result = runCleanup(loadConfig());
+  return json(result);
 });
 
 // GET /api/inject — get injection context

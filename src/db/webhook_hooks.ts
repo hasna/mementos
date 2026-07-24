@@ -1,6 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 type SQLQueryBindings = string | number | null | boolean;
 import { getDatabase, now, shortUuid } from "./database.js";
+import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 import type { WebhookHook, HookType } from "../types/hooks.js";
 
 // ============================================================================
@@ -42,6 +43,18 @@ export function createWebhookHook(
   input: CreateWebhookHookInput,
   db?: Database
 ): WebhookHook {
+  if (!db && isApiMode()) {
+    const { data } = apiJson<WebhookHook>("POST", "/webhooks", {
+      type: input.type,
+      handler_url: input.handlerUrl,
+      priority: input.priority,
+      blocking: input.blocking,
+      agent_id: input.agentId,
+      project_id: input.projectId,
+      description: input.description,
+    });
+    return data;
+  }
   const d = db || getDatabase();
   const id = shortUuid();
   const timestamp = now();
@@ -71,6 +84,11 @@ export function createWebhookHook(
 // ============================================================================
 
 export function getWebhookHook(id: string, db?: Database): WebhookHook | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<WebhookHook>("GET", `/webhooks/${encodeURIComponent(id)}`);
+    if (status === 404 || !data) return null;
+    return data;
+  }
   const d = db || getDatabase();
   const row = d
     .query("SELECT * FROM webhook_hooks WHERE id = ?")
@@ -82,6 +100,11 @@ export function listWebhookHooks(
   filter: { type?: HookType; enabled?: boolean } = {},
   db?: Database
 ): WebhookHook[] {
+  if (!db && isApiMode()) {
+    const q = toQuery({ type: filter.type, enabled: filter.enabled });
+    const { data } = apiJson<WebhookHook[]>("GET", `/webhooks${q}`);
+    return data ?? [];
+  }
   const d = db || getDatabase();
   const conditions: string[] = [];
   const params: SQLQueryBindings[] = [];
@@ -112,6 +135,15 @@ export function updateWebhookHook(
   updates: { enabled?: boolean; description?: string; priority?: number },
   db?: Database
 ): WebhookHook | null {
+  if (!db && isApiMode()) {
+    const { status, data } = apiJson<WebhookHook>("PATCH", `/webhooks/${encodeURIComponent(id)}`, {
+      enabled: updates.enabled,
+      priority: updates.priority,
+      description: updates.description,
+    });
+    if (status === 404 || !data) return null;
+    return data;
+  }
   const d = db || getDatabase();
   const existing = getWebhookHook(id, d);
   if (!existing) return null;
@@ -145,6 +177,10 @@ export function updateWebhookHook(
 // ============================================================================
 
 export function deleteWebhookHook(id: string, db?: Database): boolean {
+  if (!db && isApiMode()) {
+    const { status } = apiJson<null>("DELETE", `/webhooks/${encodeURIComponent(id)}`);
+    return status === 204 || status === 200;
+  }
   const d = db || getDatabase();
   const result = d.run("DELETE FROM webhook_hooks WHERE id = ?", [id]);
   return result.changes > 0;
@@ -159,6 +195,12 @@ export function recordWebhookInvocation(
   success: boolean,
   db?: Database
 ): void {
+  if (!db && isApiMode()) {
+    // Best-effort invocation counter. The cloud server owns webhook stats when
+    // hooks fire server-side; there is no client-facing stats endpoint, and a
+    // client must never touch a local SQLite island in api mode. Skip silently.
+    return;
+  }
   const d = db || getDatabase();
   if (success) {
     d.run(

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getDatabase, resolvePartialId } from "../db/database.js";
+import { isApiMode } from "../db/api-mode.js";
 import { getMemory, getMemoryByKey } from "../db/memories.js";
 import { getProject } from "../db/projects.js";
 import { getEntityByName, getEntity } from "../db/entities.js";
@@ -95,6 +96,17 @@ export function resolveEntityArg(nameOrId: string, type?: EntityType): Entity {
   // Try by name first
   const byName = getEntityByName(nameOrId, type);
   if (byName) return byName;
+  // API mode: there is no local table to prefix-match, and opening local SQLite
+  // would trip the split-brain guard. Trust the arg as a (full) id and let the
+  // cloud resolve/404 it (routed getEntity). Never opens local SQLite.
+  if (isApiMode()) {
+    try {
+      return getEntity(nameOrId);
+    } catch {
+      console.error(chalk.red(`Entity not found: ${nameOrId}`));
+      process.exit(1);
+    }
+  }
   // Try partial ID
   const db = getDatabase();
   const id = resolvePartialId(db, "entities", nameOrId);
@@ -315,6 +327,9 @@ export function makeHandleError(program: Command): (e: unknown) => never {
 // ============================================================================
 
 export function resolveMemoryId(partialId: string): string {
+  // API mode: no local table to prefix-match; trust the id (the cloud returns
+  // full UUIDs and validates on the round-trip). Never opens local SQLite.
+  if (isApiMode()) return partialId;
   const db = getDatabase();
   const id = resolvePartialId(db, "memories", partialId);
   if (!id) {
@@ -351,7 +366,9 @@ export function resolveKeyOrId(
   );
   if (byKey) return byKey;
 
-  // Try by partial ID
+  // Try by ID. In API mode there is no local table to prefix-match, so trust
+  // the id and let the cloud resolve/404 it (routed getMemory).
+  if (isApiMode()) return getMemory(keyOrId);
   const db = getDatabase();
   const fullId = resolvePartialId(db, "memories", keyOrId);
   if (fullId) return getMemory(fullId);

@@ -1,14 +1,11 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
 import {
   getMemory,
-  getMemoryByKey,
   getMemoryVersions,
   touchMemory,
   updateMemory,
 } from "../../db/memories.js";
-import type { MemoryScope } from "../../types/index.js";
 import {
   outputJson,
   formatMemoryDetail,
@@ -142,9 +139,7 @@ export function registerViewCommands(program: Command): void {
     .action((keyOrId: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        // Try by ID first, then by key
-        let memory = getMemory(resolvePartialId(getDatabase(), "memories", keyOrId) || keyOrId)
-          || getMemoryByKey(keyOrId, opts.scope as MemoryScope | undefined, globalOpts.agent);
+        const memory = resolveKeyOrId(keyOrId, opts, globalOpts);
         if (!memory) {
           console.error(chalk.red(`No memory found: ${keyOrId}`));
           process.exit(1);
@@ -172,8 +167,7 @@ export function registerViewCommands(program: Command): void {
     .action((keyOrId: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        let memory = getMemory(resolvePartialId(getDatabase(), "memories", keyOrId) || keyOrId)
-          || getMemoryByKey(keyOrId, opts.scope as MemoryScope | undefined, globalOpts.agent);
+        const memory = resolveKeyOrId(keyOrId, opts, globalOpts);
         if (!memory) {
           console.error(chalk.red(`No memory found: ${keyOrId}`));
           process.exit(1);

@@ -1,7 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getDatabase } from "../../db/database.js";
-import { getEntityGraph, findPath } from "../../db/relations.js";
+import { getEntityGraph, findPath, getGraphStats } from "../../db/relations.js";
 import type { Entity } from "../../types/index.js";
 import {
   outputJson,
@@ -143,31 +142,19 @@ export function registerGraphCommands(program: Command): void {
     .action(() => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const db = getDatabase();
-
-        // Entity counts by type
-        const entityRows = db.query(
-          "SELECT type, COUNT(*) as count FROM entities GROUP BY type ORDER BY count DESC"
-        ).all() as { type: string; count: number }[];
-
-        // Relation counts by type
-        const relationRows = db.query(
-          "SELECT relation_type, COUNT(*) as count FROM relations GROUP BY relation_type ORDER BY count DESC"
-        ).all() as { relation_type: string; count: number }[];
-
-        // Total memory links
-        const linkCount = db.query(
-          "SELECT COUNT(*) as count FROM entity_memories"
-        ).get() as { count: number };
-
-        const totalEntities = entityRows.reduce((sum, r) => sum + r.count, 0);
-        const totalRelations = relationRows.reduce((sum, r) => sum + r.count, 0);
+        const stats = getGraphStats();
+        const entityRows = Object.entries(stats.entities.by_type)
+          .map(([type, count]) => ({ type, count }))
+          .sort((a, b) => b.count - a.count);
+        const relationRows = Object.entries(stats.relations.by_type)
+          .map(([relation_type, count]) => ({ relation_type, count }))
+          .sort((a, b) => b.count - a.count);
 
         if (globalOpts.json || globalOpts.format === "json") {
           outputJson({
-            entities: { total: totalEntities, by_type: Object.fromEntries(entityRows.map((r) => [r.type, r.count])) },
-            relations: { total: totalRelations, by_type: Object.fromEntries(relationRows.map((r) => [r.relation_type, r.count])) },
-            memory_links: linkCount.count,
+            entities: stats.entities,
+            relations: stats.relations,
+            memory_links: stats.memory_links,
           });
           return;
         }
@@ -175,19 +162,19 @@ export function registerGraphCommands(program: Command): void {
         console.log(chalk.bold("Knowledge Graph Stats"));
         console.log();
 
-        console.log(chalk.bold(`Entities: ${totalEntities}`));
+        console.log(chalk.bold(`Entities: ${stats.entities.total}`));
         for (const r of entityRows) {
           console.log(`  ${colorEntityType(r.type)}: ${r.count}`);
         }
 
         console.log();
-        console.log(chalk.bold(`Relations: ${totalRelations}`));
+        console.log(chalk.bold(`Relations: ${stats.relations.total}`));
         for (const r of relationRows) {
           console.log(`  ${chalk.cyan(r.relation_type)}: ${r.count}`);
         }
 
         console.log();
-        console.log(chalk.bold(`Memory links: ${linkCount.count}`));
+        console.log(chalk.bold(`Memory links: ${stats.memory_links}`));
       } catch (e) {
         handleError(e);
       }

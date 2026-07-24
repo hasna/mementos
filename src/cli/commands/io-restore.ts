@@ -3,6 +3,7 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { existsSync, statSync, copyFileSync, readdirSync } from "node:fs";
 import { getDatabase, getDbPath, resetDatabase } from "../../db/database.js";
+import { isApiMode } from "../../db/api-mode.js";
 import {
   outputJson,
   makeHandleError,
@@ -20,6 +21,19 @@ export function registerRestoreCommand(program: Command): void {
     .action((filePath: string | undefined, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
+        // `restore` copies a backup file over the LOCAL SQLite database. It has
+        // no meaning against the shared cloud store (which is authoritative and
+        // has no client-side db file), so refuse rather than fail-closed on
+        // getDatabase(). The cloud store is restored out-of-band on the server.
+        if (isApiMode()) {
+          const msg = "restore operates on the local SQLite database and is not available in API mode (the self-hosted cloud store is authoritative). Unset HASNA_MEMENTOS_API_URL / HASNA_MEMENTOS_API_KEY to restore a local db.";
+          if (globalOpts.json) {
+            outputJson({ error: msg });
+          } else {
+            console.error(chalk.red(msg));
+          }
+          process.exit(1);
+        }
         const home = process.env["HOME"] || process.env["USERPROFILE"] || "~";
         const backupsDir = resolve(home, ".hasna", "mementos", "backups");
 

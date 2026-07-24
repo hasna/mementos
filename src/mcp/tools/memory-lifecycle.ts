@@ -1,7 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { getMemory, getMemoryByKey, updateMemory, deleteMemory } from "../../db/memories.js";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
+import { getStaleMemories } from "../../db/analytics.js";
 import { resolveId, formatError } from "./memory-utils.js";
 
 export function registerMemoryLifecycleTools(server: McpServer): void {
@@ -95,20 +95,12 @@ export function registerMemoryLifecycleTools(server: McpServer): void {
     async (args) => {
       try {
         const days = args.days || 30;
-        const db = getDatabase();
-        const cutoffDate = new Date(Date.now() - days * 86400000).toISOString();
-        const conditions = [
-          "status = 'active'",
-          "(accessed_at IS NULL OR accessed_at < ?)",
-          "pinned = 0",
-        ];
-        const params: (string | number)[] = [cutoffDate];
-        if (args.project_id) { conditions.push("project_id = ?"); params.push(args.project_id); }
-        if (args.agent_id) { conditions.push("agent_id = ?"); params.push(args.agent_id); }
-        const limit = args.limit || 20;
-        const rows = db.query(
-          `SELECT id, key, value, importance, scope, category, accessed_at, access_count FROM memories WHERE ${conditions.join(" AND ")} ORDER BY COALESCE(accessed_at, created_at) ASC LIMIT ?`
-        ).all(...params, limit) as { id: string; key: string; value: string; importance: number; scope: string; category: string; accessed_at: string | null; access_count: number }[];
+        const rows = getStaleMemories({
+          days,
+          project_id: args.project_id,
+          agent_id: args.agent_id,
+          limit: args.limit || 20,
+        });
 
         if (rows.length === 0) {
           return { content: [{ type: "text" as const, text: `No stale memories found (last accessed > ${days} days ago).` }] };
@@ -134,21 +126,15 @@ export function registerMemoryLifecycleTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const db = getDatabase();
-        let memId: string | null = null;
-        if (args.id) {
-          memId = resolvePartialId(db, "memories", args.id) ?? args.id;
-        } else if (args.key) {
-          const row = db.query("SELECT id FROM memories WHERE key = ? AND status = 'active' LIMIT 1").get(args.key) as { id: string } | null;
-          memId = row?.id ?? null;
-        }
-        if (!memId) return { content: [{ type: "text" as const, text: `Memory not found: ${args.id || args.key}` }], isError: true };
-        const memory = getMemory(memId);
-        if (!memory) return { content: [{ type: "text" as const, text: `Memory not found: ${memId}` }] };
+        const memory = args.id
+          ? getMemory(resolveId(args.id))
+          : args.key
+            ? getMemoryByKey(args.key, undefined, args.agent_id)
+            : null;
+        if (!memory) return { content: [{ type: "text" as const, text: `Memory not found: ${args.id || args.key}` }], isError: true };
         const flagVal = args.flag ?? null;
-        db.run("UPDATE memories SET flag = ?, updated_at = ? WHERE id = ?", [flagVal, new Date().toISOString(), memId]);
-        const flagStr = args.flag ?? null;
-        return { content: [{ type: "text" as const, text: flagStr ? `Flagged "${memory.key}" as: ${flagStr}` : `Cleared flag on "${memory.key}"` }] };
+        updateMemory(memory.id, { flag: flagVal, version: memory.version });
+        return { content: [{ type: "text" as const, text: flagVal ? `Flagged "${memory.key}" as: ${flagVal}` : `Cleared flag on "${memory.key}"` }] };
       } catch (e) {
         return { content: [{ type: "text" as const, text: formatError(e) }], isError: true };
       }

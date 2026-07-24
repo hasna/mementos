@@ -2,7 +2,6 @@ import type { Command } from "commander";
 import chalk from "chalk";
 import { getStorageConfig, getStorageConnectionString } from "../../storage.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
-import { getDatabase } from "../../db/database.js";
 
 function parseTables(raw?: string): string[] | undefined {
   if (!raw) {
@@ -194,15 +193,15 @@ function installStorageSubcommands(storage: Command, program: Command): void {
     .action((message: string, opts) => {
       const useJson = Boolean(opts.json || program.opts().json);
       try {
-        const db = getDatabase();
-        const version = "mementos";
-        db.run(
-          "INSERT INTO feedback (message, email, category, version) VALUES (?, ?, ?, ?)",
+        // Route through the Store (api mode → POST /feedback; local → SQLite);
+        // never open the DB directly, which would fail-close in api mode.
+        const { saveFeedback } = require("../../db/feedback.js") as typeof import("../../db/feedback.js");
+        saveFeedback({
           message,
-          opts.email || null,
-          opts.category || "general",
-          version
-        );
+          email: opts.email || null,
+          category: opts.category || "general",
+          version: "mementos",
+        });
         if (useJson) {
           outputJson(true, { saved: true });
         } else {

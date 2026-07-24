@@ -1,10 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { listMemories, semanticSearch, indexMemoryEmbedding } from "../../db/memories.js";
-import { getDatabase } from "../../db/database.js";
+import { semanticSearch } from "../../db/memories.js";
 import { resolveProjectId } from "../../lib/focus.js";
-import { hybridSearch, searchWithBm25 } from "../../lib/search.js";
-import { asmrRecall } from "../../lib/asmr/index.js";
+import { hybridSearch, searchWithBm25, searchMemories } from "../../lib/search.js";
+import { deepRecall } from "../../lib/asmr/recall.js";
 import { ensembleAnswer } from "../../lib/asmr/ensemble.js";
 import {
   compactPageHint,
@@ -37,22 +36,24 @@ export function registerMemorySearchTools(server: McpServer): void {
       try {
         const limit = positiveLimit(args.limit, 10);
         const offset = args.offset ?? 0;
-        let effectiveProjectId = args.project_id;
-        if (!args.scope && !args.project_id && args.agent_id) {
-          effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
-        }
+        // Parity with the `search` CLI command: run the same relevance search
+        // (searchMemories → POST /memories/search in api mode; FTS5+LIKE
+        // locally) and apply ONLY the filters the caller explicitly supplied.
+        // The previous path used listMemories({search}) + auto-resolved the
+        // agent's project, which both narrowed the result set and hit a
+        // freshness-lagging endpoint — so the MCP tool under-returned versus
+        // the CLI against the same store. Do NOT auto-scope by resolved project.
         const filter: MemoryFilter = {
           scope: args.scope,
           category: args.category,
           tags: args.tags,
           agent_id: args.agent_id,
-          project_id: effectiveProjectId,
+          project_id: args.project_id,
           session_id: args.session_id,
-          search: args.query,
           limit: limit + 1,
           offset,
         };
-        const memories = listMemories(filter);
+        const memories = searchMemories(args.query, filter).map((r) => r.memory);
         if (memories.length === 0) {
           const sugKey = args.query.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
           return { content: [{ type: "text" as const, text: `No memories found matching "${args.query}".\n\n💡 Consider saving relevant information: memory_save(key="${sugKey}", value="...", scope="shared")` }] };
@@ -92,20 +93,6 @@ export function registerMemorySearchTools(server: McpServer): void {
       try {
         ensureAutoProject();
 
-        if (args.index_missing) {
-          const db = getDatabase();
-          const unindexed = db.prepare(
-            `SELECT id, value, summary, when_to_use FROM memories
-             WHERE status = 'active' AND id NOT IN (SELECT memory_id FROM memory_embeddings)
-             LIMIT 100`
-          ).all() as Array<{ id: string; value: string; summary: string | null; when_to_use: string | null }>;
-          await Promise.all(
-            unindexed.map((m) =>
-              indexMemoryEmbedding(m.id, m.when_to_use || [m.value, m.summary].filter(Boolean).join(" "))
-            )
-          );
-        }
-
         let effectiveProjectId = args.project_id;
         if (!args.project_id && args.agent_id) {
           effectiveProjectId = resolveProjectId(args.agent_id, null) ?? undefined;
@@ -118,6 +105,7 @@ export function registerMemorySearchTools(server: McpServer): void {
           scope: args.scope,
           agent_id: args.agent_id,
           project_id: effectiveProjectId,
+          index_missing: args.index_missing,
         });
 
         if (results.length === 0) {
@@ -239,7 +227,6 @@ export function registerMemorySearchTools(server: McpServer): void {
     async (args) => {
       try {
         ensureAutoProject();
-        const db = getDatabase();
 
         const FAST_SCORE_THRESHOLD = 0.6;
         const maxResults = positiveLimit(args.max_results, 10);
@@ -259,7 +246,7 @@ export function registerMemorySearchTools(server: McpServer): void {
         }
 
         if (args.mode === "deep") {
-          const asmrResult = await asmrRecall(db, args.query, {
+          const asmrResult = await deepRecall(args.query, {
             max_results: maxResults,
             project_id: args.project_id,
           });
@@ -292,7 +279,7 @@ export function registerMemorySearchTools(server: McpServer): void {
           return { content: [{ type: "text" as const, text: `[auto/fast] ${fastResults.length} result(s) for "${args.query}" (top score ${topScore.toFixed(3)} >= threshold):\n${lines.join("\n")}` }] };
         }
 
-        const asmrResult = await asmrRecall(db, args.query, {
+        const asmrResult = await deepRecall(args.query, {
           max_results: maxResults,
           project_id: args.project_id,
         });

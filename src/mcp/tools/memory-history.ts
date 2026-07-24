@@ -1,8 +1,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getMemory, getMemoryVersions, parseMemoryRow } from "../../db/memories.js";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
-import { resolveId, formatError } from "./memory-utils.js";
+import { getMemory, getMemoryByKey, getMemoryVersions, getMemoryChain } from "../../db/memories.js";
+import { resolveId, resolveOptionalId, formatError } from "./memory-utils.js";
 
 export function registerMemoryHistoryTools(server: McpServer): void {
   server.tool(
@@ -50,10 +49,9 @@ export function registerMemoryHistoryTools(server: McpServer): void {
       try {
         let memId: string | undefined;
         if (args.id) {
-          memId = resolvePartialId(getDatabase(), "memories", args.id) ?? args.id;
+          memId = resolveOptionalId(args.id, "memories");
         } else if (args.key) {
-          const row = getDatabase().query("SELECT id FROM memories WHERE key = ? LIMIT 1").get(args.key) as { id: string } | null;
-          memId = row?.id;
+          memId = getMemoryByKey(args.key)?.id;
         }
         if (!memId) return { content: [{ type: "text" as const, text: `Memory not found: ${args.id || args.key}` }], isError: true };
 
@@ -111,26 +109,12 @@ export function registerMemoryHistoryTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const db = getDatabase();
-        const effectiveProjectId = args.project_id;
+        const memories = getMemoryChain(args.sequence_group, args.project_id);
 
-        const conditions = ["sequence_group = ?", "status = 'active'"];
-        const params: (string | number)[] = [args.sequence_group];
-
-        if (effectiveProjectId) {
-          conditions.push("project_id = ?");
-          params.push(effectiveProjectId);
-        }
-
-        const rows = db.prepare(
-          `SELECT * FROM memories WHERE ${conditions.join(" AND ")} ORDER BY sequence_order ASC`
-        ).all(...params) as Record<string, unknown>[];
-
-        if (rows.length === 0) {
+        if (memories.length === 0) {
           return { content: [{ type: "text" as const, text: `No chain found for sequence_group: "${args.sequence_group}"` }] };
         }
 
-        const memories = rows.map(parseMemoryRow);
         const chainSteps = memories.map((m, i) =>
           `[Step ${m.sequence_order ?? i + 1}] ${m.key}: ${m.value}`
         ).join("\n");

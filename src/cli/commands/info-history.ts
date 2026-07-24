@@ -1,7 +1,6 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getDatabase } from "../../db/database.js";
-import { parseMemoryRow } from "../../db/memories.js";
+import { listMemoryHistory } from "../../db/memories.js";
 import {
   DEFAULT_SEARCH_LIMIT,
   outputJson,
@@ -31,15 +30,8 @@ export function registerHistoryCommand(program: Command): void {
         const isJson = Boolean(globalOpts.json);
         const limit = positiveIntOrDefault(opts.limit, isJson ? 20 : DEFAULT_SEARCH_LIMIT);
         const offset = cursorOrOffset(opts.cursor, opts.offset);
-        const db = getDatabase();
 
-        const rows = db
-          .query(
-            `SELECT * FROM memories WHERE status = 'active' AND accessed_at IS NOT NULL ORDER BY accessed_at DESC LIMIT ?${offset ? " OFFSET ?" : ""}`
-          )
-          .all(...(offset ? [isJson ? limit : limit + 1, offset] : [isJson ? limit : limit + 1])) as Record<string, unknown>[];
-
-        const fetched = rows.map(parseMemoryRow);
+        const fetched = listMemoryHistory({ limit: isJson ? limit : limit + 1, offset });
         const hasMore = !isJson && fetched.length > limit;
         const memories = hasMore ? fetched.slice(0, limit) : fetched;
 

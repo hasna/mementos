@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { getDatabase } from "../../db/database.js";
+import { getMemoryHealth } from "../../db/analytics.js";
 import { formatError } from "./memory-utils.js";
 
 export function registerMemoryHealthTools(server: McpServer): void {
@@ -16,50 +16,15 @@ export function registerMemoryHealthTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const db = getDatabase();
         const staleDays = args.stale_days ?? 30;
         const forgottenDays = args.forgotten_days ?? 60;
-        const limit = args.limit ?? 10;
-        const extraWhere = [
-          ...(args.project_id ? ["project_id = ?"] : []),
-          ...(args.agent_id ? ["agent_id = ?"] : []),
-        ].join(" AND ");
-        const staleCutoff = new Date(Date.now() - staleDays * 86400000).toISOString();
-        const forgottenCutoff = new Date(Date.now() - forgottenDays * 86400000).toISOString();
-        const extraParams: (string | number)[] = [
-          staleCutoff,
-          ...(args.project_id ? [args.project_id] : []),
-          ...(args.agent_id ? [args.agent_id] : []),
-        ];
-        const base = `status = 'active' AND pinned = 0${extraWhere ? " AND " + extraWhere : ""}`;
-
-        // 1. Stale: never accessed or not accessed in staleDays, access_count == 0
-        const stale = db.prepare(
-          `SELECT id, key, value, importance, scope, created_at FROM memories
-           WHERE ${base} AND access_count = 0 AND created_at < ?
-           ORDER BY created_at ASC LIMIT ?`
-        ).all(...extraParams, limit) as Array<{id: string; key: string; value: string; importance: number; scope: string; created_at: string}>;
-
-        const forgottenParams: (string | number)[] = [
-          forgottenCutoff,
-          ...(args.project_id ? [args.project_id] : []),
-          ...(args.agent_id ? [args.agent_id] : []),
-        ];
-        // 2. High-importance forgotten: importance >= 7, not accessed in forgottenDays
-        const forgotten = db.prepare(
-          `SELECT id, key, value, importance, scope, accessed_at FROM memories
-           WHERE ${base} AND importance >= 7
-             AND (accessed_at IS NULL OR accessed_at < ?)
-           ORDER BY importance DESC, COALESCE(accessed_at, created_at) ASC LIMIT ?`
-        ).all(...forgottenParams, limit) as Array<{id: string; key: string; value: string; importance: number; scope: string; accessed_at: string|null}>;
-
-        // 3. Possibly superseded: multiple active memories with same key prefix (similar key)
-        const dupes = db.prepare(
-          `SELECT key, COUNT(*) as cnt, MAX(updated_at) as latest, MIN(created_at) as oldest
-           FROM memories WHERE ${base}
-           GROUP BY key HAVING cnt > 1
-           ORDER BY cnt DESC LIMIT ?`
-        ).all(...extraParams, limit) as Array<{key: string; cnt: number; latest: string; oldest: string}>;
+        const { stale, forgotten, dupes } = getMemoryHealth({
+          stale_days: staleDays,
+          forgotten_days: forgottenDays,
+          project_id: args.project_id,
+          agent_id: args.agent_id,
+          limit: args.limit ?? 10,
+        });
 
         const parts: string[] = ["Memory Health Report\n"];
 

@@ -1,6 +1,5 @@
 import type { Command } from "commander";
 import chalk from "chalk";
-import { getDatabase, resolvePartialId } from "../../db/database.js";
 import { diffMemory, makeHandleError, resolveKeyOrId, type GlobalOpts } from "../helpers.js";
 
 export function registerDiffCommand(program: Command): void {
@@ -13,18 +12,15 @@ export function registerDiffCommand(program: Command): void {
     .action((idArg: string, opts: { version?: string }) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const db = getDatabase();
 
-        let memoryId: string | null = resolvePartialId(db, "memories", idArg);
-        if (!memoryId) {
-          const mem = resolveKeyOrId(idArg, {}, globalOpts);
-          if (!mem) {
-            console.error(chalk.red(`Memory not found: ${idArg}`));
-            process.exit(1);
-          }
-          memoryId = mem.id;
+        // resolveKeyOrId routes through the Store (key lookup, then id) and is
+        // API-mode safe — no direct SQLite access here.
+        const mem = resolveKeyOrId(idArg, {}, globalOpts);
+        if (!mem) {
+          console.error(chalk.red(`Memory not found: ${idArg}`));
+          process.exit(1);
         }
-        diffMemory(memoryId, opts, globalOpts);
+        diffMemory(mem.id, opts, globalOpts);
       } catch (e) {
         handleError(e);
       }

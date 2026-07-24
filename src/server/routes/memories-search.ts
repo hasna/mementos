@@ -1,7 +1,42 @@
 import { searchMemories, hybridSearch, searchWithBm25 } from "../../lib/search.js";
+import { semanticSearch } from "../../db/memories.js";
+import { asmrRecall } from "../../lib/asmr/orchestrator.js";
+import { getDatabase } from "../../db/database.js";
 import type { MemoryCategory, MemoryScope, MemoryFilter } from "../../types/index.js";
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson } from "../helpers.js";
+
+// POST /api/memories/search/semantic — vector (embedding) similarity search
+addRoute("POST", "/api/memories/search/semantic", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || typeof body["query"] !== "string") {
+    return errorResponse("Missing required field: query", 400);
+  }
+  const results = await semanticSearch(body["query"] as string, {
+    threshold: (body["threshold"] as number) ?? undefined,
+    limit: (body["limit"] as number) ?? undefined,
+    scope: (body["scope"] as string) ?? undefined,
+    agent_id: (body["agent_id"] as string) ?? undefined,
+    project_id: (body["project_id"] as string) ?? undefined,
+    index_missing: body["index_missing"] === true || body["index_missing"] === "true",
+  });
+  return json({ results, count: results.length });
+});
+
+// POST /api/memories/recall/deep — ASMR deep recall (server-side; the client
+// has no DB in API mode, so the 3-agent recall runs here against the store).
+addRoute("POST", "/api/memories/recall/deep", async (req) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || typeof body["query"] !== "string") {
+    return errorResponse("Missing required field: query", 400);
+  }
+  const result = await asmrRecall(getDatabase(), body["query"] as string, {
+    max_results: (body["max_results"] as number) ?? undefined,
+    project_id: (body["project_id"] as string) ?? undefined,
+    agent_id: (body["agent_id"] as string) ?? undefined,
+  });
+  return json(result);
+});
 
 // POST /api/memories/search — search
 addRoute("POST", "/api/memories/search", async (req) => {

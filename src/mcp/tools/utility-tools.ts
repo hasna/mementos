@@ -4,8 +4,7 @@ import {
   cleanExpiredMemories,
 } from "../../db/memories.js";
 import { getAgent } from "../../db/agents.js";
-import { getDatabase } from "../../db/database.js";
-import { listMemories, touchMemory } from "../../db/memories.js";
+import { listMemories, touchMemory, getMemoryBriefing } from "../../db/memories.js";
 import { synthesizeProfile } from "../../lib/profile-synthesizer.js";
 import {
   isMemoryVisibleToMachine,
@@ -129,9 +128,10 @@ export function registerUtilityTools(server: McpServer): void {
     },
     async (args) => {
       try {
-        const db = getDatabase();
         const limit = args.limit || 20;
-        const visibleMachineId = resolveVisibleMachineId(args.machine_id, db);
+        // Resolve the caller's visible machine id (client-side; API mode has no
+        // local DB, so this yields the explicit machine_id or null).
+        const visibleMachineId = resolveVisibleMachineId(args.machine_id);
 
         // Resolve 'since': agent's last_seen_at → explicit param → 24h ago
         let since = args.since;
@@ -143,37 +143,13 @@ export function registerUtilityTools(server: McpServer): void {
           since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
         }
 
-        const scopeClause = args.scope ? `AND scope = ?` : "";
-        const projectClause = args.project_id ? `AND project_id = ?` : "";
-        const machineClause = visibleMachineId === null
-          ? "AND machine_id IS NULL"
-          : "AND (machine_id IS NULL OR machine_id = ?)";
-        const extraParams = [
-          ...(args.scope ? [args.scope] : []),
-          ...(args.project_id ? [args.project_id] : []),
-          ...(visibleMachineId === null ? [] : [visibleMachineId]),
-        ];
-
-        // New memories
-        const newMems = db.prepare(
-          `SELECT id, key, value, summary, importance, scope, category, agent_id, created_at
-           FROM memories WHERE status = 'active' AND created_at > ? ${scopeClause} ${projectClause} ${machineClause}
-           ORDER BY importance DESC, created_at DESC LIMIT ?`
-        ).all(since, ...extraParams, limit) as Array<{id: string; key: string; value: string; summary: string|null; importance: number; scope: string; category: string; agent_id: string|null; created_at: string}>;
-
-        // Updated memories (updated_at > since but created before since)
-        const updatedMems = db.prepare(
-          `SELECT id, key, value, summary, importance, scope, category, agent_id, updated_at
-           FROM memories WHERE status = 'active' AND updated_at > ? AND created_at <= ? ${scopeClause} ${projectClause} ${machineClause}
-           ORDER BY importance DESC, updated_at DESC LIMIT ?`
-        ).all(since, since, ...extraParams, limit) as Array<{id: string; key: string; summary: string|null; importance: number; scope: string; value: string; agent_id: string|null; updated_at: string}>;
-
-        // Expired/archived memories
-        const expiredMems = db.prepare(
-          `SELECT id, key, scope, category, updated_at, status
-           FROM memories WHERE status != 'active' AND updated_at > ? ${scopeClause} ${projectClause} ${machineClause}
-           ORDER BY updated_at DESC LIMIT ?`
-        ).all(since, ...extraParams, Math.min(limit, 10)) as Array<{id: string; key: string; scope: string; category: string; updated_at: string; status: string}>;
+        const { new: newMems, updated: updatedMems, expired: expiredMems } = getMemoryBriefing({
+          since,
+          scope: args.scope,
+          project_id: args.project_id,
+          visible_machine_id: visibleMachineId,
+          limit,
+        });
 
         const parts: string[] = [`Memory briefing since ${since}`];
         if (newMems.length > 0) {
