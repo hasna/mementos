@@ -111,6 +111,8 @@ export function getSessionJob(id: string, db?: Database): SessionMemoryJob | nul
     const { status, data } = apiJson<SessionMemoryJob>(
       "GET",
       `/sessions/jobs/${encodeURIComponent(id)}`,
+      undefined,
+      { allow404: true },
     );
     if (status === 404 || !data) return null;
     return data;

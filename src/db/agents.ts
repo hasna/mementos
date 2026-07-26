@@ -108,7 +108,7 @@ export function getAgent(
   db?: Database
 ): Agent | null {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Agent>("GET", `/agents/${encodeURIComponent(idOrName)}`);
+    const { status, data } = apiJson<Agent>("GET", `/agents/${encodeURIComponent(idOrName)}`, undefined, { allow404: true });
     if (status === 404 || !data) return null;
     return data;
   }
@@ -183,7 +183,7 @@ export function updateAgent(
   db?: Database
 ): Agent | null {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Agent>("PATCH", `/agents/${encodeURIComponent(id)}`, updates);
+    const { status, data } = apiJson<Agent>("PATCH", `/agents/${encodeURIComponent(id)}`, updates, { allow404: true });
     if (status === 404 || !data) return null;
     return data;
   }

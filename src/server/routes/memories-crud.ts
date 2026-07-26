@@ -16,6 +16,7 @@ import type {
 } from "../../types/index.js";
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson, getSearchParams } from "../helpers.js";
+import { validateMemoryEnums, formatEnumViolation } from "../../lib/enum-validation.js";
 import { MemoryNotFoundError, VersionConflictError, DuplicateMemoryError } from "../../types/index.js";
 
 // GET /api/memories — list memories
@@ -63,6 +64,16 @@ addRoute("POST", "/api/memories", async (req) => {
   if (!body["key"] || !body["value"]) {
     return errorResponse("Missing required fields: key, value", 400);
   }
+  // Reject out-of-enum category/scope/source/status here, with the field name
+  // and the accepted set. Left to SQLite this surfaces as an opaque 500.
+  const violation = validateMemoryEnums(body);
+  if (violation) {
+    return errorResponse(formatEnumViolation(violation), 400, {
+      field: violation.field,
+      value: violation.value,
+      allowed: violation.allowed,
+    });
+  }
 
   try {
     // Parse human-readable TTL if provided as string (e.g. "1d", "2h30m")
@@ -102,6 +113,14 @@ addRoute("PATCH", "/api/memories/:id", async (req, _url, params) => {
   const body = (await readJson(req)) as Record<string, unknown> | null;
   if (!body) {
     return errorResponse("Invalid JSON body", 400);
+  }
+  const patchViolation = validateMemoryEnums(body);
+  if (patchViolation) {
+    return errorResponse(formatEnumViolation(patchViolation), 400, {
+      field: patchViolation.field,
+      value: patchViolation.value,
+      allowed: patchViolation.allowed,
+    });
   }
 
   // Auto-fetch version if not provided (eliminates 2-round-trip read-then-update pattern)

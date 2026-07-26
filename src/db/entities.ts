@@ -107,7 +107,7 @@ export function createEntity(input: CreateEntityInput, db?: Database): Entity {
 
 export function getEntity(id: string, db?: Database): Entity {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Entity>("GET", `/entities/${encodeURIComponent(id)}`);
+    const { status, data } = apiJson<Entity>("GET", `/entities/${encodeURIComponent(id)}`, undefined, { allow404: true });
     if (status === 404 || !data) throw new EntityNotFoundError(id);
     return data;
   }
@@ -236,7 +236,7 @@ export function updateEntity(
   db?: Database
 ): Entity {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Entity>("PATCH", `/entities/${encodeURIComponent(id)}`, input);
+    const { status, data } = apiJson<Entity>("PATCH", `/entities/${encodeURIComponent(id)}`, input, { allow404: true });
     if (status === 404 || !data) throw new EntityNotFoundError(id);
     return data;
   }
@@ -280,7 +280,7 @@ export function updateEntity(
 
 export function deleteEntity(id: string, db?: Database): void {
   if (!db && isApiMode()) {
-    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/entities/${encodeURIComponent(id)}`);
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/entities/${encodeURIComponent(id)}`, undefined, { allow404: true });
     if (status === 404) throw new EntityNotFoundError(id);
     return;
   }

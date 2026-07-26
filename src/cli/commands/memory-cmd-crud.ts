@@ -13,6 +13,8 @@ import {
 import { getProject } from "../../db/projects.js";
 import { getAgent } from "../../db/agents.js";
 import { parseDuration } from "../../lib/duration.js";
+import { validateEnumField, formatEnumViolation } from "../../lib/enum-validation.js";
+import { MEMORY_CATEGORIES, MEMORY_SCOPES } from "../../types/index.js";
 import type {
   MemoryCategory,
   MemoryScope,
@@ -37,8 +39,8 @@ export function registerCrudCommands(program: Command): void {
   program
     .command("save <key> <value>")
     .description("Save a memory (create or upsert)")
-    .option("-c, --category <cat>", "Category: preference, fact, knowledge, history")
-    .option("-s, --scope <scope>", "Scope: global, shared, private")
+    .option("-c, --category <cat>", `Category: ${MEMORY_CATEGORIES.join(", ")}`)
+    .option("-s, --scope <scope>", `Scope: ${MEMORY_SCOPES.join(", ")}`)
     .option("--importance <n>", "Importance 1-10", parseInt)
     .option("--tags <tags>", "Comma-separated tags")
     .option("--summary <text>", "Brief summary")
@@ -107,6 +109,25 @@ export function registerCrudCommands(program: Command): void {
             process.exit(1);
           }
           templateDefaults = tpl;
+        }
+
+        // Reject out-of-enum values before spending a network round trip. These
+        // used to travel to the server and come back as an opaque 500.
+        for (const [flag, value] of [
+          ["category", opts.category],
+          ["scope", opts.scope],
+          ["source", opts.source],
+        ] as const) {
+          const violation = validateEnumField(flag, value);
+          if (!violation) continue;
+          let msg = formatEnumViolation(violation);
+          // The most common miss: `--category decision` when `--template
+          // decision` was meant (a template, not a category).
+          if (flag === "category" && templates[violation.value]) {
+            msg += ` Did you mean --template ${violation.value}?`;
+          }
+          console.error(chalk.red(msg));
+          process.exit(1);
         }
 
         const explicitTags = opts.tags

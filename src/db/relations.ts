@@ -85,7 +85,7 @@ export function createRelation(input: CreateRelationInput, db?: Database): Relat
 
 export function getRelation(id: string, db?: Database): Relation {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Relation>("GET", `/relations/${encodeURIComponent(id)}`);
+    const { status, data } = apiJson<Relation>("GET", `/relations/${encodeURIComponent(id)}`, undefined, { allow404: true });
     if (status === 404 || !data) throw new Error(`Relation not found: ${id}`);
     return data;
   }
@@ -154,7 +154,7 @@ export function listRelations(
 
 export function deleteRelation(id: string, db?: Database): void {
   if (!db && isApiMode()) {
-    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/relations/${encodeURIComponent(id)}`);
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/relations/${encodeURIComponent(id)}`, undefined, { allow404: true });
     if (status === 404) throw new Error(`Relation not found: ${id}`);
     return;
   }

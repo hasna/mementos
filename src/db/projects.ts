@@ -62,7 +62,7 @@ export function getProject(
   db?: Database
 ): Project | null {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Project>("GET", `/projects/${encodeURIComponent(idOrPath)}`);
+    const { status, data } = apiJson<Project>("GET", `/projects/${encodeURIComponent(idOrPath)}`, undefined, { allow404: true });
     if (status === 404 || !data) return null;
     return data;
   }

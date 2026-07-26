@@ -22,7 +22,7 @@ import { computeTrustScore } from "../lib/poisoning.js";
 // The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
 // Keeping this comment so the migration intent is clear.
 import { unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
-import { isApiMode, apiJson, toQuery } from "./api-mode.js";
+import { isApiMode, apiJson, toQuery, ApiRequestError } from "./api-mode.js";
 
 // ============================================================================
 // Entity extraction helper
@@ -110,7 +110,17 @@ export function createMemory(
   db?: Database
 ): Memory {
   if (!db && isApiMode()) {
-    const { data } = apiJson<Memory>("POST", "/memories", { ...input, dedupe: dedupeMode });
+    const { status, data } = apiJson<Memory>("POST", "/memories", { ...input, dedupe: dedupeMode });
+    // A create is only successful if the server actually handed back the stored
+    // row. A 2xx with an empty/!id body means nothing was persisted; returning
+    // it made the CLI print "Saved:" and exit 0 on a write that never landed.
+    if (!data || !data.id) {
+      throw new ApiRequestError(
+        `mementos cloud POST /memories → ${status} but no memory was returned; the write did not persist (key: ${input.key})`,
+        status,
+        "",
+      );
+    }
     return data;
   }
   const d = db || getDatabase();
@@ -548,7 +558,7 @@ function listMemoriesByKey(key: string, db: Database): Memory[] {
 
 export function getMemory(id: string, db?: Database): Memory | null {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Memory>("GET", `/memories/${encodeURIComponent(id)}`);
+    const { status, data } = apiJson<Memory>("GET", `/memories/${encodeURIComponent(id)}`, undefined, { allow404: true });
     return status === 404 ? null : (data ?? null);
   }
   const d = db || getDatabase();
@@ -1035,7 +1045,7 @@ export function updateMemory(
   db?: Database
 ): Memory {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input);
+    const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input, { allow404: true });
     if (status === 404) throw new MemoryNotFoundError(id);
     return data;
   }
@@ -1168,7 +1178,7 @@ export function updateMemory(
 
 export function deleteMemory(id: string, db?: Database): boolean {
   if (!db && isApiMode()) {
-    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/memories/${encodeURIComponent(id)}`);
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/memories/${encodeURIComponent(id)}`, undefined, { allow404: true });
     return status !== 404;
   }
   const d = db || getDatabase();
