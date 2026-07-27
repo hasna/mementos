@@ -7,6 +7,7 @@ import {
   getStorageStatus,
 } from "../../storage.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "../../lib/storage-sync.js";
+import { resolveStoreBackend } from "../../db/store-backend.js";
 
 function parseTables(raw?: string): string[] | undefined {
   if (!raw) {
@@ -39,6 +40,42 @@ function printSyncResult(result: ReturnType<typeof pushStorageChanges>): void {
 }
 
 function installStorageSubcommands(storage: Command, program: Command): void {
+  // `storage mode` answers one question — which store will this process actually
+  // read and write? — from the environment alone: no database is opened, no HTTP
+  // request is made, and no credential value is printed. `storage status` cannot
+  // serve that purpose because it opens the local database, which FAILS CLOSED
+  // in API mode (src/db/database.ts getDatabase), so it cannot report the very
+  // state an operator most needs to see. Test harnesses use this to prove they
+  // are isolated before writing anything.
+  storage
+    .command("mode")
+    .description("Show which store this process will actually read and write (no DB or network access)")
+    .option("--json", "Output JSON")
+    .action((opts) => {
+      const useJson = Boolean(opts.json || program.opts().json);
+      const report = resolveStoreBackend();
+      if (useJson) {
+        outputJson(true, report);
+        return;
+      }
+
+      const label =
+        report.backend === "local-sqlite"
+          ? chalk.green(report.backend)
+          : chalk.yellow(report.backend);
+      console.log(`Backend: ${label}`);
+      console.log(`Selected by: ${report.selected_by}`);
+      console.log(`API mode: ${report.api_mode ? "yes" : "no"}`);
+      console.log(`Storage mode: ${report.storage_mode}`);
+      if (report.backend === "local-sqlite") {
+        console.log(`Database: ${report.db_path}`);
+      } else {
+        console.log(`API endpoint: ${report.api_endpoint ?? "(none)"}`);
+        console.log(`API key: ${report.api_key_present ? "configured" : "not configured"}`);
+        console.log(`Local SQLite (not authoritative): ${report.db_path}`);
+      }
+    });
+
   storage
     .command("status")
     .description("Show local database and remote storage sync status")

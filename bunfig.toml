@@ -1,0 +1,13 @@
+# Bun configuration.
+#
+# The preload is a SAFETY control, not a convenience: mementos selects its storage
+# transport by the mere presence of HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY,
+# which operator shells export and every child process inherits. Without this, a
+# plain `bun test` writes test fixtures into the shared production memory store —
+# in-process domain writes route to HTTP at src/db/memories.ts:113, and the scratch
+# SQLite file is never even created. See src/test-support/preload-local-store.ts.
+#
+# Deliberately no [install] section: package installation (including the
+# min-release-age supply-chain quarantine) stays governed by ~/.npmrc.
+[test]
+preload = ["./src/test-support/preload-local-store.ts"]

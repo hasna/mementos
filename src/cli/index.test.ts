@@ -2,10 +2,30 @@ import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {
+  assertLocalStoreBackend,
+  assertScratchDbCreated,
+  blankLlmProviderEnv,
+  isolatedStoreEnv,
+} from "../test-support/store-isolation.js";
 
 // Use a temp file DB so all subprocess calls share the same database
 const DB_PATH = join(tmpdir(), `mementos-cli-test-${Date.now()}.db`);
 const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
+
+// This suite drives the real CLI and WRITES. The child env must be pinned to
+// DB_PATH — see src/test-support/store-isolation.ts for why blanking the vars
+// by hand here was unsafe, and why `beforeAll` verifies the result instead of
+// trusting it.
+const CLI_ENV = isolatedStoreEnv(DB_PATH, { extra: blankLlmProviderEnv() });
+
+beforeAll(async () => {
+  // Fail loudly BEFORE any write if the child did not resolve to local SQLite.
+  // Ambient HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY (exported by the
+  // operator shell and inherited through tmux) would otherwise route every
+  // write in this file into the shared production store.
+  await assertLocalStoreBackend(CLI_PATH, CLI_ENV, DB_PATH);
+});
 
 afterAll(() => {
   // Cleanup temp DB
@@ -19,20 +39,7 @@ async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env: {
-      ...process.env,
-      MEMENTOS_DB_PATH: DB_PATH,
-      HASNA_MEMENTOS_DB_PATH: DB_PATH,
-      ANTHROPIC_API_KEY: "",
-      OPENAI_API_KEY: "",
-      CEREBRAS_API_KEY: "",
-      XAI_API_KEY: "",
-      HASNA_MEMENTOS_DATABASE_URL: "",
-      MEMENTOS_DATABASE_URL: "",
-      HASNA_MEMENTOS_STORAGE_MODE: "",
-      MEMENTOS_STORAGE_MODE: "",
-      MEMENTOS_DATABASE_PASSWORD: "",
-    },
+    env: CLI_ENV,
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -43,6 +50,32 @@ async function runCli(
   const exitCode = await proc.exited;
   return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
 }
+
+describe("store isolation", () => {
+  // The mode report says where the child INTENDS to write; this says a write
+  // actually landed there. The incident that motivated this guard had a
+  // correct-looking path and no file ever created, so both halves are required.
+  test("a real save lands in the scratch database, not the ambient store", async () => {
+    const content = `store-isolation probe ${Date.now()}`;
+    const { exitCode } = await runCli("save", content);
+    expect(exitCode).toBe(0);
+
+    assertScratchDbCreated(DB_PATH);
+
+    // Read the scratch file directly: the row must be IN it, which is only
+    // possible if the write went to this file and not over the network.
+    const { Database } = await import("bun:sqlite");
+    const db = new Database(DB_PATH, { readonly: true });
+    try {
+      const row = db.query("SELECT COUNT(*) AS n FROM memories WHERE content = ?").get(content) as {
+        n: number;
+      };
+      expect(row.n).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+});
 
 describe("CLI", () => {
   test("warns on startup when no primary machine is configured", async () => {

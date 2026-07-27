@@ -8,6 +8,7 @@ import { createMemory, updateMemory } from "../db/memories.js";
 import { closeDatabase, resetDatabase } from "../db/database.js";
 import { registerProject } from "../db/projects.js";
 import { createMementosProjectPanel } from "./project-panel.js";
+import { isolatedStoreEnv } from "../test-support/store-isolation.js";
 
 beforeEach(() => {
   process.env["MEMENTOS_DB_PATH"] = ":memory:";
@@ -80,7 +81,10 @@ describe("createMementosProjectPanel", () => {
 
     const result = spawnSync("bun", ["src/cli/index.tsx", "--json", "project-panel", "--project", project.id, "--contract"], {
       cwd: process.cwd(),
-      env: { ...process.env, MEMENTOS_DB_PATH: dbPath },
+      // Pinned to the scratch file: inheriting the ambient env would put this
+      // child in API mode against the shared production store, where the
+      // `active_memories === 2` assertions below are meaningless.
+      env: isolatedStoreEnv(dbPath),
       maxBuffer: 16 * 1024 * 1024,
     });
 

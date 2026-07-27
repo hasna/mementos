@@ -38,7 +38,18 @@ export interface ApiConfig {
   apiKey: string;
 }
 
-function firstEnv(...keys: string[]): string | undefined {
+// The env keys that select the transport, exported so callers can enumerate
+// them instead of copying them. Their mere PRESENCE moves the store off local
+// SQLite (see {@link isApiMode}), so anything that must guarantee a local store
+// — notably the subprocess test harnesses — has to neutralize exactly this set.
+// A hand-maintained copy of the list in a harness is the failure mode this
+// guards: it silently stops covering the resolver the moment a key is added
+// here. Keep the lists adjacent to the code that reads them.
+export const API_URL_ENV_KEYS = ["HASNA_MEMENTOS_API_URL", "MEMENTOS_API_URL"] as const;
+export const API_KEY_ENV_KEYS = ["HASNA_MEMENTOS_API_KEY", "MEMENTOS_API_KEY"] as const;
+export const DATABASE_URL_ENV_KEYS = ["HASNA_MEMENTOS_DATABASE_URL", "MEMENTOS_DATABASE_URL"] as const;
+
+function firstEnv(keys: readonly string[]): string | undefined {
   for (const k of keys) {
     const v = process.env[k]?.trim();
     if (v) return v;
@@ -46,8 +57,29 @@ function firstEnv(...keys: string[]): string | undefined {
   return undefined;
 }
 
+/** The env key that supplied a value, or `null`. Never returns the value. */
+function firstEnvKey(keys: readonly string[]): string | null {
+  for (const k of keys) {
+    if (process.env[k]?.trim()) return k;
+  }
+  return null;
+}
+
 function hasDatabaseUrl(): boolean {
-  return Boolean(firstEnv("HASNA_MEMENTOS_DATABASE_URL", "MEMENTOS_DATABASE_URL"));
+  return Boolean(firstEnv(DATABASE_URL_ENV_KEYS));
+}
+
+/**
+ * Which env keys currently select API mode, by name only — never the values.
+ * Used by the operator-facing mode report so a human can see *why* the client
+ * is pointed at the cloud without reading source or echoing a credential.
+ */
+export function getApiModeEnvSources(): { urlKey: string | null; keyKey: string | null; databaseUrlKey: string | null } {
+  return {
+    urlKey: firstEnvKey(API_URL_ENV_KEYS),
+    keyKey: firstEnvKey(API_KEY_ENV_KEYS),
+    databaseUrlKey: firstEnvKey(DATABASE_URL_ENV_KEYS),
+  };
 }
 
 /** Normalize a configured base URL to always carry a `/v1` (or `/api`) prefix. */
@@ -59,8 +91,8 @@ function normalizeBase(raw: string): string {
 
 /** Resolve the API client config from env, or `null` when not configured. */
 export function getApiConfig(): ApiConfig | null {
-  const rawBase = firstEnv("HASNA_MEMENTOS_API_URL", "MEMENTOS_API_URL");
-  const apiKey = firstEnv("HASNA_MEMENTOS_API_KEY", "MEMENTOS_API_KEY");
+  const rawBase = firstEnv(API_URL_ENV_KEYS);
+  const apiKey = firstEnv(API_KEY_ENV_KEYS);
   if (!rawBase || !apiKey) return null;
   return { baseUrl: normalizeBase(rawBase), apiKey };
 }

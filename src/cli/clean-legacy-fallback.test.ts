@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { stubApiEnv } from "../test-support/store-isolation.js";
 
 // ============================================================================
 // Regression: `mementos clean` in API mode must keep its version-skew fallback.
@@ -60,20 +61,12 @@ afterAll(() => {
 async function runClean(
   mode: Mode
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  // API mode engages only when no DSN is present on the client.
-  for (const k of [
-    "HASNA_MEMENTOS_DATABASE_URL",
-    "MEMENTOS_DATABASE_URL",
-    "HASNA_MEMENTOS_STORAGE_MODE",
-    "MEMENTOS_STORAGE_MODE",
-    "MEMENTOS_API_URL",
-    "MEMENTOS_API_KEY",
-  ]) {
-    delete env[k];
-  }
-  env["HASNA_MEMENTOS_API_URL"] = baseFor(mode);
-  env["HASNA_MEMENTOS_API_KEY"] = "stub-key-not-a-secret";
+  // This suite runs in API mode ON PURPOSE, against the loopback stub. It builds
+  // the env through store-isolation so the ambient production URL and key are
+  // stripped first: overriding the URL is not enough on its own, because if the
+  // override were ever empty or renamed, the operator's real endpoint would take
+  // over and `clean` — a destructive verb — would run against the live store.
+  const env = stubApiEnv(baseFor(mode));
 
   const proc = Bun.spawn(["bun", "run", CLI_PATH, "clean", "--json"], {
     env,
