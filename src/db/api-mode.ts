@@ -190,7 +190,9 @@ export interface ApiJsonOptions {
   /**
    * Treat `404` as a normal outcome and return `{status: 404, data: undefined}`
    * instead of throwing. ONLY for callers where "absent" is a real answer —
-   * a GET of one record by id, or a DELETE that tolerates an already-gone row.
+   * a GET of one record by id, a DELETE that tolerates an already-gone row, or
+   * a call that has an explicit fallback for a route an older server image does
+   * not serve yet (see `runCleanupViaApi`).
    *
    * It must never be set on a create/upsert path. A 404 there means the route
    * did not exist on the server (client/server version skew, wrong base URL),
