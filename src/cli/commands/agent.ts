@@ -27,7 +27,7 @@ export function registerAgentCommands(program: Command): void {
     .description("Register an agent (returns ID)")
     .option("-d, --description <text>", "Agent description")
     .option("-r, --role <role>", "Agent role")
-    .option("-p, --project <id>", "Lock agent to a project (sets active_project_id)")
+    .option("--project <id>", "Lock agent to a project (sets active_project_id)")
     .action((name: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();

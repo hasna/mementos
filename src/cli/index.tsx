@@ -21,6 +21,7 @@ import { registerStorageCommands } from "./commands/storage.js";
 import { registerInitCommand } from "./commands/init.js";
 import { registerConsolidationCommands } from "./commands/consolidation.js";
 import { makeBrainsCommand } from "./brains.js";
+import { applyGlobalOptions } from "./global-options.js";
 
 // ============================================================================
 // Version
@@ -52,12 +53,11 @@ const program = new Command();
 program
   .name("mementos")
   .description("Universal memory system for AI agents")
-  .version(getPackageVersion())
-  .option("-p, --project <path>", "Project path for scoping")
-  .option("-j, --json", "Output as JSON")
-  .option("-f, --format <fmt>", "Output format: compact, json, csv, yaml")
-  .option("-a, --agent <name>", "Agent name or ID")
-  .option("-s, --session <id>", "Session ID");
+  .version(getPackageVersion());
+
+// Declared in one place so the "no subcommand may reuse a global short flag"
+// invariant is testable rather than a review convention. See global-options.ts.
+applyGlobalOptions(program);
 
 let startupWarningShown = false;
 program.hook("preAction", () => {

@@ -18,7 +18,7 @@ export function registerTailCommand(program: Command): void {
   program
     .command("tail")
     .description("Watch for new/updated memories in real-time (like tail -f)")
-    .option("-s, --scope <scope>", "Scope filter: global, shared, private")
+    .option("--scope <scope>", "Scope filter: global, shared, private")
     .option("-c, --category <cat>", "Category filter: preference, fact, knowledge, history")
     .option("--agent <name>", "Agent filter")
     .option("--project <path>", "Project filter")
