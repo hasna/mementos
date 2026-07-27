@@ -126,8 +126,12 @@ export function registerCrudCommands(program: Command): void {
           if (flag === "category" && templates[violation.value]) {
             msg += ` Did you mean --template ${violation.value}?`;
           }
-          console.error(chalk.red(msg));
-          process.exit(1);
+          // Throw rather than console.error + exit: handleError is the single
+          // error channel and is the only thing that honours --json/--format
+          // json. Printing here would emit colour to stderr and leave stdout
+          // empty, breaking `mementos --json save … | jq -r .error` for exactly
+          // the input this validation exists to catch.
+          throw new Error(msg);
         }
 
         const explicitTags = opts.tags
