@@ -56,8 +56,10 @@ describe("store isolation", () => {
   // actually landed there. The incident that motivated this guard had a
   // correct-looking path and no file ever created, so both halves are required.
   test("a real save lands in the scratch database, not the ambient store", async () => {
-    const content = `store-isolation probe ${Date.now()}`;
-    const { exitCode } = await runCli("save", content);
+    const key = `store-isolation.probe-${Date.now()}`;
+    const value = "written by the store-isolation guard";
+    const { exitCode, stderr } = await runCli("save", key, value);
+    expect(stderr).not.toContain("error:");
     expect(exitCode).toBe(0);
 
     assertScratchDbCreated(DB_PATH);
@@ -67,10 +69,10 @@ describe("store isolation", () => {
     const { Database } = await import("bun:sqlite");
     const db = new Database(DB_PATH, { readonly: true });
     try {
-      const row = db.query("SELECT COUNT(*) AS n FROM memories WHERE content = ?").get(content) as {
-        n: number;
-      };
-      expect(row.n).toBe(1);
+      const row = db.query("SELECT value FROM memories WHERE key = ?").get(key) as
+        | { value: string }
+        | null;
+      expect(row?.value).toBe(value);
     } finally {
       db.close();
     }
