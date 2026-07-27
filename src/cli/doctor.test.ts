@@ -1,13 +1,24 @@
-import { describe, test, expect, afterAll, setDefaultTimeout } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll, setDefaultTimeout } from "bun:test";
 
 // Doctor spawns a child process that checks REST server, MCP, etc. — needs more than 5s
 setDefaultTimeout(30_000);
 import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { assertLocalStoreBackend, isolatedStoreEnv } from "../test-support/store-isolation.js";
 
 const DB_PATH = join(tmpdir(), `mementos-doctor-test-${Date.now()}.db`);
 const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
+
+// `doctor` writes (it registers a machine) and this suite also drives `save`, so
+// the child must be pinned to DB_PATH. Inheriting the ambient env unmodified —
+// which is what this harness used to do — put those writes in the shared
+// production store. See src/test-support/store-isolation.ts.
+const CLI_ENV = isolatedStoreEnv(DB_PATH);
+
+beforeAll(async () => {
+  await assertLocalStoreBackend(CLI_PATH, CLI_ENV, DB_PATH);
+});
 
 afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) {
@@ -20,7 +31,7 @@ async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env: { ...process.env, MEMENTOS_DB_PATH: DB_PATH },
+    env: CLI_ENV,
     stdout: "pipe",
     stderr: "pipe",
   });

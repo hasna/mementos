@@ -1,7 +1,12 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import {
+  assertLocalStoreBackend,
+  blankLlmProviderEnv,
+  isolatedStoreEnv,
+} from "../test-support/store-isolation.js";
 
 // Regression test for bug "json-flag-ignored": several subcommands ignored the
 // global `--json` flag and printed human plain text (e.g. "No hooks registered.")
@@ -9,6 +14,14 @@ import { tmpdir } from "node:os";
 
 const DB_PATH = join(tmpdir(), `mementos-json-flag-test-${Date.now()}.db`);
 const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
+
+// Pinned to DB_PATH and verified before the suite writes anything — see
+// src/test-support/store-isolation.ts.
+const CLI_ENV = isolatedStoreEnv(DB_PATH, { extra: blankLlmProviderEnv() });
+
+beforeAll(async () => {
+  await assertLocalStoreBackend(CLI_PATH, CLI_ENV, DB_PATH);
+});
 
 afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) {
@@ -21,15 +34,7 @@ async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env: {
-      ...process.env,
-      MEMENTOS_DB_PATH: DB_PATH,
-      HASNA_MEMENTOS_DB_PATH: DB_PATH,
-      ANTHROPIC_API_KEY: "",
-      OPENAI_API_KEY: "",
-      CEREBRAS_API_KEY: "",
-      XAI_API_KEY: "",
-    },
+    env: CLI_ENV,
     stdout: "pipe",
     stderr: "pipe",
   });

@@ -1,8 +1,9 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
 import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { MEMORY_CATEGORIES, MEMORY_SCOPES, MEMORY_SOURCES } from "../types/index.js";
+import { assertLocalStoreBackend, isolatedStoreEnv } from "../test-support/store-isolation.js";
 
 // ============================================================================
 // Regression: the client-side enum rejection on `save` must use the SAME error
@@ -23,6 +24,17 @@ import { MEMORY_CATEGORIES, MEMORY_SCOPES, MEMORY_SOURCES } from "../types/index
 const DB_PATH = join(tmpdir(), `mementos-save-enum-contract-${Date.now()}.db`);
 const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
 
+// Strip cloud credentials from the child: if the developer's shell exports them,
+// api mode engages, the command fails on the transport instead of on the
+// validation under test — and any write that DOES succeed lands in the shared
+// production store. Built and then VERIFIED via store-isolation rather than
+// hand-blanked here, so the list cannot drift from the resolver.
+const CLI_ENV = isolatedStoreEnv(DB_PATH);
+
+beforeAll(async () => {
+  await assertLocalStoreBackend(CLI_PATH, CLI_ENV, DB_PATH);
+});
+
 afterAll(() => {
   for (const suffix of ["", "-wal", "-shm"]) {
     const f = DB_PATH + suffix;
@@ -33,27 +45,8 @@ afterAll(() => {
 async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
-  // Strip cloud credentials from the child: if the developer's shell exports
-  // them, api mode engages and the command fails on the transport instead of
-  // on the validation under test.
-  const env: Record<string, string> = { ...(process.env as Record<string, string>) };
-  for (const k of [
-    "HASNA_MEMENTOS_API_URL",
-    "HASNA_MEMENTOS_API_KEY",
-    "MEMENTOS_API_URL",
-    "MEMENTOS_API_KEY",
-    "HASNA_MEMENTOS_DATABASE_URL",
-    "MEMENTOS_DATABASE_URL",
-    "HASNA_MEMENTOS_STORAGE_MODE",
-    "MEMENTOS_STORAGE_MODE",
-  ]) {
-    delete env[k];
-  }
-  env["MEMENTOS_DB_PATH"] = DB_PATH;
-  env["HASNA_MEMENTOS_DB_PATH"] = DB_PATH;
-
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env,
+    env: CLI_ENV,
     stdout: "pipe",
     stderr: "pipe",
   });

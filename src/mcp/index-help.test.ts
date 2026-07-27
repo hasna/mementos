@@ -1,12 +1,13 @@
 import { describe, test, expect } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { isolatedStoreEnv } from "../test-support/store-isolation.js";
 
 describe("mementos-mcp entrypoint", () => {
   test("prints help and exits without starting server", async () => {
     const proc = Bun.spawn(["bun", "run", "src/mcp/index.ts", "--help"], {
       cwd: new URL("../../", import.meta.url).pathname.replace(/\/$/, ""),
-      env: { ...process.env, MEMENTOS_DB_PATH: ":memory:" },
+      env: isolatedStoreEnv(":memory:"),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -24,7 +25,7 @@ describe("mementos-mcp entrypoint", () => {
   test("prints version and exits", async () => {
     const proc = Bun.spawn(["bun", "run", "src/mcp/index.ts", "--version"], {
       cwd: new URL("../../", import.meta.url).pathname.replace(/\/$/, ""),
-      env: { ...process.env, MEMENTOS_DB_PATH: ":memory:" },
+      env: isolatedStoreEnv(":memory:"),
       stdout: "pipe",
       stderr: "pipe",
     });

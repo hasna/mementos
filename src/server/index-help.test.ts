@@ -1,10 +1,11 @@
 import { describe, test, expect } from "bun:test";
+import { isolatedStoreEnv } from "../test-support/store-isolation.js";
 
 describe("mementos-serve entrypoint", () => {
   test("prints help and exits without binding a port", async () => {
     const proc = Bun.spawn(["bun", "run", "src/server/index.ts", "--help"], {
       cwd: new URL("../../", import.meta.url).pathname.replace(/\/$/, ""),
-      env: { ...process.env, MEMENTOS_DB_PATH: ":memory:" },
+      env: isolatedStoreEnv(":memory:"),
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -22,7 +23,7 @@ describe("mementos-serve entrypoint", () => {
   test("prints version and exits", async () => {
     const proc = Bun.spawn(["bun", "run", "src/server/index.ts", "--version"], {
       cwd: new URL("../../", import.meta.url).pathname.replace(/\/$/, ""),
-      env: { ...process.env, MEMENTOS_DB_PATH: ":memory:" },
+      env: isolatedStoreEnv(":memory:"),
       stdout: "pipe",
       stderr: "pipe",
     });

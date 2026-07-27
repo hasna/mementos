@@ -38,7 +38,18 @@ export interface ApiConfig {
   apiKey: string;
 }
 
-function firstEnv(...keys: string[]): string | undefined {
+// The env keys that select the transport, exported so callers can enumerate
+// them instead of copying them. Their mere PRESENCE moves the store off local
+// SQLite (see {@link isApiMode}), so anything that must guarantee a local store
+// — notably the subprocess test harnesses — has to neutralize exactly this set.
+// A hand-maintained copy of the list in a harness is the failure mode this
+// guards: it silently stops covering the resolver the moment a key is added
+// here. Keep the lists adjacent to the code that reads them.
+export const API_URL_ENV_KEYS = ["HASNA_MEMENTOS_API_URL", "MEMENTOS_API_URL"] as const;
+export const API_KEY_ENV_KEYS = ["HASNA_MEMENTOS_API_KEY", "MEMENTOS_API_KEY"] as const;
+export const DATABASE_URL_ENV_KEYS = ["HASNA_MEMENTOS_DATABASE_URL", "MEMENTOS_DATABASE_URL"] as const;
+
+function firstEnv(keys: readonly string[]): string | undefined {
   for (const k of keys) {
     const v = process.env[k]?.trim();
     if (v) return v;
@@ -46,8 +57,84 @@ function firstEnv(...keys: string[]): string | undefined {
   return undefined;
 }
 
+/** The env key that supplied a value, or `null`. Never returns the value. */
+function firstEnvKey(keys: readonly string[]): string | null {
+  for (const k of keys) {
+    if (process.env[k]?.trim()) return k;
+  }
+  return null;
+}
+
 function hasDatabaseUrl(): boolean {
-  return Boolean(firstEnv("HASNA_MEMENTOS_DATABASE_URL", "MEMENTOS_DATABASE_URL"));
+  return Boolean(firstEnv(DATABASE_URL_ENV_KEYS));
+}
+
+/**
+ * Which env keys currently select API mode, by name only — never the values.
+ * Used by the operator-facing mode report so a human can see *why* the client
+ * is pointed at the cloud without reading source or echoing a credential.
+ */
+export function getApiModeEnvSources(): { urlKey: string | null; keyKey: string | null; databaseUrlKey: string | null } {
+  return {
+    urlKey: firstEnvKey(API_URL_ENV_KEYS),
+    keyKey: firstEnvKey(API_KEY_ENV_KEYS),
+    databaseUrlKey: firstEnvKey(DATABASE_URL_ENV_KEYS),
+  };
+}
+
+/**
+ * Escape hatch for a test that genuinely must reach a non-loopback endpoint.
+ * Opt-in by design: the default has to be safe, because the failure it prevents
+ * is silent and lands in a shared store.
+ */
+export const ALLOW_REMOTE_API_IN_TESTS_ENV = "MEMENTOS_ALLOW_REMOTE_API_IN_TESTS";
+
+/** Hosts that cannot be anything but this machine. */
+function isLoopbackHost(rawHost: string): boolean {
+  const host = rawHost.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
+/**
+ * Refuse an outbound cloud request from a test process unless it is loopback.
+ *
+ * The `bun test` preload clears the store selectors ONCE at process start. That
+ * leaves two measured gaps, both of which end in a request from a test process
+ * to the shared production store:
+ *
+ *   - a test file that sets a selector at MODULE SCOPE re-arms API mode after
+ *     the preload has already run and finished; and
+ *   - `bunfig.toml` is resolved from the cwd and bun does not walk up, so
+ *     `cd src/db && bun test <file>` runs with no preload at all.
+ *
+ * Neither is visible to a process-start check or to a static repo sweep, so the
+ * check belongs here — at the one point every cloud read and write funnels
+ * through, evaluated when the request is actually made. Loopback stays allowed
+ * so the suites that drive a local stub server are unaffected.
+ */
+function assertRequestAllowedUnderTest(baseUrl: string): void {
+  if (process.env["NODE_ENV"] !== "test") return;
+  if (process.env[ALLOW_REMOTE_API_IN_TESTS_ENV]?.trim()) return;
+
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    host = "";
+  }
+  if (host && isLoopbackHost(host)) return;
+
+  throw new Error(
+    "api-mode: REFUSING to make a cloud request from a test process — this would write to or read " +
+      "from the SHARED PRODUCTION memory store, where test fixtures are indistinguishable from real " +
+      "memories.\n" +
+      `  host           : ${host || "(unparseable base URL)"}\n` +
+      `  how this happens: a selector set at module scope (after the bun test preload ran), or \`bun test\` ` +
+      "invoked from a directory with no bunfig.toml so the preload never loaded.\n" +
+      "  fix            : build the child/process env via src/test-support/store-isolation.ts, or point the " +
+      "suite at a loopback stub.\n" +
+      `  override       : set ${ALLOW_REMOTE_API_IN_TESTS_ENV}=1 only for a test that must reach a remote endpoint.`,
+  );
 }
 
 /** Normalize a configured base URL to always carry a `/v1` (or `/api`) prefix. */
@@ -59,8 +146,8 @@ function normalizeBase(raw: string): string {
 
 /** Resolve the API client config from env, or `null` when not configured. */
 export function getApiConfig(): ApiConfig | null {
-  const rawBase = firstEnv("HASNA_MEMENTOS_API_URL", "MEMENTOS_API_URL");
-  const apiKey = firstEnv("HASNA_MEMENTOS_API_KEY", "MEMENTOS_API_KEY");
+  const rawBase = firstEnv(API_URL_ENV_KEYS);
+  const apiKey = firstEnv(API_KEY_ENV_KEYS);
   if (!rawBase || !apiKey) return null;
   return { baseUrl: normalizeBase(rawBase), apiKey };
 }
@@ -102,6 +189,10 @@ const DEFAULT_TIMEOUT_S = "45";
 function apiRequestRaw(method: string, path: string, body?: unknown): RawResponse {
   const cfg = getApiConfig();
   if (!cfg) throw new Error("api-mode: not configured (HASNA_MEMENTOS_API_URL / HASNA_MEMENTOS_API_KEY)");
+
+  // Fail closed before anything leaves the process. See the function's comment
+  // for the two preload bypasses this exists to catch.
+  assertRequestAllowedUnderTest(cfg.baseUrl);
 
   const url = `${cfg.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
   const hasBody = body !== undefined && body !== null;
