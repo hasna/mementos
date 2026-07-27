@@ -11,7 +11,7 @@ export function registerWatchCommand(program: Command): void {
   program
     .command("watch")
     .description("Watch for new and changed memories in real-time")
-    .option("-s, --scope <scope>", "Scope filter: global, shared, private")
+    .option("--scope <scope>", "Scope filter: global, shared, private")
     .option("-c, --category <cat>", "Category filter: preference, fact, knowledge, history")
     .option("--agent <name>", "Agent filter")
     .option("--project <path>", "Project filter")

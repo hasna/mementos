@@ -288,7 +288,7 @@ describe("CLI", () => {
   test("save creates a memory", async () => {
     const { stdout, exitCode } = await runCli("save", "cli-test-key", "cli-test-value");
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Saved:");
+    expect(stdout).toContain("Created:");
     expect(stdout).toContain("cli-test-key");
   });
 
@@ -299,7 +299,7 @@ describe("CLI", () => {
       "--importance", "9",
       "--category", "fact"
     );
-    expect(stdout).toContain("Saved:");
+    expect(stdout).toContain("Created:");
     expect(stdout).toContain("cli-global");
   });
 
@@ -309,7 +309,7 @@ describe("CLI", () => {
       "--tags", "alpha,beta,gamma"
     );
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Saved:");
+    expect(stdout).toContain("Created:");
     expect(stdout).toContain("cli-tagged");
   });
 
@@ -532,7 +532,7 @@ describe("CLI", () => {
       "--summary", "A brief summary"
     );
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("Saved:");
+    expect(stdout).toContain("Created:");
   });
 
   test("pin by key", async () => {

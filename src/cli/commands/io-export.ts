@@ -15,7 +15,7 @@ export function registerExportCommand(program: Command): void {
   program
     .command("export")
     .description("Export memories as JSON")
-    .option("-s, --scope <scope>", "Scope filter")
+    .option("--scope <scope>", "Scope filter")
     .option("-c, --category <cat>", "Category filter")
     .option("--agent <name>", "Agent filter")
     .option("--project <path>", "Project filter")

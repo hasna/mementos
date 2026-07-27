@@ -13,7 +13,7 @@ export function registerRecallCommand(program: Command): void {
   program
     .command("recall <key>")
     .description("Recall a memory by key")
-    .option("-s, --scope <scope>", "Scope filter")
+    .option("--scope <scope>", "Scope filter")
     .option("--agent <name>", "Agent filter")
     .option("--project <path>", "Project filter")
     .action((key: string, opts) => {

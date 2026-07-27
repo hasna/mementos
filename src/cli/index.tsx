@@ -1,6 +1,5 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { registerEventsCommands } from "@hasna/events/commander";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,20 +7,8 @@ import { fileURLToPath } from "node:url";
 import { getDatabase } from "../db/database.js";
 import { getPrimaryMachineStartupWarning } from "../db/machines.js";
 import { skipsStartupDbAccess } from "./startup-side-effects.js";
-import { registerMemoryCommands } from "./commands/memory.js";
-import { registerInfoCommands } from "./commands/info.js";
-import { registerIoCommands } from "./commands/io.js";
-import { registerAgentCommands } from "./commands/agent.js";
-import { registerProjectCommands } from "./commands/project.js";
-import { registerProjectPanelCommand } from "./commands/project-panel.js";
-import { registerEntityCommands } from "./commands/entity.js";
-import { registerRelationCommands } from "./commands/relation.js";
-import { registerGraphCommands } from "./commands/graph.js";
-import { registerSystemCommands } from "./commands/system.js";
-import { registerStorageCommands } from "./commands/storage.js";
-import { registerInitCommand } from "./commands/init.js";
-import { registerConsolidationCommands } from "./commands/consolidation.js";
-import { makeBrainsCommand } from "./brains.js";
+import { applyGlobalOptions } from "./global-options.js";
+import { registerAllCommands } from "./register-all.js";
 
 // ============================================================================
 // Version
@@ -53,12 +40,11 @@ const program = new Command();
 program
   .name("mementos")
   .description("Universal memory system for AI agents")
-  .version(getPackageVersion())
-  .option("-p, --project <path>", "Project path for scoping")
-  .option("-j, --json", "Output as JSON")
-  .option("-f, --format <fmt>", "Output format: compact, json, csv, yaml")
-  .option("-a, --agent <name>", "Agent name or ID")
-  .option("-s, --session <id>", "Session ID");
+  .version(getPackageVersion());
+
+// Declared in one place so the "no subcommand may reuse a global short flag"
+// invariant is testable rather than a review convention. See global-options.ts.
+applyGlobalOptions(program);
 
 let startupWarningShown = false;
 program.hook("preAction", (_thisCommand, actionCommand) => {
@@ -80,25 +66,13 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
 // ============================================================================
 // Register all command groups
 // ============================================================================
+// The list itself lives in register-all.ts so the short-flag guard test walks
+// the SAME tree that ships. See register-all.ts for why that matters.
 
-registerInitCommand(program);
-registerMemoryCommands(program);
-registerInfoCommands(program);
-registerIoCommands(program);
-registerAgentCommands(program);
-registerProjectCommands(program);
-registerProjectPanelCommand(program);
-registerEntityCommands(program);
-registerRelationCommands(program);
-registerGraphCommands(program);
-registerSystemCommands(program);
-registerStorageCommands(program);
-registerConsolidationCommands(program);
-program.addCommand(makeBrainsCommand());
+registerAllCommands(program);
 
 // ============================================================================
 // Parse and run
 // ============================================================================
-registerEventsCommands(program, { source: "mementos" });
 
 program.parse(process.argv);
