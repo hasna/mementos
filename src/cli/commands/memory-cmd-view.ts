@@ -59,7 +59,7 @@ export function registerViewCommands(program: Command): void {
   program
     .command("pin <keyOrId>")
     .description("Pin a memory by key or partial ID")
-    .option("-s, --scope <scope>", "Scope filter for key lookup")
+    .option("--scope <scope>", "Scope filter for key lookup")
     .option("--agent <name>", "Agent filter for key lookup")
     .option("--project <path>", "Project filter for key lookup")
     .action((keyOrId: string, opts) => {
@@ -97,7 +97,7 @@ export function registerViewCommands(program: Command): void {
   program
     .command("unpin <keyOrId>")
     .description("Unpin a memory by key or partial ID")
-    .option("-s, --scope <scope>", "Scope filter for key lookup")
+    .option("--scope <scope>", "Scope filter for key lookup")
     .option("--agent <name>", "Agent filter for key lookup")
     .option("--project <path>", "Project filter for key lookup")
     .action((keyOrId: string, opts) => {
@@ -135,7 +135,7 @@ export function registerViewCommands(program: Command): void {
   program
     .command("archive <keyOrId>")
     .description("Archive a memory by key or ID (hides from lists, keeps history)")
-    .option("-s, --scope <scope>", "Scope filter for key lookup")
+    .option("--scope <scope>", "Scope filter for key lookup")
     .action((keyOrId: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
@@ -163,7 +163,7 @@ export function registerViewCommands(program: Command): void {
   program
     .command("versions <keyOrId>")
     .description("Show version history for a memory")
-    .option("-s, --scope <scope>", "Scope filter for key lookup")
+    .option("--scope <scope>", "Scope filter for key lookup")
     .action((keyOrId: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();

@@ -24,7 +24,7 @@ export function registerSearchCommand(program: Command): void {
   program
     .command("search <query>")
     .description("Full-text search across memories")
-    .option("-s, --scope <scope>", "Scope filter")
+    .option("--scope <scope>", "Scope filter")
     .option("-c, --category <cat>", "Category filter")
     .option("--tags <tags>", "Comma-separated tags filter")
     .option("--project <path>", "Project filter (path or name)")

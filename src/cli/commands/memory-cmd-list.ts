@@ -23,7 +23,7 @@ export function registerListCommand(program: Command): void {
   program
     .command("list")
     .description("List memories with optional filters")
-    .option("-s, --scope <scope>", "Scope filter")
+    .option("--scope <scope>", "Scope filter")
     .option("-c, --category <cat>", "Category filter")
     .option("--tags <tags>", "Comma-separated tags filter")
     .option("--importance-min <n>", "Minimum importance", parseInt)

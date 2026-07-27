@@ -10,7 +10,7 @@ export function registerRemoveCommand(program: Command): void {
     .command("remove <nameOrId>")
     .description("Remove/delete a memory by name or ID (alias for memory forget)")
     .option("--agent <id>", "Agent ID")
-    .option("-s, --scope <scope>", "Filter by scope (when looking up by key)")
+    .option("--scope <scope>", "Filter by scope (when looking up by key)")
     .action((nameOrId: string, opts: { agent?: string; scope?: string }) => {
       const globalOpts = program.opts<GlobalOpts>();
       const agentId = opts.agent || globalOpts.agent;
