@@ -1,27 +1,13 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
-import { registerEventsCommands } from "@hasna/events/commander";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { getDatabase } from "../db/database.js";
 import { getPrimaryMachineStartupWarning } from "../db/machines.js";
-import { registerMemoryCommands } from "./commands/memory.js";
-import { registerInfoCommands } from "./commands/info.js";
-import { registerIoCommands } from "./commands/io.js";
-import { registerAgentCommands } from "./commands/agent.js";
-import { registerProjectCommands } from "./commands/project.js";
-import { registerProjectPanelCommand } from "./commands/project-panel.js";
-import { registerEntityCommands } from "./commands/entity.js";
-import { registerRelationCommands } from "./commands/relation.js";
-import { registerGraphCommands } from "./commands/graph.js";
-import { registerSystemCommands } from "./commands/system.js";
-import { registerStorageCommands } from "./commands/storage.js";
-import { registerInitCommand } from "./commands/init.js";
-import { registerConsolidationCommands } from "./commands/consolidation.js";
-import { makeBrainsCommand } from "./brains.js";
 import { applyGlobalOptions } from "./global-options.js";
+import { registerAllCommands } from "./register-all.js";
 
 // ============================================================================
 // Version
@@ -76,25 +62,13 @@ program.hook("preAction", () => {
 // ============================================================================
 // Register all command groups
 // ============================================================================
+// The list itself lives in register-all.ts so the short-flag guard test walks
+// the SAME tree that ships. See register-all.ts for why that matters.
 
-registerInitCommand(program);
-registerMemoryCommands(program);
-registerInfoCommands(program);
-registerIoCommands(program);
-registerAgentCommands(program);
-registerProjectCommands(program);
-registerProjectPanelCommand(program);
-registerEntityCommands(program);
-registerRelationCommands(program);
-registerGraphCommands(program);
-registerSystemCommands(program);
-registerStorageCommands(program);
-registerConsolidationCommands(program);
-program.addCommand(makeBrainsCommand());
+registerAllCommands(program);
 
 // ============================================================================
 // Parse and run
 // ============================================================================
-registerEventsCommands(program, { source: "mementos" });
 
 program.parse(process.argv);
