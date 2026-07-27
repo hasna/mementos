@@ -1,4 +1,9 @@
-import { describe, test, expect, afterAll } from "bun:test";
+import { describe, test, expect, afterAll, beforeAll } from "bun:test";
+import {
+  assertLocalStoreBackend,
+  blankLlmProviderEnv,
+  isolatedStoreEnv,
+} from "../test-support/store-isolation.js";
 import { existsSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -18,31 +23,28 @@ const DB_PATH = join(tmpdir(), `mementos-scope-upsert-${Date.now()}.db`);
 const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
 
 /**
- * A subprocess env that provably routes to the temp SQLite DB.
+ * A subprocess env pinned to the temp SQLite DB.
  *
  * `MEMENTOS_DB_PATH` alone does NOT disable cloud routing: `isApiMode()`
  * (src/db/api-mode.ts) engages whenever an API url+key are both present and no
  * DATABASE_URL is set. On a machine with mementos creds exported that sends
- * "local" test writes to the live fleet store, so the api-mode vars are blanked
- * explicitly here. `assertLocalStore` proves it actually worked.
+ * "local" test writes to the live fleet store.
+ *
+ * The selector list is NOT retyped here. It is derived from the resolver's own
+ * exported keys by src/test-support/store-isolation.ts, so a selector added to
+ * the resolver cannot leave this harness quietly uncovered — which a
+ * hand-maintained blank list would. `beforeAll` then proves the child really
+ * resolved to local SQLite instead of trusting that it did.
  */
 function testEnv(): Record<string, string> {
-  return {
-    ...process.env,
-    MEMENTOS_DB_PATH: DB_PATH,
-    HASNA_MEMENTOS_DB_PATH: DB_PATH,
-    HASNA_MEMENTOS_API_URL: "",
-    MEMENTOS_API_URL: "",
-    HASNA_MEMENTOS_API_KEY: "",
-    MEMENTOS_API_KEY: "",
-    HASNA_MEMENTOS_DATABASE_URL: "",
-    MEMENTOS_DATABASE_URL: "",
-    HASNA_MEMENTOS_STORAGE_MODE: "",
-    MEMENTOS_STORAGE_MODE: "",
-    ANTHROPIC_API_KEY: "",
-    OPENAI_API_KEY: "",
-  } as Record<string, string>;
+  return isolatedStoreEnv(DB_PATH, { extra: blankLlmProviderEnv() });
 }
+
+beforeAll(async () => {
+  // Fail loudly BEFORE any write, rather than discovering afterwards that these
+  // e2e writes went to the shared production store.
+  await assertLocalStoreBackend(CLI_PATH, testEnv(), DB_PATH);
+});
 
 async function runCli(...args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
