@@ -16,13 +16,14 @@ import {
 import { getDatabase, now, uuid, resolvePartialId } from "./database.js";
 import { generateEmbedding, cosineSimilarity, serializeEmbedding, deserializeEmbedding } from "../lib/embeddings.js";
 import { redactSecrets } from "../lib/redact.js";
+import { validateMemoryEnums, formatEnumViolation } from "../lib/enum-validation.js";
 import { hookRegistry } from "../lib/hooks.js";
 import { computeTrustScore } from "../lib/poisoning.js";
 // Entity extraction is now handled by the LLM auto-memory pipeline (src/lib/auto-memory.ts).
 // The regex extractor has been removed. Extraction fires async via PostMemorySave hook.
 // Keeping this comment so the migration intent is clear.
 import { unlinkEntityFromMemory, getEntityMemoryLinks } from "./entity-memories.js";
-import { isApiMode, apiJson, toQuery } from "./api-mode.js";
+import { isApiMode, apiJson, toQuery, ApiRequestError } from "./api-mode.js";
 
 // ============================================================================
 // Entity extraction helper
@@ -110,7 +111,17 @@ export function createMemory(
   db?: Database
 ): Memory {
   if (!db && isApiMode()) {
-    const { data } = apiJson<Memory>("POST", "/memories", { ...input, dedupe: dedupeMode });
+    const { status, data } = apiJson<Memory>("POST", "/memories", { ...input, dedupe: dedupeMode });
+    // A create is only successful if the server actually handed back the stored
+    // row. A 2xx with an empty/!id body means nothing was persisted; returning
+    // it made the CLI print "Saved:" and exit 0 on a write that never landed.
+    if (!data || !data.id) {
+      throw new ApiRequestError(
+        `mementos cloud POST /memories → ${status} but no memory was returned; the write did not persist (key: ${input.key})`,
+        status,
+        "",
+      );
+    }
     return data;
   }
   const d = db || getDatabase();
@@ -329,7 +340,15 @@ export function createMemory(
 
 export interface BulkUpsertResult {
   inserted: number;
+  /** Rows the store already had (id or unique-key conflict) — a benign no-op. */
   skipped: number;
+  /**
+   * Rows the store REFUSED (bad enum, failed CHECK/FK, missing key). These did
+   * NOT persist. Kept separate from `skipped` so a caller can never read a
+   * dropped row as an idempotent no-op; every rejection also has a line in
+   * `errors`. `inserted + skipped + rejected === total`.
+   */
+  rejected: number;
   errors: string[];
   total: number;
 }
@@ -344,12 +363,22 @@ export interface BulkUpsertResult {
  *  - does NOT dedupe by key/scope/agent and does NOT fire hooks / entity
  *    extraction / embedding work (those run asynchronously elsewhere).
  *
- * Idempotency is by primary-key `id`: `INSERT OR IGNORE` maps to
- * `ON CONFLICT DO NOTHING` on Postgres, so a row whose `id` already exists is
- * left untouched and re-runs never create duplicate rows. This is the
- * cross-machine → cloud backfill path for the fleet self-host cutover: a
- * machine's local memories are shipped to the cloud store verbatim without
- * mutating rows that are already present.
+ * Idempotency is by conflict, not by suppression: the statement carries an
+ * explicit bare `ON CONFLICT DO NOTHING`, which SQLite and Postgres both read
+ * as "ignore a uniqueness conflict (primary-key `id` or the unique key index)".
+ * A row already present is therefore left untouched and re-runs never create
+ * duplicates. This is the cross-machine → cloud backfill path for the fleet
+ * self-host cutover: a machine's local memories are shipped to the cloud store
+ * verbatim without mutating rows that are already present.
+ *
+ * It deliberately does NOT use `INSERT OR IGNORE`: on SQLite that swallows
+ * *every* constraint failure, so a row refused by the `category`/`scope`/
+ * `source`/`status` CHECK vanished with `changes === 0` and was counted as an
+ * idempotent `skipped` — a cloud write that did not persist reporting success.
+ * With a bare `ON CONFLICT DO NOTHING` a CHECK/FK/NOT NULL violation still
+ * throws into the catch below and lands in `rejected` + `errors`. Enum values
+ * are additionally pre-validated per row so the reason names the field and the
+ * accepted set instead of quoting raw constraint SQL.
  *
  * FK-referenced agent/project/session/machine rows are stubbed via
  * {@link ensureMemoryReferences} so cross-machine authorship ids never fail the
@@ -366,11 +395,13 @@ export function bulkUpsertMemories(
   const d = db || getDatabase();
   let inserted = 0;
   let skipped = 0;
+  let rejected = 0;
   const errors: string[] = [];
 
   const insert = d.prepare(
-    `INSERT OR IGNORE INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, when_to_use, sequence_group, sequence_order, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO memories (id, key, value, category, scope, summary, tags, importance, source, status, pinned, agent_id, project_id, session_id, machine_id, namespace, created_by_agent, when_to_use, sequence_group, sequence_order, metadata, access_count, version, expires_at, valid_from, valid_until, ingested_at, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT DO NOTHING`
   );
   const insertTag = d.prepare(
     "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
@@ -381,9 +412,20 @@ export function bulkUpsertMemories(
     const id = (mem["id"] as string) || uuid();
     try {
       if (!key) {
-        errors.push(`skipped row without key (id=${id})`);
+        rejected++;
+        errors.push(`rejected row without key (id=${id})`);
         continue;
       }
+
+      // Reject an out-of-enum column before it reaches SQLite, so the reason
+      // names the field and the accepted set rather than quoting the raw CHECK.
+      const violation = validateMemoryEnums(mem);
+      if (violation) {
+        rejected++;
+        errors.push(`Rejected "${key}": ${formatEnumViolation(violation)}`);
+        continue;
+      }
+
       const timestamp = now();
 
       // tags may arrive as an array (JSON body) or a serialized JSON string (row dump)
@@ -470,17 +512,21 @@ export function bulkUpsertMemories(
           }
         }
       } else {
-        // id already present — left untouched (idempotent, non-destructive)
+        // Uniqueness conflict only (bare ON CONFLICT DO NOTHING): the row is
+        // already present and was left untouched (idempotent, non-destructive).
+        // A refused row cannot reach here — it throws into the catch below.
         skipped++;
       }
     } catch (e) {
+      // The store refused the row: it did NOT persist. Never counted as skipped.
+      rejected++;
       errors.push(
         `Failed "${String(key)}": ${e instanceof Error ? e.message : String(e)}`
       );
     }
   }
 
-  return { inserted, skipped, errors, total: memories.length };
+  return { inserted, skipped, rejected, errors, total: memories.length };
 }
 
 // ============================================================================
@@ -548,7 +594,7 @@ function listMemoriesByKey(key: string, db: Database): Memory[] {
 
 export function getMemory(id: string, db?: Database): Memory | null {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Memory>("GET", `/memories/${encodeURIComponent(id)}`);
+    const { status, data } = apiJson<Memory>("GET", `/memories/${encodeURIComponent(id)}`, undefined, { allow404: true });
     return status === 404 ? null : (data ?? null);
   }
   const d = db || getDatabase();
@@ -1035,7 +1081,7 @@ export function updateMemory(
   db?: Database
 ): Memory {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input);
+    const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input, { allow404: true });
     if (status === 404) throw new MemoryNotFoundError(id);
     return data;
   }
@@ -1168,7 +1214,7 @@ export function updateMemory(
 
 export function deleteMemory(id: string, db?: Database): boolean {
   if (!db && isApiMode()) {
-    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/memories/${encodeURIComponent(id)}`);
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/memories/${encodeURIComponent(id)}`, undefined, { allow404: true });
     return status !== 404;
   }
   const d = db || getDatabase();

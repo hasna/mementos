@@ -125,6 +125,7 @@ export function releaseLock(lockId: string, agentId: string, db?: Database): boo
       "DELETE",
       `/locks/${encodeURIComponent(lockId)}`,
       { agent_id: agentId },
+      { allow404: true },
     );
     return status !== 404;
   }

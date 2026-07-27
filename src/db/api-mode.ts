@@ -186,14 +186,39 @@ function apiRequestRaw(method: string, path: string, body?: unknown): RawRespons
   return { status, body: respBody };
 }
 
-/** Authed JSON request. Throws {@link ApiRequestError} on non-2xx (except 404 handled by callers). */
-export function apiJson<T = unknown>(method: string, path: string, body?: unknown): { status: number; data: T } {
+export interface ApiJsonOptions {
+  /**
+   * Treat `404` as a normal outcome and return `{status: 404, data: undefined}`
+   * instead of throwing. ONLY for callers where "absent" is a real answer —
+   * a GET of one record by id, a DELETE that tolerates an already-gone row, or
+   * a call that has an explicit fallback for a route an older server image does
+   * not serve yet (see `runCleanupViaApi`).
+   *
+   * It must never be set on a create/upsert path. A 404 there means the route
+   * did not exist on the server (client/server version skew, wrong base URL),
+   * so nothing was written; returning success-shaped data made the CLI print
+   * "Saved:" and exit 0 having persisted nothing. Default is fail-closed.
+   */
+  allow404?: boolean;
+}
+
+/**
+ * Authed JSON request. Throws {@link ApiRequestError} on every non-2xx,
+ * including 404, unless the caller opts into 404 pass-through via
+ * {@link ApiJsonOptions.allow404}.
+ */
+export function apiJson<T = unknown>(
+  method: string,
+  path: string,
+  body?: unknown,
+  options?: ApiJsonOptions,
+): { status: number; data: T } {
   const raw = apiRequestRaw(method, path, body);
   if (raw.status >= 200 && raw.status < 300) {
     const data = raw.body.trim() ? (JSON.parse(raw.body) as T) : (undefined as unknown as T);
     return { status: raw.status, data };
   }
-  if (raw.status === 404) {
+  if (raw.status === 404 && options?.allow404) {
     return { status: 404, data: undefined as unknown as T };
   }
   let msg = `mementos cloud ${method} ${path} → ${raw.status}`;

@@ -50,7 +50,7 @@ export function createSubscription(input: CreateSubscriptionInput, db?: Database
 
 export function deleteSubscription(id: string, db?: Database): boolean {
   if (!db && isApiMode()) {
-    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/subscriptions/${encodeURIComponent(id)}`);
+    const { status } = apiJson<{ deleted: boolean }>("DELETE", `/subscriptions/${encodeURIComponent(id)}`, undefined, { allow404: true });
     return status !== 404;
   }
   const d = db || getDatabase();

@@ -54,9 +54,15 @@ addRoute("POST", "/api/memories/import", async (req) => {
 
 // POST /api/memories/bulk-upsert — faithful, idempotent bulk restore.
 // Preserves each memory's original id + status (archived stays archived) and
-// all core fields; upserts by primary-key id (ON CONFLICT DO NOTHING) so
-// re-runs never create duplicate rows and existing rows are never mutated.
+// all core fields; upserts with ON CONFLICT DO NOTHING so re-runs never create
+// duplicate rows and existing rows are never mutated.
 // This is the cross-machine -> cloud backfill path for the fleet self-host cutover.
+//
+// Fails closed: a row the store refused did not persist, so the response must
+// not read as success. `rejected` counts those rows (separately from `skipped`,
+// which is an already-present no-op) and each has a line in `errors`; any
+// rejection downgrades the status from 201 to 400. The write is idempotent, so
+// an operator fixes the offending rows and re-runs the same payload.
 addRoute("POST", "/api/memories/bulk-upsert", async (req) => {
   const body = (await readJson(req)) as Record<string, unknown> | null;
   if (!body || !Array.isArray(body["memories"])) {
@@ -65,6 +71,16 @@ addRoute("POST", "/api/memories/bulk-upsert", async (req) => {
 
   const memoriesArr = body["memories"] as Record<string, unknown>[];
   const result = bulkUpsertMemories(memoriesArr);
+
+  if (result.rejected > 0) {
+    return json(
+      {
+        ...result,
+        error: `${result.rejected} of ${result.total} memories were rejected and did not persist. See errors.`,
+      },
+      400
+    );
+  }
 
   return json(result, 201);
 });

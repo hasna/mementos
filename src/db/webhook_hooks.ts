@@ -85,7 +85,7 @@ export function createWebhookHook(
 
 export function getWebhookHook(id: string, db?: Database): WebhookHook | null {
   if (!db && isApiMode()) {
-    const { status, data } = apiJson<WebhookHook>("GET", `/webhooks/${encodeURIComponent(id)}`);
+    const { status, data } = apiJson<WebhookHook>("GET", `/webhooks/${encodeURIComponent(id)}`, undefined, { allow404: true });
     if (status === 404 || !data) return null;
     return data;
   }
@@ -140,7 +140,7 @@ export function updateWebhookHook(
       enabled: updates.enabled,
       priority: updates.priority,
       description: updates.description,
-    });
+    }, { allow404: true });
     if (status === 404 || !data) return null;
     return data;
   }
@@ -178,7 +178,7 @@ export function updateWebhookHook(
 
 export function deleteWebhookHook(id: string, db?: Database): boolean {
   if (!db && isApiMode()) {
-    const { status } = apiJson<null>("DELETE", `/webhooks/${encodeURIComponent(id)}`);
+    const { status } = apiJson<null>("DELETE", `/webhooks/${encodeURIComponent(id)}`, undefined, { allow404: true });
     return status === 204 || status === 200;
   }
   const d = db || getDatabase();

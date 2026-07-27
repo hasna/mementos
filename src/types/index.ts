@@ -1,26 +1,32 @@
 // ============================================================================
-// Memory Scope — who can access the memory
+// Enumerated memory columns — SINGLE SOURCE OF TRUTH.
+//
+// These arrays are the one place the accepted values live. The string-union
+// types below are derived from them, and the runtime validators (CLI args,
+// REST request bodies) read the same arrays, so a value that typechecks is a
+// value the API accepts is a value the DB CHECK constraint allows. Adding a
+// value here is not enough on its own: the matching CHECK constraint in
+// src/db/migrations.ts must be widened by a migration in the same change.
 // ============================================================================
 
-export type MemoryScope = "global" | "shared" | "private" | "working";
+export const MEMORY_SCOPES = ["global", "shared", "private", "working"] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
 
-// ============================================================================
-// Memory Category — what kind of memory
-// ============================================================================
+export const MEMORY_CATEGORIES = [
+  "preference",
+  "fact",
+  "knowledge",
+  "history",
+  "procedural",
+  "resource",
+] as const;
+export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
 
-export type MemoryCategory = "preference" | "fact" | "knowledge" | "history" | "procedural" | "resource";
+export const MEMORY_SOURCES = ["user", "agent", "system", "auto", "imported"] as const;
+export type MemorySource = (typeof MEMORY_SOURCES)[number];
 
-// ============================================================================
-// Memory Source — how the memory was created
-// ============================================================================
-
-export type MemorySource = "user" | "agent" | "system" | "auto" | "imported";
-
-// ============================================================================
-// Memory Status
-// ============================================================================
-
-export type MemoryStatus = "active" | "archived" | "expired";
+export const MEMORY_STATUSES = ["active", "archived", "expired"] as const;
+export type MemoryStatus = (typeof MEMORY_STATUSES)[number];
 
 // ============================================================================
 // Core Memory interface

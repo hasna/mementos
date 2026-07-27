@@ -26,7 +26,13 @@ interface CleanupResult {
  */
 function runCleanupViaApi(): CleanupResult {
   const empty: CleanupResult = { expired: 0, evicted: 0, archived: 0, unused_archived: 0, deprioritized: 0 };
-  const { status, data } = apiJson<CleanupResult>("POST", "/maintenance/cleanup");
+  // `allow404` is required here: a 404 is the version-skew signal this function
+  // exists to handle, and apiJson is fail-closed on 404 by default. Every other
+  // status (including a 5xx) still throws, so a real failure is never mistaken
+  // for an old server.
+  const { status, data } = apiJson<CleanupResult>("POST", "/maintenance/cleanup", undefined, {
+    allow404: true,
+  });
   if (status !== 404 && data) return { ...empty, ...data };
   // Legacy server: expired-only cleanup.
   const legacy = apiJson<{ cleaned: number }>("POST", "/memories/clean");

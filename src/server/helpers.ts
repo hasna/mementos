@@ -50,6 +50,29 @@ export function errorResponse(
   return json(body, status);
 }
 
+/**
+ * Classify a thrown error as a database constraint violation — i.e. the caller
+ * sent a value the schema refuses (bad enum, missing FK, duplicate unique key).
+ * Returns an actionable message for a 400, or `null` when the error is a
+ * genuine server fault that must stay a 500.
+ *
+ * Defence in depth behind the per-route validators: a column whose CHECK is not
+ * yet mirrored by a validator still gets reported as a client error rather than
+ * as an opaque outage.
+ */
+export function describeConstraintViolation(e: unknown): string | null {
+  if (!e || typeof e !== "object") return null;
+  const code = String((e as { code?: unknown }).code ?? "");
+  const message = String((e as { message?: unknown }).message ?? "");
+  const isConstraint =
+    code.startsWith("SQLITE_CONSTRAINT") ||
+    // node-postgres integrity-violation class
+    /^23\d{3}$/.test(code) ||
+    /constraint failed/i.test(message);
+  if (!isConstraint) return null;
+  return `Request rejected by a database constraint: ${message || code}. Check that enum fields (category, scope, source, status) and referenced ids are valid.`;
+}
+
 // Maximum POST body size: 1 MB
 const MAX_BODY_BYTES = 1 * 1024 * 1024;
 

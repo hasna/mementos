@@ -20,7 +20,7 @@ import { getStorageMode, markServerContext } from "../storage.js";
 // a direct RDS Postgres connection (CLAUDE.md §2). Opt in before any DB access.
 markServerContext();
 import { matchRoute } from "./router.js";
-import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile } from "./helpers.js";
+import { CORS_HEADERS, getCorsHeaders, json, errorResponse, resolveDashboardDir, serveStaticFile, describeConstraintViolation } from "./helpers.js";
 import { checkApiKey } from "./auth.js";
 
 function pkgVersion(): string {
@@ -310,6 +310,14 @@ export function startServer(port: number): void {
       try {
         return await matched.handler(req, url, matched.params);
       } catch (e) {
+        // A DB constraint violation means the REQUEST was bad, not the server.
+        // Reporting it as 500 hid which field was rejected and made a caller
+        // mistake look like an outage; classify it as 400 and say what broke.
+        const constraint = describeConstraintViolation(e);
+        if (constraint) {
+          console.warn(`[mementos-serve] ${req.method} ${pathname}: rejected — ${constraint}`);
+          return errorResponse(constraint, 400);
+        }
         console.error(`[mementos-serve] ${req.method} ${pathname}:`, e);
         return errorResponse("Internal server error", 500);
       }
