@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 import { getDatabase } from "../db/database.js";
 import { getPrimaryMachineStartupWarning } from "../db/machines.js";
+import { skipsStartupDbAccess } from "./startup-side-effects.js";
 import { registerMemoryCommands } from "./commands/memory.js";
 import { registerInfoCommands } from "./commands/info.js";
 import { registerIoCommands } from "./commands/io.js";
@@ -60,7 +61,10 @@ program
   .option("-s, --session <id>", "Session ID");
 
 let startupWarningShown = false;
-program.hook("preAction", () => {
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  // Diagnostic commands opt out: opening the database here would create and
+  // migrate the very file a side-effect-free probe only means to report on.
+  if (skipsStartupDbAccess(actionCommand)) return;
   if (startupWarningShown) return;
   startupWarningShown = true;
   try {

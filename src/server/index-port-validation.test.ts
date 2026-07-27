@@ -1,4 +1,5 @@
 import { describe, test, expect } from "bun:test";
+import { isolatedStoreEnv } from "../test-support/store-isolation.js";
 
 const CWD = new URL("../../", import.meta.url).pathname.replace(/\/$/, "");
 
@@ -8,7 +9,7 @@ async function runServe(
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", "src/server/index.ts", ...args], {
     cwd: CWD,
-    env: { ...process.env, MEMENTOS_DB_PATH: ":memory:", ...extraEnv },
+    env: { ...isolatedStoreEnv(":memory:"), ...extraEnv },
     stdout: "pipe",
     stderr: "pipe",
   });

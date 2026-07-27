@@ -178,6 +178,32 @@ describe("store-isolation guard", () => {
     expect(missing).toEqual([]);
   });
 
+  test("storage mode neither opens nor creates a database", async () => {
+    // The whole point of this command is to be the one probe you can run when you
+    // do not yet know which store you are pointed at, so it must have no storage
+    // side effects. It also has to hold for `assertScratchDbCreated` to mean
+    // anything: that assertion proves a WRITE landed in the scratch file, and it
+    // is called after `assertLocalStoreBackend` has already run this command
+    // against the same path. If the probe created the file, the later assertion
+    // would pass no matter what the write did.
+    const freshPath = join(tmpdir(), `mementos-mode-no-side-effect-${Date.now()}-${process.pid}.db`);
+    expect(existsSync(freshPath)).toBe(false);
+    try {
+      const report = await reportFor(isolatedStoreEnv(freshPath));
+      // Local mode is the case that would open the file; api mode fails closed.
+      expect(report.backend).toBe("local-sqlite");
+      expect(report.db_path).toBe(freshPath);
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        expect(existsSync(freshPath + suffix)).toBe(false);
+      }
+    } finally {
+      for (const suffix of ["", "-wal", "-shm", "-journal"]) {
+        const f = freshPath + suffix;
+        if (existsSync(f)) try { unlinkSync(f); } catch { /* already gone */ }
+      }
+    }
+  });
+
   test("the mode report never carries a credential value", async () => {
     const env: Record<string, string> = {
       ...isolatedStoreEnv(DB_PATH),
@@ -202,7 +228,11 @@ describe("store-isolation guard", () => {
 // src/test-support/store-isolation.ts rather than hand-rolling a blank list.
 // ============================================================================
 
-const CLIENT_TEST_DIRS = ["cli", "lib", "mcp"] as const;
+// Every dir whose tests can spawn a mementos process. `server` is included
+// because a server spawned with the ambient env routes its own unpinned domain
+// writes to the cloud exactly as a CLI child would — the sweep missing it is how
+// three server harnesses stayed on the hand-rolled env after the cli/lib/mcp fix.
+const CLIENT_TEST_DIRS = ["cli", "db", "lib", "mcp", "server"] as const;
 const SRC_DIR = new URL("../", import.meta.url).pathname.replace(/\/$/, "");
 
 function testFilesIn(dir: string): string[] {

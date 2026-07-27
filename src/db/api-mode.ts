@@ -82,6 +82,61 @@ export function getApiModeEnvSources(): { urlKey: string | null; keyKey: string 
   };
 }
 
+/**
+ * Escape hatch for a test that genuinely must reach a non-loopback endpoint.
+ * Opt-in by design: the default has to be safe, because the failure it prevents
+ * is silent and lands in a shared store.
+ */
+export const ALLOW_REMOTE_API_IN_TESTS_ENV = "MEMENTOS_ALLOW_REMOTE_API_IN_TESTS";
+
+/** Hosts that cannot be anything but this machine. */
+function isLoopbackHost(rawHost: string): boolean {
+  const host = rawHost.replace(/^\[/, "").replace(/\]$/, "").toLowerCase();
+  return host === "localhost" || host === "::1" || /^127\./.test(host);
+}
+
+/**
+ * Refuse an outbound cloud request from a test process unless it is loopback.
+ *
+ * The `bun test` preload clears the store selectors ONCE at process start. That
+ * leaves two measured gaps, both of which end in a request from a test process
+ * to the shared production store:
+ *
+ *   - a test file that sets a selector at MODULE SCOPE re-arms API mode after
+ *     the preload has already run and finished; and
+ *   - `bunfig.toml` is resolved from the cwd and bun does not walk up, so
+ *     `cd src/db && bun test <file>` runs with no preload at all.
+ *
+ * Neither is visible to a process-start check or to a static repo sweep, so the
+ * check belongs here — at the one point every cloud read and write funnels
+ * through, evaluated when the request is actually made. Loopback stays allowed
+ * so the suites that drive a local stub server are unaffected.
+ */
+function assertRequestAllowedUnderTest(baseUrl: string): void {
+  if (process.env["NODE_ENV"] !== "test") return;
+  if (process.env[ALLOW_REMOTE_API_IN_TESTS_ENV]?.trim()) return;
+
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname;
+  } catch {
+    host = "";
+  }
+  if (host && isLoopbackHost(host)) return;
+
+  throw new Error(
+    "api-mode: REFUSING to make a cloud request from a test process — this would write to or read " +
+      "from the SHARED PRODUCTION memory store, where test fixtures are indistinguishable from real " +
+      "memories.\n" +
+      `  host           : ${host || "(unparseable base URL)"}\n` +
+      `  how this happens: a selector set at module scope (after the bun test preload ran), or \`bun test\` ` +
+      "invoked from a directory with no bunfig.toml so the preload never loaded.\n" +
+      "  fix            : build the child/process env via src/test-support/store-isolation.ts, or point the " +
+      "suite at a loopback stub.\n" +
+      `  override       : set ${ALLOW_REMOTE_API_IN_TESTS_ENV}=1 only for a test that must reach a remote endpoint.`,
+  );
+}
+
 /** Normalize a configured base URL to always carry a `/v1` (or `/api`) prefix. */
 function normalizeBase(raw: string): string {
   let base = raw.trim().replace(/\/+$/, "");
@@ -134,6 +189,10 @@ const DEFAULT_TIMEOUT_S = "45";
 function apiRequestRaw(method: string, path: string, body?: unknown): RawResponse {
   const cfg = getApiConfig();
   if (!cfg) throw new Error("api-mode: not configured (HASNA_MEMENTOS_API_URL / HASNA_MEMENTOS_API_KEY)");
+
+  // Fail closed before anything leaves the process. See the function's comment
+  // for the two preload bypasses this exists to catch.
+  assertRequestAllowedUnderTest(cfg.baseUrl);
 
   const url = `${cfg.baseUrl}${path.startsWith("/") ? path : `/${path}`}`;
   const hasBody = body !== undefined && body !== null;
