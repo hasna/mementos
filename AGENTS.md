@@ -8,6 +8,7 @@ This document explains how AI agents (Claude, Codex, Gemini, custom) should use 
 # 1. Install the MCP server
 mementos mcp --claude       # Claude Code (uses claude mcp add)
 mementos mcp --codex        # Codex
+mementos mcp --cursor       # Cursor
 mementos mcp --all          # All agents
 
 # 2. Start REST server (optional — for SDK/HTTP access)

@@ -66,6 +66,10 @@ when a downstream agent needs to run inside a specific repository.
 ## MCP Server
 
 ```bash
+# Register globally with an agent (use --claude, --codex, --cursor, or --gemini)
+mementos mcp --cursor
+
+# Or run the stdio server directly
 mementos-mcp
 ```
 
