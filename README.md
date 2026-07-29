@@ -69,6 +69,16 @@ when a downstream agent needs to run inside a specific repository.
 mementos-mcp
 ```
 
+Register it in a supported agent's user-level MCP catalog:
+
+```bash
+mementos mcp --claude
+mementos mcp --codex
+mementos mcp --cursor       # writes ~/.cursor/mcp.json
+mementos mcp --gemini
+mementos mcp --all
+```
+
 116 tools available.
 
 MCP list/status tools also default to compact text. Use tool-specific
