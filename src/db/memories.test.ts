@@ -676,6 +676,33 @@ describe("updateMemory", () => {
     expect(getTagsForMemory(db, m.id)).toEqual(["new1", "new2"]);
   });
 
+  it("persists scalar fields and tags when addressed by partial ID", () => {
+    const m = createMemory(
+      { key: "partial-update", value: "old", summary: "old summary", tags: ["old"] },
+      "merge",
+      db
+    );
+
+    const updated = updateMemory(
+      m.id.slice(0, 8),
+      { value: "new", summary: "new summary", tags: ["new"], version: 1 },
+      db
+    );
+
+    expect(updated.id).toBe(m.id);
+    expect(updated.value).toBe("new");
+    expect(updated.summary).toBe("new summary");
+    expect(updated.tags).toEqual(["new"]);
+    expect(updated.version).toBe(2);
+
+    const persisted = getMemory(m.id, db)!;
+    expect(persisted.value).toBe("new");
+    expect(persisted.summary).toBe("new summary");
+    expect(persisted.tags).toEqual(["new"]);
+    expect(persisted.version).toBe(2);
+    expect(getTagsForMemory(db, m.id)).toEqual(["new"]);
+  });
+
   it("updates summary", () => {
     const m = createMemory({ key: "k", value: "v" }, "merge", db);
     const updated = updateMemory(m.id, { summary: "a summary", version: 1 }, db);

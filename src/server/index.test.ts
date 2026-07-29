@@ -195,6 +195,41 @@ describe("PATCH /api/memories/:id", () => {
     expect(data.value).toBe("new-val-auto");
   });
 
+  test("persists value, summary, and tags when addressed by partial ID", async () => {
+    const createRes = await api("/api/memories", {
+      method: "POST",
+      body: JSON.stringify({
+        key: "patch-partial-id",
+        value: "old-value",
+        summary: "old-summary",
+        tags: ["old-tag"],
+      }),
+    });
+    const id = createRes.data.id as string;
+
+    const patchRes = await api(`/api/memories/${id.slice(0, 8)}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        value: "new-value",
+        summary: "new-summary",
+        tags: ["new-tag"],
+      }),
+    });
+    expect(patchRes.status).toBe(200);
+    expect(patchRes.data.id).toBe(id);
+    expect(patchRes.data.value).toBe("new-value");
+    expect(patchRes.data.summary).toBe("new-summary");
+    expect(patchRes.data.tags).toEqual(["new-tag"]);
+    expect(patchRes.data.version).toBe(2);
+
+    const readRes = await api(`/api/memories/${id}`);
+    expect(readRes.status).toBe(200);
+    expect(readRes.data.value).toBe("new-value");
+    expect(readRes.data.summary).toBe("new-summary");
+    expect(readRes.data.tags).toEqual(["new-tag"]);
+    expect(readRes.data.version).toBe(2);
+  });
+
   test("returns 409 on version conflict", async () => {
     const createRes = await api("/api/memories", {
       method: "POST",

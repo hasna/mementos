@@ -1088,6 +1088,12 @@ export function updateMemory(
   const d = db || getDatabase();
   const existing = getMemory(id, d);
   if (!existing) throw new MemoryNotFoundError(id);
+  // getMemory accepts a unique ID prefix, which is how API-mode CLI/MCP
+  // clients address records without a local table to expand the prefix first.
+  // Use the returned row's canonical ID for every write. Mutating with the
+  // unresolved prefix updates zero memory rows and, for tags, violates the
+  // memory_tags foreign key.
+  const resolvedId = existing.id;
 
   if (existing.version !== input.version) {
     throw new VersionConflictError(id, input.version, existing.version);
@@ -1169,19 +1175,19 @@ export function updateMemory(
     sets.push("tags = ?");
     params.push(JSON.stringify(input.tags));
     // Update tags table
-    d.run("DELETE FROM memory_tags WHERE memory_id = ?", [id]);
+    d.run("DELETE FROM memory_tags WHERE memory_id = ?", [resolvedId]);
     const insertTag = d.prepare(
       "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
     );
     for (const tag of input.tags) {
-      insertTag.run(id, tag);
+      insertTag.run(resolvedId, tag);
     }
   }
 
-  params.push(id);
+  params.push(resolvedId);
   d.run(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`, params);
 
-  const updated = getMemory(id, d)!;
+  const updated = getMemory(resolvedId, d)!;
 
   // Remove stale entity links if value changed (LLM pipeline re-links async)
   if (input.value !== undefined) {
