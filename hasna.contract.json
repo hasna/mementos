@@ -2,15 +2,21 @@
   "$schema": "./node_modules/@hasna/contracts/dist/hasna.contract.schema.json",
   "schema": "hasna.service_contract.v1",
   "name": "mementos",
-  "class": "service",
+  "class": "cli-with-store",
   "contractVersion": "v1",
-  "kitVersion": "0.4.1",
-  "description": "Universal memory system for AI agents — CLI + MCP server + REST serve API + typed SDK. self_hosted service backed by pure-remote Postgres (Amendment A1).",
+  "kitVersion": "0.8.0",
+  "description": "Universal memory system for AI agents — CLI + MCP server + REST API + typed SDK.",
   "bins": ["mementos", "mementos-mcp", "mementos-serve"],
+  "serviceSurfaces": ["cli", "mcp", "http"],
   "storage": {
-    "mode": "cloud",
+    "mode": "sqlite",
+    "sqlitePath": "~/.hasna/mementos/mementos.db",
     "envPrefix": "HASNA_MEMENTOS_",
-    "aliasEnvPrefix": "MEMENTOS_",
-    "databaseUrlSecretRef": "hasna/oss/mementos/database-url"
+    "aliasEnvPrefix": "MEMENTOS_"
+  },
+  "metadata": {
+    "conformance": {
+      "waivedStorageEngines": ["postgres"]
+    }
   }
 }
