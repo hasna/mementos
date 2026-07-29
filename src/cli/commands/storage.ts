@@ -84,7 +84,7 @@ function installStorageSubcommands(storage: Command, program: Command): void {
 
   storage
     .command("status")
-    .description("Show local database and remote storage sync status")
+    .description("Show local database, legacy sync, and storage runtime status")
     .option("--json", "Output JSON")
     .action((opts) => {
       const useJson = Boolean(opts.json || program.opts().json);
@@ -273,7 +273,7 @@ function installStorageSubcommands(storage: Command, program: Command): void {
 
   storage
     .command("feedback")
-    .description("Save feedback locally")
+    .description("Save feedback to the selected store")
     .argument("<message>", "Feedback message")
     .option("--email <email>", "Contact email")
     .option("--category <category>", "Feedback category", "general")
@@ -310,6 +310,6 @@ function installStorageSubcommands(storage: Command, program: Command): void {
 export function registerStorageCommands(program: Command): void {
   const storage = program
     .command("storage")
-    .description("Manage mementos local/remote storage sync");
+    .description("Inspect storage and manage migrations or legacy row sync");
   installStorageSubcommands(storage, program);
 }

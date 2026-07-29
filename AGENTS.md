@@ -5,14 +5,16 @@ This document explains how AI agents (Claude, Codex, Gemini, custom) should use 
 ## Quick Setup
 
 ```
-# 1. Install the MCP server
-mementos mcp --claude       # Claude Code (uses claude mcp add)
-mementos mcp --codex        # Codex
-mementos mcp --all          # All agents
+# 1. Install the stdio MCP server in an agent host
+claude mcp add --transport stdio --scope user mementos -- mementos-mcp --stdio
+# Codex config: command = "mementos-mcp", args = ["--stdio"]
 
 # 2. Start REST server (optional — for SDK/HTTP access)
 mementos-serve --port 19428  # Default port
 ```
+
+`mementos-mcp` with no arguments starts Streamable HTTP on
+`127.0.0.1:8867`; command-based MCP hosts must pass `--stdio`.
 
 ## Session Start Protocol
 
@@ -37,7 +39,7 @@ Save memories immediately when:
 memory_save(
   key="<descriptive-kebab-key>",
   value="<what + why it matters>",
-  category="knowledge",     # preference | fact | knowledge | history
+  category="knowledge",     # preference | fact | knowledge | history | procedural | resource
   scope="shared",           # global | shared | private
   importance=8,
   agent_id="<your-id>",
@@ -68,7 +70,9 @@ The CLI and MCP tools are compact by default to keep agent context small.
 
 ## MCP Tool Profiles
 
-Use `search_tools("keyword")` to find tools, `describe_tools(["name"])` for full docs.
+Use the MCP protocol's `tools/list` result for the complete live schemas. The
+convenience `search_tools("keyword")` and `describe_tools(["name"])` catalog
+currently covers the seven registered utility discovery schemas only.
 
 ### Minimal (token-sensitive contexts)
 ```
@@ -145,6 +149,7 @@ agent-workflow-<name>  -- process knowledge
 | `global` | ALL agents, all projects | Universal truths, user preferences |
 | `shared` | All agents on this project | Project decisions, conventions |
 | `private` | Only this agent session | Drafts, per-session notes |
+| `working` | Current agent/session scratchpad | Transient work; defaults to a one-hour TTL |
 
 **Default to `shared`** for most memories — other agents on the project benefit.
 
@@ -197,14 +202,19 @@ GET /api/activity?days=14                         -- same via REST
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `MEMENTOS_PROFILE` | Named profile (`~/.mementos/profiles/<name>.db`) | none |
-| `MEMENTOS_DB_PATH` | Override DB path | `~/.mementos/mementos.db` |
+| `HASNA_MEMENTOS_DB_PATH` / `MEMENTOS_DB_PATH` | Override DB path | `~/.hasna/mementos/mementos.db` |
 | `MEMENTOS_DB_SCOPE` | `project` = use git root DB | global |
 | `MEMENTOS_HOST` | Server bind address | `127.0.0.1` |
+| `HASNA_MEMENTOS_API_URL` | Client cloud API endpoint (requires key too) | none |
+| `HASNA_MEMENTOS_API_KEY` | Client cloud API key (requires URL too) | none |
+| `HASNA_MEMENTOS_STORAGE_MODE` | Server storage mode: `local` or `cloud` | `local` |
+| `HASNA_MEMENTOS_DATABASE_URL` | Server-only PostgreSQL URL | none |
 
 ## Ports
 
 Default REST server port: **19428**
+
+Default MCP Streamable HTTP port: **8867**
 
 ```
 MEMENTOS_URL=http://localhost:19428   # for SDK clients

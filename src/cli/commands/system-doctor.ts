@@ -203,12 +203,12 @@ export function registerDoctorCommand(program: Command): void {
         const activeProfile = getActiveProfile();
         const profiles = listProfiles();
         if (activeProfile) {
-          checks.push({ name: "Active profile", status: "ok", detail: `${activeProfile} (${profiles.length} total)` });
+          checks.push({ name: "Profile metadata", status: "ok", detail: `${activeProfile} active (${profiles.length} total); verify runtime DB with storage mode` });
         } else {
-          checks.push({ name: "Active profile", status: "ok", detail: `default (~/.hasna/mementos/mementos.db) — ${profiles.length} profile(s) available` });
+          checks.push({ name: "Profile metadata", status: "ok", detail: `none active — ${profiles.length} profile(s) available; verify runtime DB with storage mode` });
         }
       } catch (e) {
-        checks.push({ name: "Active profile", status: "warn", detail: e instanceof Error ? e.message : String(e) });
+        checks.push({ name: "Profile metadata", status: "warn", detail: e instanceof Error ? e.message : String(e) });
       }
 
       // 11. REST server reachability (live check)

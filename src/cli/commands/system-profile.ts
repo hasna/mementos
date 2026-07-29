@@ -8,7 +8,7 @@ export function registerProfileCommand(program: Command): void {
   // profile commands
   // ============================================================================
 
-  const profileCmd = program.command("profile").description("Manage memory profiles (isolated DBs per context)");
+  const profileCmd = program.command("profile").description("Manage named profile files and active-profile metadata");
 
   profileCmd
     .command("list")
@@ -31,7 +31,7 @@ export function registerProfileCommand(program: Command): void {
         console.log(`  ${p}${marker}`);
       }
       if (!active) {
-        console.log(chalk.dim("\n  (no active profile — using default DB)"));
+        console.log(chalk.dim("\n  (no active-profile metadata set)"));
       }
     });
 
@@ -48,13 +48,13 @@ export function registerProfileCommand(program: Command): void {
           console.log(chalk.dim("(from MEMENTOS_PROFILE env var)"));
         }
       } else {
-        console.log(chalk.dim("No active profile — using default DB (~/.hasna/mementos/mementos.db)"));
+        console.log(chalk.dim("No active-profile metadata set."));
       }
     });
 
   profileCmd
     .command("set <name>")
-    .description("Switch to a named profile (creates the DB on first use)")
+    .description("Set the active-profile metadata")
     .action((name: string) => {
       const clean = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-");
       if (!clean) {
@@ -62,13 +62,14 @@ export function registerProfileCommand(program: Command): void {
         process.exit(1);
       }
       setActiveProfile(clean);
-      console.log(chalk.green(`✓ Switched to profile: ${clean}`));
-      console.log(chalk.dim(`  DB: ~/.hasna/mementos/profiles/${clean}.db (created on first use)`));
+      console.log(chalk.green(`✓ Active-profile metadata set: ${clean}`));
+      console.log(chalk.dim(`  Profile file: ~/.hasna/mementos/profiles/${clean}.db`));
+      console.log(chalk.dim("  Run `mementos storage mode` to verify the live runtime database."));
     });
 
   profileCmd
     .command("unset")
-    .description("Clear the active profile (revert to default DB)")
+    .description("Clear the active-profile metadata")
     .action(() => {
       const was = getActiveProfile();
       setActiveProfile(null);
@@ -77,7 +78,7 @@ export function registerProfileCommand(program: Command): void {
       } else {
         console.log(chalk.dim("No active profile was set."));
       }
-      console.log(chalk.dim("  Now using default DB: ~/.hasna/mementos/mementos.db"));
+      console.log(chalk.dim("  Run `mementos storage mode` to verify the live runtime database."));
     });
 
   profileCmd

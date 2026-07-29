@@ -18,7 +18,9 @@ describe("mementos-mcp entrypoint", () => {
 
     expect(exitCode).toBe(0);
     expect(stdout).toContain("Usage: mementos-mcp [options]");
-    expect(stdout).toContain("Mementos MCP server");
+    expect(stdout).toContain("Streamable HTTP transport by default");
+    expect(stdout).toContain("--stdio");
+    expect(stdout).toContain("default: 8867");
     expect(stderr).toBe("");
   });
 
