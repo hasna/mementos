@@ -71,6 +71,12 @@ mementos-mcp
 
 116 tools available.
 
+Install it into Cursor's global MCP configuration with:
+
+```bash
+mementos mcp --cursor
+```
+
 MCP list/status tools also default to compact text. Use tool-specific
 `limit`/`offset` arguments for paging and `full=true` or `format="json"` on tools
 that expose it when a complete object dump is required.
