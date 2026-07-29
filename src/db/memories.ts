@@ -1093,31 +1093,6 @@ export function updateMemory(
     throw new VersionConflictError(id, input.version, existing.version);
   }
 
-  // Snapshot current state into memory_versions before mutating
-  try {
-    d.run(
-      `INSERT OR IGNORE INTO memory_versions (id, memory_id, version, value, importance, scope, category, tags, summary, pinned, status, when_to_use, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        uuid(),
-        existing.id,
-        existing.version,
-        existing.value,
-        existing.importance,
-        existing.scope,
-        existing.category,
-        JSON.stringify(existing.tags),
-        existing.summary,
-        existing.pinned ? 1 : 0,
-        existing.status,
-        existing.when_to_use || null,
-        existing.updated_at,
-      ]
-    );
-  } catch {
-    // memory_versions table may not exist yet (pre-migration) — skip gracefully
-  }
-
   const sets: string[] = ["version = version + 1", "updated_at = ?"];
   const params: SQLQueryBindings[] = [now()];
 

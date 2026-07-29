@@ -26,6 +26,7 @@ import type {
   MemoryCategory,
   MemorySource,
 } from "../types/index.js";
+import { MEMORY_VERSION_SNAPSHOT_TRIGGER } from "./migrations.js";
 
 // ============================================================================
 // Helpers
@@ -1035,6 +1036,7 @@ describe("getMemoryVersions", () => {
         UNIQUE(memory_id, version)
       );
     `);
+    db.exec(MEMORY_VERSION_SNAPSHOT_TRIGGER);
   });
 
   it("returns empty array for memory with no versions", () => {

@@ -11,6 +11,7 @@ import {
   getDbPath,
   resolvePartialId,
 } from "./database.js";
+import { createMemory } from "./memories.js";
 import { SqliteAdapter as Database } from "../storage.js";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -68,6 +69,27 @@ describe("getDatabase", () => {
     expect(rows.length).toBeGreaterThanOrEqual(2);
     expect(rows[0]!.id).toBe(1);
     expect(rows[1]!.id).toBe(2);
+  });
+
+  test("merge saves snapshot the previous memory version", () => {
+    const db = getDatabase(":memory:");
+    const original = createMemory(
+      { key: "merge-history", value: "version one" },
+      "merge",
+      db
+    );
+
+    const merged = createMemory(
+      { key: "merge-history", value: "version two" },
+      "merge",
+      db
+    );
+
+    const versions = db
+      .query("SELECT version, value FROM memory_versions WHERE memory_id = ? ORDER BY version")
+      .all(original.id) as Array<{ version: number; value: string }>;
+    expect(merged.version).toBe(2);
+    expect(versions).toEqual([{ version: 1, value: "version one" }]);
   });
 });
 
