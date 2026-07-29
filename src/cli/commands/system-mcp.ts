@@ -4,14 +4,15 @@ import chalk from "chalk";
 export function registerMcpCommand(program: Command): void {
   program
     .command("mcp")
-    .description("Install mementos MCP server into Claude Code, Codex, or Gemini")
+    .description("Install mementos MCP server into Claude Code, Codex, Cursor, or Gemini")
     .option("--claude", "Install into Claude Code (~/.claude/.mcp.json)")
     .option("--codex", "Install into Codex (~/.codex/config.toml)")
+    .option("--cursor", "Install into Cursor (~/.cursor/mcp.json)")
     .option("--gemini", "Install into Gemini (~/.gemini/settings.json)")
     .option("--all", "Install into all supported agents")
     .option("--uninstall", "Remove mementos MCP from config")
-    .action((opts: { claude?: boolean; codex?: boolean; gemini?: boolean; all?: boolean; uninstall?: boolean }) => {
-      const { readFileSync: _rfs, writeFileSync: _wfs, existsSync: fileExists } = require("node:fs") as typeof import("node:fs");
+    .action((opts: { claude?: boolean; codex?: boolean; cursor?: boolean; gemini?: boolean; all?: boolean; uninstall?: boolean }) => {
+      const { readFileSync: _rfs, writeFileSync: _wfs, existsSync: fileExists, mkdirSync: makeDir } = require("node:fs") as typeof import("node:fs");
       const { join: pathJoin } = require("node:path") as typeof import("node:path");
       const { homedir: getHome } = require("node:os") as typeof import("node:os");
       const home = getHome();
@@ -21,15 +22,16 @@ export function registerMcpCommand(program: Command): void {
         : "mementos-mcp";
 
       const targets = opts.all
-        ? ["claude", "codex", "gemini"]
+        ? ["claude", "codex", "cursor", "gemini"]
         : [
             opts.claude ? "claude" : null,
             opts.codex ? "codex" : null,
+            opts.cursor ? "cursor" : null,
             opts.gemini ? "gemini" : null,
           ].filter(Boolean) as string[];
 
       if (targets.length === 0) {
-        console.log(chalk.yellow("Specify a target: --claude, --codex, --gemini, or --all"));
+        console.log(chalk.yellow("Specify a target: --claude, --codex, --cursor, --gemini, or --all"));
         console.log(chalk.gray("Example: mementos mcp --all"));
         return;
       }
@@ -71,6 +73,25 @@ export function registerMcpCommand(program: Command): void {
             } else {
               console.log(chalk.yellow(`Codex config not found: ${configPath}`));
             }
+          }
+
+          if (target === "cursor") {
+            const configDir = pathJoin(home, ".cursor");
+            const configPath = pathJoin(configDir, "mcp.json");
+            let config: Record<string, unknown> = {};
+            if (fileExists(configPath)) {
+              config = JSON.parse(_rfs(configPath, "utf-8")) as Record<string, unknown>;
+            }
+            const servers = (config["mcpServers"] || {}) as Record<string, unknown>;
+            if (opts.uninstall) {
+              delete servers["mementos"];
+            } else {
+              servers["mementos"] = { command: mementosCmd, args: [] };
+            }
+            config["mcpServers"] = servers;
+            makeDir(configDir, { recursive: true });
+            _wfs(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8");
+            console.log(chalk.green(`${opts.uninstall ? "Removed from" : "Installed into"} Cursor: ${configPath}`));
           }
 
           if (target === "gemini") {
