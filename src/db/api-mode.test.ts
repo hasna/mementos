@@ -1,16 +1,28 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { getApiConfig, isApiMode, toQuery } from "./api-mode.js";
+import {
+  API_KEY_ENV_KEYS,
+  API_URL_ENV_KEYS,
+  DATABASE_URL_ENV_KEYS,
+  DB_PATH_ENV_KEYS,
+  getApiConfig,
+  isApiMode,
+  toQuery,
+} from "./api-mode.js";
 
 const SAVED = { ...process.env };
 
+// Enumerate the resolver's OWN key lists rather than restating them. A
+// hand-maintained copy silently stops covering the resolver the moment a key is
+// added — which is exactly what happened here: this helper predated
+// DB_PATH_ENV_KEYS, so a sibling test file that exports HASNA_MEMENTOS_DB_PATH
+// (to keep the suite off the live store) left it set and suppressed the store
+// guard under a full-directory run while passing in isolation.
 function clearEnv(): void {
   for (const k of [
-    "HASNA_MEMENTOS_API_URL",
-    "MEMENTOS_API_URL",
-    "HASNA_MEMENTOS_API_KEY",
-    "MEMENTOS_API_KEY",
-    "HASNA_MEMENTOS_DATABASE_URL",
-    "MEMENTOS_DATABASE_URL",
+    ...API_URL_ENV_KEYS,
+    ...API_KEY_ENV_KEYS,
+    ...DATABASE_URL_ENV_KEYS,
+    ...DB_PATH_ENV_KEYS,
   ]) {
     delete process.env[k];
   }
@@ -53,13 +65,19 @@ describe("api-mode", () => {
     expect(isApiMode()).toBe(false);
   });
 
-  test("off when only one of URL/KEY is set", () => {
+  // CONTRACT CHANGE (2026-07-30). This test previously asserted that a half
+  // configured client is "off", i.e. silently reads the local SQLite store. That
+  // was the defect, codified as a passing test: a store serving stale local data
+  // where a cloud store was expected is indistinguishable, from the caller's
+  // side, from a store that is working. It now refuses and names what is missing.
+  // Full rationale and precedence table: assertUnambiguousStoreEnv in api-mode.ts.
+  test("refuses — does not silently go local — when only one of URL/KEY is set", () => {
     clearEnv();
     process.env["HASNA_MEMENTOS_API_URL"] = "https://mementos.hasna.xyz";
-    expect(isApiMode()).toBe(false);
+    expect(() => isApiMode()).toThrow(/HASNA_MEMENTOS_API_KEY/);
     clearEnv();
     process.env["HASNA_MEMENTOS_API_KEY"] = "k";
-    expect(isApiMode()).toBe(false);
+    expect(() => isApiMode()).toThrow(/HASNA_MEMENTOS_API_URL/);
   });
 
   test("toQuery skips empties, joins arrays, encodes booleans", () => {

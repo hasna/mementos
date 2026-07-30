@@ -13,7 +13,14 @@
 //   - API mode is ON  when BOTH `HASNA_MEMENTOS_API_URL` and
 //     `HASNA_MEMENTOS_API_KEY` are set (aliases `MEMENTOS_API_URL` /
 //     `MEMENTOS_API_KEY` accepted) AND no DATABASE_URL is present.
-//   - API mode is OFF when either is missing (→ pure local SQLite, unchanged).
+//   - API mode is OFF when NEITHER is set → pure local SQLite, the documented
+//     single-operator default.
+//   - Exactly ONE of them set is an ERROR, never a fall-back. Until 2026-07-30
+//     this case silently resolved to local SQLite, and that fall-back was
+//     documented here as intended behaviour. It was the defect: an operator whose
+//     API key failed to load got a different, usually stale, dataset with no error
+//     and no flag, which from the caller's side is indistinguishable from a store
+//     that is working. See `assertUnambiguousStoreEnv` for the precedence table.
 //   - If a DATABASE_URL is set, API mode refuses to engage (a DSN on a client
 //     is forbidden; the operator must remove it). This keeps the two transports
 //     mutually exclusive and never silently mixes them.
@@ -145,7 +152,67 @@ function normalizeBase(raw: string): string {
 }
 
 /** Resolve the API client config from env, or `null` when not configured. */
+/** The env keys that explicitly select the local SQLite store. */
+export const DB_PATH_ENV_KEYS = ["HASNA_MEMENTOS_DB_PATH", "MEMENTOS_DB_PATH"] as const;
+
+/** Raised when the environment does not unambiguously select one store. */
+export class MementosStoreConfigError extends Error {
+  readonly code = "MEMENTOS_STORE_CONFIG";
+  constructor(message: string) {
+    super(message);
+    this.name = "MementosStoreConfigError";
+  }
+}
+
+/**
+ * Throw unless the environment unambiguously selects one store.
+ *
+ * AMBIGUOUS CONFIGURATION IS AN ERROR, NOT A DEFAULT. Half an API configuration
+ * used to resolve to `null`, which every caller read as "local SQLite" — so an
+ * operator whose API key failed to load silently got a different, usually stale,
+ * dataset with no error and no flag. From the caller's side that is
+ * indistinguishable from a store that is working.
+ *
+ * Precedence, highest first:
+ *  1. An explicit SQLite path (`HASNA_MEMENTOS_DB_PATH` / `MEMENTOS_DB_PATH`) is
+ *     the narrowest, most specific signal and selects LOCAL, so local dev,
+ *     tooling and import/export keep working when a stray credential is exported
+ *     globally.
+ *  2. A client DSN present disables API mode. Unchanged here, and tracked
+ *     separately — a DSN on a client is forbidden and handled in database.ts.
+ *  3. Both API URL and API key present -> API mode.
+ *  4. Exactly ONE of them present -> ERROR naming the missing variable.
+ *  5. Neither present -> LOCAL. The documented single-operator default.
+ *
+ * Never reads, logs, or embeds a credential value — only variable NAMES.
+ */
+export function assertUnambiguousStoreEnv(): void {
+  if (firstEnvKey(DB_PATH_ENV_KEYS)) return; // 1. explicit local selection
+  if (hasDatabaseUrl()) return; // 2. unchanged DSN behaviour
+
+  const urlKey = firstEnvKey(API_URL_ENV_KEYS);
+  const keyKey = firstEnvKey(API_KEY_ENV_KEYS);
+
+  if (urlKey && !keyKey) {
+    throw new MementosStoreConfigError(
+      `${urlKey} points at the cloud memory store but ${API_KEY_ENV_KEYS[0]} is not set. ` +
+        `Refusing to serve the on-box SQLite store in its place, because it holds a different ` +
+        `dataset. Set ${API_KEY_ENV_KEYS[0]} to reach the cloud store. If you meant to use the ` +
+        `on-box SQLite store, unset ${urlKey} or set ${DB_PATH_ENV_KEYS[0]} explicitly.`,
+    );
+  }
+  if (keyKey && !urlKey) {
+    throw new MementosStoreConfigError(
+      `${keyKey} is set but ${API_URL_ENV_KEYS[0]} is not, so the cloud memory store cannot be ` +
+        `reached. Refusing to serve the on-box SQLite store in its place, because it holds a ` +
+        `different dataset. Set ${API_URL_ENV_KEYS[0]} to reach the cloud store. If you meant to ` +
+        `use the on-box SQLite store, unset ${keyKey} or set ${DB_PATH_ENV_KEYS[0]} explicitly.`,
+    );
+  }
+}
+
 export function getApiConfig(): ApiConfig | null {
+  assertUnambiguousStoreEnv();
   const rawBase = firstEnv(API_URL_ENV_KEYS);
   const apiKey = firstEnv(API_KEY_ENV_KEYS);
   if (!rawBase || !apiKey) return null;
