@@ -52,13 +52,14 @@ function hasFlag(...flags: string[]): boolean {
 
 function printHelp(): void {
   process.stdout.write(
-    `Usage: mementos-mcp [options]
+`Usage: mementos-mcp [options]
 
-Mementos MCP server (stdio transport by default)
+Mementos MCP server (Streamable HTTP transport by default)
 
 Options:
-  --http           Serve MCP over Streamable HTTP (127.0.0.1)
-  --port <number>  HTTP port (default: 8824, env: MCP_HTTP_PORT)
+  --http           Serve MCP over Streamable HTTP (default, 127.0.0.1)
+  --stdio          Serve MCP over stdio (env: MCP_STDIO=1)
+  --port <number>  HTTP port (default: 8867, env: MCP_HTTP_PORT)
   -h, --help       Show help
   -V, --version    Show version
 `

@@ -1,8 +1,12 @@
 # @hasna/mementos-sdk
 
-Zero-dependency TypeScript client for [@hasna/mementos](https://github.com/hasna/mementos) REST API.
+Zero-dependency TypeScript client for the
+[@hasna/mementos](https://github.com/hasna/mementos) REST API. It works in
+Node.js, Bun, Deno, and browsers and requires only `fetch`.
 
-Works in Node.js, Bun, Deno, and browsers. No external dependencies beyond `fetch`.
+This package is the separately versioned standalone client in `sdk/`. It is not
+the same API as the `@hasna/mementos/sdk` subpath export; see
+[the repository comparison](../docs/LIBRARY.md).
 
 ## Install
 
@@ -12,14 +16,13 @@ bun add @hasna/mementos-sdk
 npm install @hasna/mementos-sdk
 ```
 
-## Quick Start
+## Quick start
 
 ```ts
 import { MementosClient } from "@hasna/mementos-sdk";
 
 const client = new MementosClient({ baseUrl: "http://localhost:19428" });
 
-// Save a memory
 await client.saveMemory({
   key: "project-stack",
   value: "Bun + TypeScript + SQLite",
@@ -28,10 +31,8 @@ await client.saveMemory({
   importance: 8,
 });
 
-// Search memories
 const { results } = await client.searchMemories("project stack");
 
-// List with filters
 const { memories } = await client.listMemories({
   scope: "shared",
   min_importance: 7,
@@ -39,82 +40,124 @@ const { memories } = await client.listMemories({
 });
 ```
 
-## API
-
-### Constructor
+## Configuration
 
 ```ts
-new MementosClient({ baseUrl?: string, fetch?: typeof globalThis.fetch })
+new MementosClient({
+  baseUrl?: string,                 // default: http://localhost:19428
+  fetch?: typeof globalThis.fetch,  // optional override
+})
 ```
 
-- `baseUrl` — URL of `mementos-serve`. Default: `http://localhost:19428`
-- `fetch` — optional fetch override (useful for testing)
+`MementosClient.fromEnv()` reads `MEMENTOS_URL` and otherwise uses the local
+default. This standalone version calls `/api` routes and has no built-in API-key
+option. For an authenticated deployment, supply a `fetch` wrapper which adds the
+required header, or use the `@hasna/mementos/sdk` client, which supports
+`apiKey` and canonical `/v1` routing.
 
-### Memories
+## Methods
+
+### Memories and analytics
 
 | Method | Description |
-|--------|-------------|
-| `listMemories(filter?)` | List memories with optional filters |
-| `saveMemory(input)` | Create a memory |
+| --- | --- |
+| `listMemories(filter?)` | List memories with scope/category/tag/importance/pin/agent/project/session/status/paging/field filters |
+| `saveMemory(input)` | Create or upsert a memory |
 | `getMemory(id)` | Get memory by ID |
-| `updateMemory(id, input)` | Update memory (`version` optional; server auto-fetches current version if omitted) |
+| `getMemoryVersions(id)` | Get stored versions and current version number |
+| `updateMemory(id, input)` | Update a memory; `version` is optional because the server can fetch it |
 | `deleteMemory(id)` | Delete a memory |
-| `searchMemories(query)` | Full-text + fuzzy search |
-| `getStats()` | Memory statistics |
+| `searchMemories(inputOrQuery)` | Full-text and fuzzy search |
+| `getStats()` | Aggregate memory statistics |
+| `getHealth()` | Server health and counts |
+| `getReport(options?)` | Activity, breakdowns, and top memories |
+| `getStaleMemories(options?)` | Find stale memories |
+| `getActivity(options?)` | Daily creation activity |
 | `exportMemories(filter?)` | Export memories |
 | `importMemories(input)` | Import memories |
-| `cleanExpired()` | Remove expired memories |
+| `consolidateMemories(input?)` | Plan/apply deduplication, promotion, summaries, and decay cleanup |
+| `reflect(input)` | Reflect on a session, task, or range and save lessons |
+| `cleanExpired()` | Delete expired memories |
+| `extractFromSession(input)` | Save summary/topic memories from session data |
 
-### Agents & Projects
-
-| Method | Description |
-|--------|-------------|
-| `listAgents()` | List all registered agents |
-| `registerAgent(input)` | Register an agent (idempotent by name) |
-| `getAgent(idOrName)` | Get agent by ID or name |
-| `listProjects()` | List all registered projects |
-| `registerProject(input)` | Register a project (idempotent by name) |
-
-### Knowledge Graph
+### Agents and projects
 
 | Method | Description |
-|--------|-------------|
+| --- | --- |
+| `listAgents()` | List registered agents |
+| `registerAgent(input)` | Register an agent |
+| `getAgent(idOrName)` | Resolve an agent |
+| `updateAgent(idOrName, updates)` | Update metadata or active project |
+| `listAgentsByProject(projectId)` | List agents focused on a project |
+| `listProjects()` | List projects |
+| `registerProject(input)` | Register a project |
+| `getProject(idOrName)` | Resolve a project |
+| `getProjectAgents(idOrName)` | List a project's agents |
+
+### Knowledge graph
+
+| Method | Description |
+| --- | --- |
 | `listEntities(filter?)` | List entities |
-| `createEntity(input)` | Create entity |
-| `getEntity(id)` | Get entity |
-| `updateEntity(id, input)` | Update entity |
-| `deleteEntity(id)` | Delete entity |
-| `mergeEntities(input)` | Merge two entities |
-| `getEntityMemories(entityId)` | Get memories linked to entity |
-| `linkEntityMemory(entityId, input)` | Link memory to entity |
-| `unlinkEntityMemory(entityId, memoryId)` | Unlink memory from entity |
+| `createEntity(input)` | Create an entity |
+| `getEntity(id)` | Get an entity |
+| `updateEntity(id, input)` | Update an entity |
+| `deleteEntity(id)` | Delete an entity |
+| `mergeEntities(input)` | Merge a source entity into a target |
+| `getEntityMemories(entityId)` | Get linked memories |
+| `linkEntityMemory(entityId, input)` | Link a memory |
+| `unlinkEntityMemory(entityId, memoryId)` | Unlink a memory |
 | `getEntityRelations(entityId, filter?)` | Get entity relations |
-| `createRelation(input)` | Create entity relation |
-| `getRelation(id)` | Get relation |
-| `deleteRelation(id)` | Delete relation |
-| `getGraph(entityId, options?)` | Get knowledge graph for entity |
-| `findPath(fromId, toId)` | Find shortest path between entities |
-| `getGraphStats()` | Graph-wide statistics |
+| `createRelation(input)` | Create a relation |
+| `getRelation(id)` | Get a relation |
+| `deleteRelation(id)` | Delete a relation |
+| `getGraph(entityId, options?)` | Traverse the graph |
+| `findPath(fromId, toId)` | Find a shortest path |
+| `getGraphStats()` | Graph-wide counts |
 
-### Context Injection
+### Locks
 
-| Method | Description |
-|--------|-------------|
-| `getContext(options?)` | Get formatted memory context for agent prompts |
+`acquireLock`, `checkLock`, `releaseLock`, `listAgentLocks`,
+`releaseAllAgentLocks`, and `cleanExpiredLocks` expose resource-lock endpoints.
 
-## Error Handling
+### Context, automation, and sessions
+
+| Area | Methods |
+| --- | --- |
+| Context/auto-memory | `getContext`, `processConversationTurn`, `getAutoMemoryStatus`, `configureAutoMemory`, `testExtraction` |
+| Hooks/webhooks | `listHooks`, `getHookStats`, `listWebhooks`, `createWebhook`, `getWebhook`, `updateWebhook`, `deleteWebhook`, `enableWebhook`, `disableWebhook` |
+| Synthesis | `runSynthesis`, `listSynthesisRuns`, `getSynthesisStatus`, `rollbackSynthesis` |
+| Session jobs | `ingestSession`, `getSessionJob`, `listSessionJobs`, `getSessionQueueStats` |
+
+The standalone package's compile-time memory categories are `preference`,
+`fact`, `knowledge`, and `history`; scopes are `global`, `shared`, `private`, and
+`working`. The current server also supports `procedural` and `resource`, which
+are typed in the main package's bundled SDK.
+
+## Error handling
 
 ```ts
 import { MementosClient, MementosError } from "@hasna/mementos-sdk";
 
+const client = new MementosClient();
+
 try {
   await client.getMemory("missing-id");
-} catch (e) {
-  if (e instanceof MementosError) {
-    console.log(e.status);  // 404
-    console.log(e.message); // "Memory not found"
+} catch (error) {
+  if (error instanceof MementosError) {
+    console.log(error.status);
+    console.log(error.message);
+    console.log(error.details);
   }
 }
+```
+
+## Development
+
+```bash
+bun test
+bun run typecheck
+bun run build
 ```
 
 ## License

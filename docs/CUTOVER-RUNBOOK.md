@@ -1,240 +1,244 @@
-# Mementos Cloud Cutover Runbook
+# Mementos cloud cutover runbook
 
-Cutover of `@hasna/mementos` from local SQLite to the shared cloud PostgreSQL
-(RDS) backend, per the OSS cloud-runtime plan (STORAGE AMENDMENT A1: **pure
-`cloud` / remote** — reads AND writes go directly to cloud Postgres; no sync
-engine, no local cache-as-mode, no merge logic).
+This runbook moves `@hasna/mementos` from per-machine SQLite to the self-hosted
+PostgreSQL-backed REST service implemented by the current branch.
 
-> **Mementos flips LAST.** Memory recall is on the hot path of every agent
-> session (auto-inject, briefings, semantic recall). Cut mementos over only
-> after the lower-risk stores (knowledge, conversations, todos) are proven, so a
-> latency or availability regression cannot silently degrade every session.
+> Mementos flips last. Memory recall and prompt injection are on the hot path of
+> agent sessions. Prove the service, database, authentication, and network path
+> before changing clients.
 
----
+## 1. Current architecture
 
-## 1. Storage-mode contract (aligned with the shared standard)
+The runtime has a strict server/client boundary:
 
-Runtime enum: **`local | cloud`** (env `HASNA_MEMENTOS_STORAGE_MODE`).
+```text
+CLI / MCP / SDK client
+  HASNA_MEMENTOS_API_URL + HASNA_MEMENTOS_API_KEY
+                    |
+                    | HTTPS /v1, bearer API key
+                    v
+              mementos-serve
+  HASNA_MEMENTOS_STORAGE_MODE=cloud
+  HASNA_MEMENTOS_DATABASE_URL=postgres://...
+                    |
+                    v
+             PostgreSQL / RDS
+```
 
-| Value      | Meaning                                                        |
-| ---------- | -------------------------------------------------------------- |
-| `local`    | SQLite on disk (default). Unchanged behavior.                  |
-| `cloud`    | Pure remote: reads and writes go directly to cloud Postgres.   |
-| `remote`   | **Deprecated alias** → normalizes to `cloud` (emits warning).  |
-| `hybrid`   | **Deprecated alias** → normalizes to `cloud` (emits warning).  |
-
-- Canonical value is `cloud`. `remote` and `hybrid` remain accepted as input
-  (env or `~/.hasna/mementos/storage/config.json`) for full back-compat, but
-  each emits a one-time `DeprecationWarning` (to **stderr**, never stdout) with
-  code `MEMENTOS_STORAGE_MODE_ALIAS`.
-- The legacy local↔remote **sync engine** (`storage-sync.ts`) is the old
-  "hybrid" path. It is retained only for back-compat and is **NOT** the fleet
-  cutover mechanism. The fleet uses pure `cloud` (direct remote reads/writes).
-  If a hot path is slow on DERP-relayed machines, the fix is network (subnet
-  router / direct Tailscale paths / read replica) — never a re-introduced sync
-  layer.
-- Env var precedence (both databaseUrl and mode): `HASNA_MEMENTOS_*` canonical,
-  `MEMENTOS_*` accepted as fallback. A configured database URL with no explicit
-  mode auto-promotes `local → cloud`.
-
----
+- `local` is the default and uses SQLite.
+- `cloud` is pure remote on `mementos-serve`: reads and writes go directly to
+  PostgreSQL. There is no SQLite cache or merge layer.
+- `remote` and `hybrid` are deprecated input aliases for `cloud`.
+- Raw database credentials are server/administrative secrets. Fleet clients
+  must use the authenticated API and must not receive the DSN.
+- The compatibility `storage push`, `pull`, and `sync` paths are not the cutover
+  architecture.
 
 ## 2. Prerequisites
 
-- **Shared RDS**: `hasna-xyz-infra-apps-prod-postgres` (pg16, MultiAZ) in account
-  `789877399345` (`hasna-xyz-infra`). Never public.
-- **Database**: `mementos` on that instance (app role + owner role bootstrapped
-  by the AWS foundation lane).
-- **Secrets** (Secrets Manager, `789877399345`, names only — never print values):
-  - `hasna/oss/mementos/database-url` — app role DSN (runtime).
-  - `hasna/oss/mementos/database-url-owner` — owner role DSN (schema/DDL only).
-- **Network reachability**: RDS is private. Cutover and schema steps must run
-  from a machine on the VPC / Tailscale path to the instance (a fleet host or a
-  bastion), NOT from an arbitrary dev laptop. See §5.
+- A private PostgreSQL 16/RDS-compatible database and an application role.
+- A schema-owner/admin role available only during migration.
+- Network reachability from `mementos-serve` to PostgreSQL.
+- TLS policy and, for `verify-ca`/`verify-full`, the required CA bundle.
+- A deployed `mementos-serve` endpoint reachable from clients over HTTPS.
+- One of the signing secrets supported by the server:
+  `API_KEY_SIGNING_SECRET`, `HASNA_MEMENTOS_API_SIGNING_KEY`, or
+  `HASNA_API_SIGNING_KEY`.
+- Issued mementos API keys for clients. The server also supports a legacy static
+  `MEMENTOS_API_KEY` for local/dev deployments.
+- A dated backup/export of every authoritative SQLite store that will be
+  backfilled or retired.
 
----
+Never print or commit a database URL, signing secret, or client API key.
 
-## 3. Apply the schema (owner role)
+## 3. Apply the PostgreSQL schema
 
-The PG schema lives in `src/db/pg-migrations.ts` (35 migrations, tracked in
-`_pg_migrations` with an idempotent version ledger). Apply with the owner DSN:
+The schema is defined by `PG_MIGRATIONS` in `src/db/pg-migrations.ts` and tracked
+by zero-based array index in `_pg_migrations`. The current source contains 36
+migration blocks. Use the command's reported `total_migrations` in automation so
+future additions do not make a copied count stale.
+
+Dry-run is local validation only: it does not connect or mutate a database and
+redacts credentials.
 
 ```bash
-# Owner DSN injected from Secrets Manager into the env — never echoed.
-export HASNA_MEMENTOS_DATABASE_URL="$(aws secretsmanager get-secret-value \
-  --secret-id hasna/oss/mementos/database-url-owner \
-  --query SecretString --output text)"
-
-mementos migrate-pg --json     # or: bun run src/cli/commands ... during dev
+mementos storage migrate --dry-run \
+  --connection-string 'postgres://owner:REDACTED@db.internal/mementos?sslmode=require' \
+  --json
 ```
 
-`migrate-pg` creates `_pg_migrations`, applies pending migrations in order, and
-stops on the first error. Re-running is safe (already-applied migrations are
-skipped). Expected clean result: `applied: 35, errors: []` on a fresh DB;
-`applied: 0, alreadyApplied: 35` on re-run.
+Run the live migration from an approved, database-reachable administrative
+environment:
 
-### pgvector (embeddings foundation)
-
-The current schema stores embeddings as **TEXT** (`memory_embeddings.embedding
-TEXT`), so pgvector is **not required** for cutover. For future native vector
-search, enable it once on the mementos database with the owner role:
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
+```bash
+mementos storage migrate \
+  --connection-string 'postgres://owner:REDACTED@db.internal/mementos?sslmode=require' \
+  --json
 ```
 
-Check availability first:
+The explicit connection-string option is an administrative override. A normal
+CLI client cannot construct the server DSN. The top-level `migrate-pg` command
+is a legacy equivalent. Applying is idempotent: already recorded array indexes
+are skipped, and execution stops on the first failing block.
 
-```sql
-SELECT name, default_version, installed_version
-FROM pg_available_extensions WHERE name = 'vector';
-```
+Keep real credentials out of shell history and process inspection. Prefer an
+ephemeral administrative runner or another approved secret-injection wrapper.
 
-If the shared RDS instance does not expose `vector` in
-`pg_available_extensions`, that is a **foundation follow-up** (RDS parameter
-group / instance capability), not a mementos code change.
+### pgvector
 
----
+The current schema stores embeddings as text, so pgvector is not required for
+the basic cutover. Standard FTS/LIKE and fuzzy search remain available without
+it. Native vector support is an optional follow-up and must be enabled by an
+authorized database owner if the target exposes the extension.
 
 ## 4. Readiness proof
 
-`scripts/cloud-readiness-proof.ts` exercises the repo's **own remote code path**
-(same `PgAdapterAsync` + SQL translation the cloud path uses) against a Postgres
-target: applies migrations, checks pgvector, runs a save→recall round-trip
-(cleaned up afterward), and measures round-trip latency. It prints JSON only and
-never prints the connection string.
+`scripts/cloud-readiness-proof.ts` uses the repository's PostgreSQL adapter and
+migration code. It applies migrations, checks pgvector availability, performs a
+save/recall round trip which it cleans up, and reports latency as JSON. It does
+not print the connection string.
 
 ```bash
-HASNA_MEMENTOS_DATABASE_URL="postgres://..." bun run scripts/cloud-readiness-proof.ts
+HASNA_MEMENTOS_DATABASE_URL='postgres://...' \
+  bun run scripts/cloud-readiness-proof.ts
 ```
 
-Proof result on a throwaway **pg16** DB (validating the code path; run this
-against the real RDS from a VPC-reachable host before the flip):
+Run this from the same network class as the deployed server, not from an
+unrelated laptop or loopback PostgreSQL. Record p50 and worst-case latency and
+confirm `ok: true`, no migration errors, and `saveRecall.recalled: true`.
+
+Also verify the deployed service:
+
+```bash
+curl -fsS https://mementos.example.com/version
+curl -fsS https://mementos.example.com/ready
+curl -fsS https://mementos.example.com/health
+```
+
+`/ready` must report `ready` in `cloud` mode before clients move.
+
+## 5. Configure the server
+
+The service environment is:
+
+```bash
+HASNA_MEMENTOS_STORAGE_MODE=cloud
+HASNA_MEMENTOS_DATABASE_URL=postgres://app-role:REDACTED@db.internal/mementos?sslmode=require
+API_KEY_SIGNING_SECRET=REDACTED
+MEMENTOS_HOST=0.0.0.0
+PORT=19428
+```
+
+The public listener should be behind the deployment's TLS/reverse-proxy layer;
+the built-in server is HTTP. `MEMENTOS_CORS_ORIGIN` should name the one browser
+origin allowed to use the dashboard/API.
+
+Database URL precedence is `HASNA_MEMENTOS_DATABASE_URL`, then
+`MEMENTOS_DATABASE_URL`. Mode precedence is the matching `HASNA_...` variable,
+then the fallback, then `~/.hasna/mementos/storage/config.json`. A database URL
+without an explicit mode auto-promotes the server from local to cloud, but set
+the mode explicitly during a cutover.
+
+Cloud startup and requests fail closed when the URL is missing, malformed,
+non-PostgreSQL, or unreachable. Status output redacts the URL.
+
+## 6. Backfill existing memories
+
+Take a dated local backup before migration:
+
+```bash
+mementos backup ~/.hasna/mementos/backups/pre-cloud-cutover.db
+mementos export > ~/.hasna/mementos/backups/pre-cloud-cutover.json
+```
+
+Use the authenticated `POST /v1/memories/bulk-upsert` endpoint for a faithful,
+idempotent backfill which preserves IDs and archived status. The route reports
+`rejected` separately from already-present `skipped` rows and returns HTTP 400
+if anything failed to persist. Fix rejected rows and rerun the same payload.
+
+Do not use the old peer-to-peer `storage sync` path as the fleet migration
+mechanism.
+
+## 7. Cut over clients
+
+On each client, remove every direct database selector and configure the API:
+
+```bash
+unset HASNA_MEMENTOS_DATABASE_URL MEMENTOS_DATABASE_URL
+unset HASNA_MEMENTOS_STORAGE_MODE MEMENTOS_STORAGE_MODE
+
+export HASNA_MEMENTOS_API_URL=https://mementos.example.com
+export HASNA_MEMENTOS_API_KEY=REDACTED
+```
+
+Both API variables are required. A lingering database URL disables API mode,
+so validate before any write:
+
+```bash
+mementos storage mode --json
+```
+
+Expected fields include:
 
 ```json
 {
-  "ok": true,
-  "steps": {
-    "migrations": { "total": 35, "applied": 35, "alreadyApplied": 0, "errors": [] },
-    "pgvector":   { "available": false, "default_version": null, "installed_version": null },
-    "saveRecall": { "recalled": true },
-    "latencyMs":  { "samples": 20, "min": 0.13, "p50": 0.16, "max": 0.55, "avg": 0.19 }
-  }
+  "backend": "cloud-api",
+  "api_mode": true,
+  "api_key_present": true
 }
 ```
 
----
+For command-based MCP hosts, include stdio explicitly because
+`mementos-mcp` now defaults to Streamable HTTP:
 
-## 5. Latency note (why mementos flips last)
-
-Recall is on the hot path, so cloud latency directly taxes every session. Record
-**measured** query latency from the fleet before the flip.
-
-- **From this preparation run**: the shared RDS endpoint was **unreachable on
-  TCP/5432** from the build machine (connection timeout) — expected and correct,
-  because the instance is private and the machine is not on the VPC/Tailscale
-  path. The `latencyMs.p50 ≈ 0.16ms` figure above is a **loopback proof against
-  a local pg16** and is NOT representative of fleet latency.
-- **Required before flip**: run the readiness script (or `SELECT 1` timing) from
-  a VPC/Tailscale-reachable fleet host and record p50/p95 round-trip. Budget
-  guidance: if p95 for a simple query exceeds a few ms on DERP-relayed machines,
-  fix the network path (subnet router / direct Tailscale / read replica) — do
-  not add a sync/cache layer.
-
----
-
-## 6. Cutover steps
-
-1. Confirm knowledge / conversations / todos are already cut over and healthy.
-2. Apply schema to RDS (§3) with the owner DSN; verify `errors: []`.
-3. Enable pgvector if the instance supports it (§3) — optional, non-blocking.
-4. Run the readiness proof from a fleet host (§4) and record latency (§5).
-5. Point runtime at cloud (app role DSN, not owner):
-   ```bash
-   export HASNA_MEMENTOS_DATABASE_URL="<app-role DSN from hasna/oss/mementos/database-url>"
-   export HASNA_MEMENTOS_STORAGE_MODE=cloud
-   ```
-6. Back up the local SQLite as a **dated one-time backup** (never read again):
-   ```bash
-   cp ~/.hasna/mementos/mementos.db ~/.hasna/mementos/mementos.local-backup-$(date +%Y%m%d).db
-   ```
-7. Smoke test: `mementos memory save`, `mementos memory recall`, and an MCP
-   `memory_recall` against the cloud DB.
-
----
-
-## 7. Rollback
-
-Cutover is reversible until the local backup is discarded:
-
-```bash
-unset HASNA_MEMENTOS_STORAGE_MODE HASNA_MEMENTOS_DATABASE_URL   # back to local SQLite
+```text
+command = "mementos-mcp"
+args = ["--stdio"]
 ```
 
-The dated SQLite backup remains authoritative for pre-cutover state. Because the
-fleet path is pure remote (no sync), rolling back returns to the local snapshot;
-memories written to cloud after cutover stay in cloud.
+The shared HTTP MCP server is instead available at `127.0.0.1:8867/mcp` by
+default.
 
----
+## 8. Smoke test
 
-## 8. Open follow-ups (blocked at prep time)
+Use a unique key and remove it when complete:
 
-- **Owner secret**: `hasna/oss/mementos/database-url-owner` did not exist at prep
-  time (no `hasna/oss/*` secrets published yet). Foundation lane to create the
-  mementos database, app + owner roles, and both secrets.
-- **RDS reachability**: schema apply + real latency measurement must run from a
-  VPC/Tailscale-reachable host (blocked from the prep machine).
-- **pgvector on RDS**: verify `vector` is available in the instance's
-  `pg_available_extensions`; if not, a parameter-group / instance follow-up.
+```bash
+mementos save cutover-smoke "cloud write $(date -u +%FT%TZ)" \
+  --scope shared --category history --dedupe create
+mementos recall cutover-smoke --scope shared
+mementos search cutover-smoke
+mementos forget cutover-smoke --scope shared --all
+```
 
----
+Then verify the MCP tools `memory_save`, `memory_recall`, and `memory_forget`
+from a real client, and make one SDK request with a bearer key. Confirm the rows
+land in PostgreSQL and no local SQLite file changes during the test.
 
-## 9. Amendment A1 — PURE REMOTE implementation (2026-07-06)
+## 9. Rollback
 
-Cloud mode is now wired end to end. `HASNA_MEMENTOS_STORAGE_MODE=cloud` (aliases
-`remote`/`hybrid` also normalize to `cloud`) makes **all** runtime paths (CLI,
-MCP, serve) read AND write directly to cloud Postgres. There is **no SQLite open
-in cloud mode**: no PRAGMAs, no local migrations, no local DDL. It is
-fail-closed — with no `HASNA_MEMENTOS_DATABASE_URL` configured,
-`getStorageConnectionString()` throws rather than silently using SQLite.
+There are two separate rollback decisions:
 
-### How it works
-- `getDatabase()` (`src/db/database.ts`) is mode-aware. In cloud mode it returns
-  a `PgAdapter` and never constructs a `SqliteAdapter`. An **explicit** `dbPath`
-  argument (tests, import/export tooling) always uses local SQLite regardless of
-  mode.
-- The mementos data layer is fully synchronous (`db.query(sql).get(...)`).
-  node-postgres is async, and a main-thread busy-wait deadlocks the event loop.
-  So `PgAdapter` is backed by `PgSyncPool` (`src/pg-sync-worker.ts`): a
-  worker thread owns one long-lived `pg.Client`, runs queries on its own event
-  loop, and the main thread blocks on `Atomics.wait` over a SharedArrayBuffer
-  until the worker returns the result. One client keeps transactions correct.
-- `translateSql` bridges SQLite dialect → Postgres: `?`→`$n`, `INSERT OR
-  IGNORE`→`ON CONFLICT DO NOTHING`, boolean `COALESCE(pinned, 0)`→`... FALSE`
-  (the cloud `memories.pinned` column is BOOLEAN), and `datetime('now'[,'-N
-  unit'])` → an **ISO-8601 UTC text** expression that compares correctly against
-  BOTH the `timestamptz` columns (`created_at`, `updated_at`) and the `text`
-  ISO columns (`expires_at`, `valid_from`, ...) in the live schema.
-- SSL follows libpq semantics: `sslmode=require` encrypts without cert/hostname
-  verification (needed for tunnelled/private-endpoint connects);
-  `verify-ca`/`verify-full` verify. The adapter is authoritative over SSL (it
-  strips `ssl`/`sslmode` from the string and sets the `pg` option itself).
+1. **Client rollback:** remove the API URL/key and restore the client-local
+   SQLite backup/path. This returns that client to its pre-cutover snapshot;
+   cloud writes made after cutover remain in PostgreSQL.
+2. **Service rollback:** deploy a known-good server version or switch its mode
+   to local only if the service has an intentionally provisioned authoritative
+   local database. Do not silently make an empty container-local SQLite file
+   authoritative.
 
-### Verified live (SSM tunnel → shared prod RDS, app role)
-save → list → recall → search → forget roundtrip through the **real CLI** (both
-`bun run src/cli/index.tsx` and the built `dist/cli/index.js`), each row
-confirmed via `psql` and deleted afterward (table returned to 0 rows).
+Keep the PostgreSQL data and pre-cutover backups until reconciliation is
+complete. Because pure-remote mode has no bidirectional cache, rollback never
+automatically merges post-cutover cloud writes into old local files.
 
-### Known limitations / follow-ups
-- **Vector search**: pgvector is NOT installed on the instance (only `plpgsql`;
-  `memory_embeddings` exists but the extension is absent). Semantic/vector
-  ranking is therefore unavailable in cloud mode. `search` runs BM25/SQL
-  (LIKE-based) scoring, which works. Enable with `CREATE EXTENSION vector` as
-  RDS master (needs `rds_superuser`) to light up the vector path.
-- **Dockerized unit tests**: Docker is unavailable on the build host (no docker
-  group), so the "dockerized postgres" unit target could not run; coverage is
-  provided by the live RDS integration smoke above plus pure-function unit tests
-  in `src/db/cloud-mode.test.ts` (translation + routing).
-- Any store method not exercised by the CLI/MCP hot path that hits an
-  untranslated SQLite-only construct will surface a loud Postgres error (never a
-  silent SQLite fallback). Extend `translateSql` as such paths are cutover.
+## 10. Final checklist
+
+- [ ] Schema migration reports no errors.
+- [ ] Readiness proof succeeds from the server network.
+- [ ] `/ready` reports `cloud` and `ready`.
+- [ ] Authentication rejects missing/invalid credentials.
+- [ ] Backfill has zero rejected records.
+- [ ] Every client reports `backend: cloud-api` before writing.
+- [ ] CLI, MCP, and SDK smoke tests pass and are cleaned up.
+- [ ] Latency and error-rate monitoring are in place.
+- [ ] Rollback owners and backup retention are recorded.

@@ -81,6 +81,8 @@ session_extract(
 | `fact` | Architecture decisions, tech stack, constraints | 8-10 |
 | `knowledge` | Learnings, patterns, "how things work" | 6-8 |
 | `history` | Session summaries, what happened when | 5-7 |
+| `procedural` | Reusable ordered workflows | 6-9 |
+| `resource` | Files, URLs, tools, and reference material | 5-8 |
 
 ## Memory Scopes
 
@@ -89,6 +91,7 @@ session_extract(
 | `global` | All agents, all projects | Universal truths, user preferences |
 | `shared` | All agents on this project | Project conventions, team decisions |
 | `private` | Only this agent | Session context, drafts, notes |
+| `working` | Current agent/session context | Transient scratchpad; one-hour default TTL |
 
 ## Key Naming Convention
 
@@ -111,7 +114,7 @@ Always use `format="compact"` on `memory_inject` unless you need the wrapping:
 ## Development
 
 ```bash
-bun test              # run all 714 tests
+bun test              # run the full test suite
 bun run build         # build all targets (cli, mcp, server, library)
 bun run dev:serve     # start REST server on port 19428
 bun run dev:mcp       # start MCP server
@@ -122,25 +125,33 @@ mementos doctor       # diagnose DB health
 
 ```bash
 # User scope (available in all projects)
-claude mcp add --transport stdio --scope user mementos -- mementos-mcp
+claude mcp add --transport stdio --scope user mementos -- mementos-mcp --stdio
 
 # Project scope (shared via .mcp.json)
-claude mcp add --transport stdio --scope project mementos -- mementos-mcp
+claude mcp add --transport stdio --scope project mementos -- mementos-mcp --stdio
 ```
+
+`mementos-mcp` defaults to Streamable HTTP on `127.0.0.1:8867`. Always pass
+`--stdio` when the host launches it as a command transport.
 
 ## Environment Variables
 
 | Variable | Purpose | Default |
 |----------|---------|---------|
-| `MEMENTOS_DB_PATH` | Override DB location (bypasses profiles) | `~/.mementos/mementos.db` |
-| `MEMENTOS_PROFILE` | Named profile → `~/.mementos/profiles/<name>.db` | none |
+| `HASNA_MEMENTOS_DB_PATH` / `MEMENTOS_DB_PATH` | Override DB location | `~/.hasna/mementos/mementos.db` |
 | `MEMENTOS_DB_SCOPE` | `project` = use git root `.mementos/mementos.db` | global |
 | `PORT` | REST server port | `19428` |
 | `MEMENTOS_HOST` | Server bind address | `127.0.0.1` (localhost only) |
+| `HASNA_MEMENTOS_API_URL` / `HASNA_MEMENTOS_API_KEY` | Select authenticated client API mode when both exist | none |
+| `HASNA_MEMENTOS_STORAGE_MODE` | Server store: `local` or `cloud` | `local` |
+| `HASNA_MEMENTOS_DATABASE_URL` | Server-only PostgreSQL URL | none |
 
 ## Profiles
 
-Profiles isolate memory contexts into separate DBs — useful for separating work, personal, or per-client memories.
+Profile commands manage named database files and persist an active-profile
+setting. The primary runtime resolver in `src/db/database.ts` currently does
+not consult that setting, so profile output alone is not proof of the live
+store. Use `mementos storage mode --json` before writing.
 
 ```bash
 mementos profile set work        # switch to work profile
@@ -149,11 +160,11 @@ mementos profile get             # show current profile
 mementos profile unset           # revert to default DB
 mementos profile delete work     # delete profile + its DB
 
-# Or per-command via env var:
-MEMENTOS_PROFILE=work mementos list
 ```
 
-**Priority**: `MEMENTOS_DB_PATH` > `MEMENTOS_PROFILE` > `MEMENTOS_DB_SCOPE=project` > cwd walk > default
+**Live SQLite priority**: explicit DB path > nearest existing
+`.mementos/mementos.db` walking up > `MEMENTOS_DB_SCOPE=project` git-root path >
+`~/.hasna/mementos/mementos.db`.
 
 ## Cross-Project Integration
 
@@ -170,9 +181,9 @@ MEMENTOS_PROFILE=work mementos list
 
 ```
 src/
-  cli/          Commander.js + Ink TUI — mementos CLI (15+ commands)
-  mcp/          MCP server — 37+ tools (lean stubs, describe_tools/search_tools)
-  server/       REST API — 37+ endpoints (Bun.serve, no framework)
+  cli/          Commander.js + Ink TUI — flat commands plus grouped subcommands
+  mcp/          MCP server — 123 live tools and three resources
+  server/       REST API — Bun.serve, live route registry + OpenAPI generation
   db/           SQLite layer (bun:sqlite) — memories, agents, projects, entities, relations
   lib/          search (FTS5+fuzzy), extractor, injection, retention, sync
   types/        TypeScript interfaces
