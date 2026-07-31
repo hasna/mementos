@@ -126,12 +126,13 @@ afterEach(() => {
 
 describe("processConversationTurn", () => {
   test("does nothing for empty/whitespace turns", async () => {
+    const before = autoMemoryQueue.getStats();
     processConversationTurn("", {});
     processConversationTurn("   ", {});
     processConversationTurn(undefined as unknown as string, {});
-    await waitForQueue();
+    const after = autoMemoryQueue.getStats();
 
-    expect(fetchMock.calls.length).toBe(0);
+    expect(after.pending).toBe(before.pending);
   });
 
   test("enqueues a valid turn and calls the LLM", async () => {
