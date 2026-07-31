@@ -98,7 +98,15 @@ async function waitForQueue(timeoutMs = 3000): Promise<void> {
 // Setup
 // ============================================================================
 
-beforeEach(() => {
+beforeEach(async () => {
+  // Non-isolated `bun test` runs share the singleton auto-memory queue across
+  // files. Drain any inherited jobs through a throwaway mock before installing
+  // the per-test mock whose call count is asserted below.
+  originalFetch = globalThis.fetch;
+  const drainMock = createFetchMock(anthropicMemoryResponse([]));
+  globalThis.fetch = drainMock.fn;
+  await waitForQueue();
+
   resetDatabase();
   getDatabase();
 
@@ -111,7 +119,6 @@ beforeEach(() => {
   });
 
   // Install a fresh fetch mock that returns empty memories by default
-  originalFetch = globalThis.fetch;
   fetchMock = createFetchMock(anthropicMemoryResponse([]));
   globalThis.fetch = fetchMock.fn;
 });
