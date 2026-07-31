@@ -27,6 +27,13 @@ export function markServerContext(): void {
   _serverContext = true;
 }
 
+export function resetServerContextForTests(): void {
+  if (process.env["NODE_ENV"] !== "test") {
+    throw new Error("resetServerContextForTests is only available under NODE_ENV=test");
+  }
+  _serverContext = false;
+}
+
 /** True only inside the `mementos-serve` server process. */
 export function isServerContext(): boolean {
   return _serverContext;
