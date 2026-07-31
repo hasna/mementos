@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { getDatabase, resetDatabase } from "./database.js";
 import { isApiMode } from "./api-mode.js";
+import { resetServerContextForTests } from "../storage.js";
 
 // ============================================================================
 // Split-brain guard: in API mode, getDatabase() must FAIL CLOSED rather than
@@ -29,6 +30,7 @@ describe("split-brain guard — getDatabase() fail-closed in API mode", () => {
   const saved: Record<string, string | undefined> = {};
 
   beforeEach(() => {
+    resetServerContextForTests();
     for (const k of ALIASES) {
       saved[k] = process.env[k];
       delete process.env[k];
@@ -41,6 +43,7 @@ describe("split-brain guard — getDatabase() fail-closed in API mode", () => {
       if (saved[k] === undefined) delete process.env[k];
       else process.env[k] = saved[k];
     }
+    resetServerContextForTests();
     resetDatabase();
   });
 

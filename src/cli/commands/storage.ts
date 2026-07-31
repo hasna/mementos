@@ -58,7 +58,24 @@ function installStorageSubcommands(storage: Command, program: Command): void {
       .option("--json", "Output JSON")
       .action((opts) => {
         const useJson = Boolean(opts.json || program.opts().json);
-        const report = resolveStoreBackend();
+        let report: ReturnType<typeof resolveStoreBackend>;
+        try {
+          report = resolveStoreBackend();
+        } catch (error) {
+          // A misconfigured storage mode makes this command throw — and this is
+          // the ONE command an operator runs precisely because they are unsure
+          // which store they are on. Handing them a Bun stack trace here buries
+          // the one line that names the variable and the bad value. Every other
+          // command already surfaces this cleanly; `mode` opted out of the
+          // global preAction wrapper, so it needs its own.
+          const message = error instanceof Error ? error.message : String(error);
+          // Note the local `outputJson(enabled, value)` here takes a GATE as its
+          // first argument, not a success flag — passing `false` prints nothing.
+          if (useJson) outputJson(true, { ok: false, error: message });
+          else console.error(chalk.red(message));
+          process.exitCode = 1;
+          return;
+        }
         if (useJson) {
           outputJson(true, report);
           return;

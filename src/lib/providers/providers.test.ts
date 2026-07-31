@@ -5,7 +5,7 @@
 
 process.env.MEMENTOS_DB_PATH = ":memory:";
 
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { CerebrasProvider } from "./cerebras.js";
@@ -54,6 +54,15 @@ function mockFetchError(status: number) {
   return mock(() =>
     Promise.resolve(new Response("error", { status }))
   );
+}
+
+async function waitForAutoMemoryQueue(timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const stats = autoMemoryQueue.getStats();
+    if (stats.pending === 0 && stats.processing === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 // ─── Provider interface compliance ───────────────────────────────────────────
@@ -209,6 +218,17 @@ describe("ProviderRegistry", () => {
 // ─── Async queue ─────────────────────────────────────────────────────────────
 
 describe("AutoMemoryQueue", () => {
+  beforeEach(() => {
+    autoMemoryQueue.resetForTests(null);
+  });
+
+  afterEach(async () => {
+    if (autoMemoryQueue.getStats().processing > 0) {
+      await autoMemoryQueue.waitForIdleForTests();
+    }
+    autoMemoryQueue.resetForTests(null);
+  });
+
   test("enqueue returns immediately (fire-and-forget)", () => {
     const start = Date.now();
     autoMemoryQueue.enqueue({ turn: "test", timestamp: Date.now() });
@@ -235,6 +255,9 @@ describe("AutoMemoryQueue", () => {
   });
 
   test("handler failure increments failed counter, never throws", async () => {
+    autoMemoryQueue.setHandler(async () => {});
+    await waitForAutoMemoryQueue();
+
     const failingHandler = mock(async () => {
       throw new Error("Simulated failure");
     });
@@ -242,9 +265,12 @@ describe("AutoMemoryQueue", () => {
     const before = autoMemoryQueue.getStats().failed;
     autoMemoryQueue.enqueue({ turn: "fail-test", timestamp: Date.now() });
     // Give the queue time to process
-    await new Promise((r) => setTimeout(r, 100));
+    await waitForAutoMemoryQueue();
     const after = autoMemoryQueue.getStats();
     expect(after.failed).toBeGreaterThan(before);
+
+    autoMemoryQueue.setHandler(async () => {});
+    await waitForAutoMemoryQueue();
   });
 });
 

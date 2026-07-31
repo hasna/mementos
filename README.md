@@ -92,6 +92,9 @@ mementos-mcp --stdio
 # or: MCP_STDIO=1 mementos-mcp
 ```
 
+Cursor, Codex, Claude, and other command-based MCP host entries should use
+`command = "mementos-mcp"` with `args = ["--stdio"]`.
+
 The server exposes its live tools plus `mementos://memories`,
 `mementos://agents`, and `mementos://projects`. MCP `tools/list` is the complete
 schema source; the convenience `search_tools` and `describe_tools` calls cover

@@ -1,13 +1,14 @@
 # AGENTS.md — @hasna/mementos for AI Agents
 
-This document explains how AI agents (Claude, Codex, Gemini, custom) should use `@hasna/mementos` for persistent memory.
+This document explains how AI agents (Claude, Codex, Cursor, Gemini, custom) should use `@hasna/mementos` for persistent memory.
 
 ## Quick Setup
 
 ```
-# 1. Install the stdio MCP server in an agent host
+# 1. Install the stdio MCP server in a command-based agent host
 claude mcp add --transport stdio --scope user mementos -- mementos-mcp --stdio
 # Codex config: command = "mementos-mcp", args = ["--stdio"]
+# Cursor config: command = "mementos-mcp", args = ["--stdio"]
 
 # 2. Start REST server (optional — for SDK/HTTP access)
 mementos-serve --port 19428  # Default port

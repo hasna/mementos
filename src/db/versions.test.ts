@@ -10,6 +10,7 @@ import {
   getMemoryVersions,
 } from "./memories.js";
 import type { MemoryVersion } from "../types/index.js";
+import { MEMORY_VERSION_SNAPSHOT_TRIGGER } from "./migrations.js";
 
 // ============================================================================
 // Helpers
@@ -109,6 +110,7 @@ function freshDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_memory_versions_memory ON memory_versions(memory_id);
     CREATE INDEX IF NOT EXISTS idx_memory_versions_version ON memory_versions(memory_id, version);
   `);
+  db.exec(MEMORY_VERSION_SNAPSHOT_TRIGGER);
 
   return db;
 }

@@ -14,6 +14,7 @@ import {
   processConversationTurn,
   getAutoMemoryStats,
   configureAutoMemory,
+  resetAutoMemoryForTests,
 } from "./auto-memory.js";
 
 /** Register an agent and optionally a project, returning their IDs */
@@ -99,14 +100,7 @@ async function waitForQueue(timeoutMs = 3000): Promise<void> {
 // ============================================================================
 
 beforeEach(async () => {
-  // Non-isolated `bun test` runs share the singleton auto-memory queue across
-  // files. Drain any inherited jobs through a throwaway mock before installing
-  // the per-test mock whose call count is asserted below.
-  originalFetch = globalThis.fetch;
-  const drainMock = createFetchMock(anthropicMemoryResponse([]));
-  globalThis.fetch = drainMock.fn;
-  await waitForQueue();
-
+  await resetAutoMemoryForTests();
   resetDatabase();
   getDatabase();
 
@@ -119,11 +113,13 @@ beforeEach(async () => {
   });
 
   // Install a fresh fetch mock that returns empty memories by default
+  originalFetch = globalThis.fetch;
   fetchMock = createFetchMock(anthropicMemoryResponse([]));
   globalThis.fetch = fetchMock.fn;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await resetAutoMemoryForTests();
   globalThis.fetch = originalFetch;
 });
 
@@ -133,12 +129,13 @@ afterEach(() => {
 
 describe("processConversationTurn", () => {
   test("does nothing for empty/whitespace turns", async () => {
+    const before = autoMemoryQueue.getStats();
     processConversationTurn("", {});
     processConversationTurn("   ", {});
     processConversationTurn(undefined as unknown as string, {});
-    await waitForQueue();
+    const after = autoMemoryQueue.getStats();
 
-    expect(fetchMock.calls.length).toBe(0);
+    expect(after.pending).toBe(before.pending);
   });
 
   test("enqueues a valid turn and calls the LLM", async () => {

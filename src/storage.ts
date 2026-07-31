@@ -6,6 +6,10 @@ import { fileURLToPath } from "node:url";
 import { Worker } from "node:worker_threads";
 import pg from "pg";
 import type { Pool, PoolClient } from "pg";
+import {
+  DEPRECATED_STORAGE_MODE_ALIASES,
+  normalizeStorageMode as normalizeStorageModeContract,
+} from "./generated/storage-kit/mode.js";
 
 // ============================================================================
 // Server-only DSN boundary (project CLAUDE.md §2, NON-NEGOTIABLE)
@@ -25,6 +29,13 @@ let _serverContext = false;
 /** Called once by the mementos-serve entrypoint; enables the server-only DSN path. */
 export function markServerContext(): void {
   _serverContext = true;
+}
+
+export function resetServerContextForTests(): void {
+  if (process.env["NODE_ENV"] !== "test") {
+    throw new Error("resetServerContextForTests is only available under NODE_ENV=test");
+  }
+  _serverContext = false;
 }
 
 /** True only inside the `mementos-serve` server process. */
@@ -528,8 +539,15 @@ export class PgAdapterAsync {
  */
 export type StorageMode = "local" | "cloud";
 
-/** Deprecated storage-mode aliases accepted as input; all map to `cloud`. */
-export type DeprecatedStorageMode = "remote" | "hybrid";
+/**
+ * Deprecated storage-mode aliases accepted as input; all map to `cloud`.
+ *
+ * DERIVED from the vendored contract, never restated. A hand-written copy of
+ * this list is exactly what let `self_hosted` — an alias the contract accepts —
+ * fall through mementos' private normalizer as "unrecognised" and silently
+ * resolve to `local`.
+ */
+export type DeprecatedStorageMode = (typeof DEPRECATED_STORAGE_MODE_ALIASES)[number];
 
 /** Any value accepted from env/config for the storage mode. */
 export type StorageModeInput = StorageMode | DeprecatedStorageMode;
@@ -736,17 +754,45 @@ function warnDeprecatedStorageMode(alias: DeprecatedStorageMode): void {
   );
 }
 
-function normalizeStorageMode(value: string | undefined): StorageMode | null {
-  if (!value) return null;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "local" || normalized === "cloud") {
-    return normalized;
+/**
+ * Resolve a raw storage-mode string, failing CLOSED on anything unrecognised.
+ *
+ * `null` means "no mode was configured here" and NOTHING else. It is returned
+ * only for an absent or blank value. This distinction is the whole fix: the
+ * previous implementation also returned `null` for an *unrecognised* value, so
+ * `getStorageModeOverride()` read a typo as "unset" and `getStorageConfig()`
+ * fell through to the `local` default. A process launched with
+ * `HASNA_MEMENTOS_STORAGE_MODE=wubbleflurp` therefore read and WROTE a local
+ * SQLite store nobody else sees, successfully, at exit code 0. A mistyped or
+ * renamed mode was indistinguishable from a correct one.
+ *
+ * The valid set is NOT restated here. It is delegated to the vendored storage
+ * contract (`src/generated/storage-kit/mode.ts`), which already throws on an
+ * unknown value — the same resolver `@hasna/knowledge` uses, which is why
+ * knowledge already failed closed while mementos did not. Keeping a private
+ * second copy of the enum is what let the two drift in the first place.
+ *
+ * @param source Operator-facing name of where the value came from — an env key
+ *   or the config file path. It is interpolated into the error because
+ *   `Unknown storage mode: hosted` alone leaves the reader guessing which of
+ *   several variables (or the config file) to edit.
+ */
+function normalizeStorageMode(
+  value: string | undefined,
+  source: string
+): StorageMode | null {
+  if (!value || !value.trim()) return null;
+  let normalized: ReturnType<typeof normalizeStorageModeContract>;
+  try {
+    normalized = normalizeStorageModeContract(value);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`mementos: ${source}=${value} is not a valid mode. ${detail}`);
   }
-  if (normalized === "remote" || normalized === "hybrid") {
-    warnDeprecatedStorageMode(normalized);
-    return "cloud";
+  if (normalized.deprecatedAlias) {
+    warnDeprecatedStorageMode(normalized.deprecatedAlias as DeprecatedStorageMode);
   }
-  return null;
+  return normalized.mode;
 }
 
 function readConfigFile(): Partial<StorageConfig> {
@@ -792,7 +838,9 @@ export function getStorageDatabaseEnvName(): string {
 
 function getStorageModeOverride(): StorageMode | null {
   for (const env of MODE_ENV_NAMES) {
-    const value = normalizeStorageMode(readEnv(env.name) ?? undefined);
+    // Named with the key it actually came from, so the failure points at the
+    // variable the operator set rather than at the canonical one they did not.
+    const value = normalizeStorageMode(readEnv(env.name) ?? undefined, env.name);
     if (value) return value;
   }
   return null;
@@ -802,7 +850,7 @@ export function getStorageConfig(): StorageConfig {
   const fileConfig = readConfigFile();
   const modeOverride = getStorageModeOverride();
   const envConnectionString = getConfiguredConnectionString();
-  const fileMode = normalizeStorageMode(fileConfig.mode);
+  const fileMode = normalizeStorageMode(fileConfig.mode, `${STORAGE_CONFIG_PATH} "mode"`);
 
   const merged: StorageConfig = {
     ...DEFAULT_STORAGE_CONFIG,

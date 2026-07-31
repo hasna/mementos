@@ -1,6 +1,6 @@
 process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
-import { afterEach, describe, it, expect } from "bun:test";
+import { afterEach, beforeEach, describe, it, expect } from "bun:test";
 import {
   MEMENTOS_STORAGE_FALLBACK_ENV,
   MEMENTOS_STORAGE_TABLES,
@@ -15,6 +15,7 @@ import {
   redactDatabaseUrl,
   shouldUsePgSsl,
   markServerContext,
+  resetServerContextForTests,
   SqliteAdapter as Database,
   validatePostgresConnectionString,
 } from "../storage.js";
@@ -22,7 +23,6 @@ import { applyPgMigrations, getPgMigrationDiagnostics } from "../db/pg-migrate.j
 
 // These tests exercise the server-side storage configuration + DSN builder,
 // which is gated to the server process (CLAUDE.md §2). Opt in.
-markServerContext();
 import { registerMachine, listMachines } from "../db/machines.js";
 import { getStorageSyncStatus, pullStorageChanges, pushStorageChanges } from "./storage-sync.js";
 
@@ -34,7 +34,12 @@ const STORAGE_ENV = [
   "MEMENTOS_DATABASE_PASSWORD",
 ] as const;
 
+beforeEach(() => {
+  markServerContext();
+});
+
 afterEach(() => {
+  resetServerContextForTests();
   for (const key of STORAGE_ENV) delete process.env[key];
 });
 

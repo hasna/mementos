@@ -38,6 +38,10 @@ let db: Database;
 
 beforeEach(() => {
   insertedDeadSessionIds = [];
+  // Initialize the registry schema through the owning module before this test
+  // inserts targeted dead-PID rows through a direct database handle.
+  listSessions({ mcp_server: "test-mcp-dead" });
+  closeRegistry();
   // Open the registry DB directly so we can insert test rows
   db = new Database(DB_PATH, { create: true });
 });
