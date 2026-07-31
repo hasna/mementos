@@ -3,19 +3,24 @@ process.env["MEMENTOS_DB_PATH"] = ":memory:";
 // Set a fake Anthropic key so the provider is "available"
 process.env["ANTHROPIC_API_KEY"] = "sk-test-fake-key-for-unit-tests";
 
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { resetDatabase, getDatabase } from "../db/database.js";
 import { createMemory } from "../db/memories.js";
 import { providerRegistry } from "./providers/registry.js";
-import { processConversationTurn, getAutoMemoryStats, configureAutoMemory } from "./auto-memory.js";
+import { processConversationTurn, getAutoMemoryStats, configureAutoMemory, resetAutoMemoryForTests } from "./auto-memory.js";
 
 // ============================================================================
 // Additional auto-memory tests for lines 71-74, 132, 201, 203-209
 // ============================================================================
 
-beforeEach(() => {
+beforeEach(async () => {
+  await resetAutoMemoryForTests();
   resetDatabase();
   getDatabase(":memory:");
+});
+
+afterEach(async () => {
+  await resetAutoMemoryForTests();
 });
 
 describe("isDuplicate - empty query path (line 71)", () => {

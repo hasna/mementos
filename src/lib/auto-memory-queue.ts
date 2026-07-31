@@ -69,6 +69,33 @@ class AutoMemoryQueue {
     return { ...this.stats, pending: this.queue.length };
   }
 
+  async waitForIdleForTests(timeoutMs = 3000): Promise<void> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      if (this.queue.length === 0 && this.activeCount === 0) return;
+      await new Promise<void>((r) => setTimeout(r, 20));
+    }
+    throw new Error("autoMemoryQueue did not become idle before test reset");
+  }
+
+  resetForTests(handler?: JobHandler | null): void {
+    if (this.activeCount !== 0) {
+      throw new Error("Cannot reset autoMemoryQueue while jobs are processing");
+    }
+    this.queue = [];
+    this.running = false;
+    this.stats = {
+      pending: 0,
+      processing: 0,
+      processed: 0,
+      failed: 0,
+      dropped: 0,
+    };
+    if (handler !== undefined) {
+      this.handler = handler;
+    }
+  }
+
   private startLoop(): void {
     this.running = true;
     void this.loop();

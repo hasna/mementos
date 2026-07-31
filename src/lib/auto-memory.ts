@@ -264,3 +264,10 @@ export function configureAutoMemory(
 ): void {
   providerRegistry.configure(config);
 }
+
+export async function resetAutoMemoryForTests(): Promise<void> {
+  if (autoMemoryQueue.getStats().processing > 0) {
+    await autoMemoryQueue.waitForIdleForTests();
+  }
+  autoMemoryQueue.resetForTests(processJob);
+}
