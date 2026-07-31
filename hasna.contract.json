@@ -4,19 +4,71 @@
   "name": "mementos",
   "class": "cli-with-store",
   "contractVersion": "v1",
-  "kitVersion": "0.8.0",
-  "description": "Universal memory system for AI agents — CLI + MCP server + REST API + typed SDK.",
-  "bins": ["mementos", "mementos-mcp", "mementos-serve"],
-  "serviceSurfaces": ["cli", "mcp", "http"],
+  "kitVersion": "0.8.5",
+  "description": "Universal memory system for AI agents — CLI, MCP server, REST API, and TypeScript SDK over one SQLite or PostgreSQL store.",
+  "bins": [
+    "mementos",
+    "mementos-mcp",
+    "mementos-serve"
+  ],
+  "hosting": [
+    "user-hosted"
+  ],
+  "serviceSurfaces": [
+    {
+      "name": "http-api",
+      "kind": "api",
+      "status": "supported",
+      "bin": "mementos-serve",
+      "authMode": "api-key",
+      "health": { "method": "GET", "path": "/health", "public": true },
+      "readiness": { "method": "GET", "path": "/ready", "public": true },
+      "version": { "method": "GET", "path": "/version", "public": true },
+      "apiBasePath": "/v1",
+      "openApiPath": "/v1/openapi.json"
+    },
+    {
+      "name": "typescript-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "api-key",
+      "exportSubpath": "./sdk",
+      "clientClassName": "MementosClient"
+    },
+    {
+      "name": "mcp",
+      "kind": "mcp",
+      "status": "supported",
+      "mcpBin": "mementos-mcp",
+      "authMode": "local-only"
+    },
+    {
+      "name": "cli",
+      "kind": "cli",
+      "status": "supported",
+      "bin": "mementos",
+      "authMode": "local-only"
+    }
+  ],
   "storage": {
     "mode": "sqlite",
-    "sqlitePath": "~/.hasna/mementos/mementos.db",
+    "engines": [
+      "sqlite",
+      "postgres"
+    ],
     "envPrefix": "HASNA_MEMENTOS_",
-    "aliasEnvPrefix": "MEMENTOS_"
+    "aliasEnvPrefix": "MEMENTOS_",
+    "sqlitePath": "~/.hasna/mementos/mementos.db",
+    "pgTestGate": {
+      "envVar": "MEMENTOS_TEST_DATABASE_URL",
+      "command": "bun run test:pg"
+    }
   },
   "metadata": {
-    "conformance": {
-      "waivedStorageEngines": ["postgres"]
+    "release": {
+      "artifactScan": {
+        "script": "scan-artifact"
+      }
     }
   }
 }
