@@ -774,4 +774,33 @@ export const PG_MIGRATIONS: string[] = [
   CREATE INDEX IF NOT EXISTS idx_task_comments_task ON task_comments(task_id);
   CREATE INDEX IF NOT EXISTS idx_task_comments_agent ON task_comments(agent_id);
   `,
+
+  // Snapshot every logical memory version before it is replaced. This mirrors
+  // SQLite migration 36 so moving snapshots out of updateMemory does not drop
+  // history for server-side Postgres writes.
+  `
+  CREATE OR REPLACE FUNCTION snapshot_memory_version() RETURNS trigger AS $$
+  BEGIN
+    INSERT INTO memory_versions (
+      id, memory_id, version, value, importance, scope, category, tags,
+      summary, pinned, status, when_to_use, created_at
+    ) VALUES (
+      gen_random_uuid()::text,
+      OLD.id, OLD.version, OLD.value, OLD.importance, OLD.scope, OLD.category,
+      OLD.tags, OLD.summary, OLD.pinned, OLD.status, OLD.when_to_use,
+      OLD.updated_at
+    ) ON CONFLICT DO NOTHING;
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  DROP TRIGGER IF EXISTS memories_version_snapshot ON memories;
+  CREATE TRIGGER memories_version_snapshot
+    BEFORE UPDATE ON memories
+    FOR EACH ROW
+    WHEN (NEW.version > OLD.version)
+    EXECUTE FUNCTION snapshot_memory_version();
+
+  INSERT INTO _migrations (id) VALUES (36) ON CONFLICT DO NOTHING;
+  `,
 ];

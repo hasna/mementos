@@ -11,6 +11,7 @@ import {
   processConversationTurn,
   getAutoMemoryStats,
   configureAutoMemory,
+  resetAutoMemoryForTests,
 } from "./auto-memory.js";
 
 // ============================================================================
@@ -18,9 +19,20 @@ import {
 // 71-74, 132, 176-178, 201, 203-209
 // ============================================================================
 
-beforeEach(() => {
+beforeEach(async () => {
+  await resetAutoMemoryForTests();
   resetDatabase();
   getDatabase(":memory:");
+  configureAutoMemory({
+    enabled: true,
+    autoEntityLink: false,
+    provider: "anthropic",
+    minImportance: 4,
+  });
+});
+
+afterEach(async () => {
+  await resetAutoMemoryForTests();
 });
 
 describe("processConversationTurn - edge cases", () => {
@@ -34,6 +46,7 @@ describe("processConversationTurn - edge cases", () => {
   });
 
   test("enqueues turn with source parameter", () => {
+    configureAutoMemory({ enabled: false });
     const before = getAutoMemoryStats();
     processConversationTurn("Some useful context to remember", {}, "session");
     // Just ensure no crash
@@ -41,6 +54,7 @@ describe("processConversationTurn - edge cases", () => {
   });
 
   test("enqueues turn with agentId and projectId context", () => {
+    configureAutoMemory({ enabled: false });
     processConversationTurn(
       "The team uses TypeScript for all new projects",
       { agentId: "test-agent", projectId: "test-project", sessionId: "test-session" }

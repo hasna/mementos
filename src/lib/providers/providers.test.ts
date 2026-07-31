@@ -5,7 +5,7 @@
 
 process.env.MEMENTOS_DB_PATH = ":memory:";
 
-import { describe, test, expect, beforeEach, mock } from "bun:test";
+import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
 import { AnthropicProvider } from "./anthropic.js";
 import { OpenAIProvider } from "./openai.js";
 import { CerebrasProvider } from "./cerebras.js";
@@ -209,6 +209,17 @@ describe("ProviderRegistry", () => {
 // ─── Async queue ─────────────────────────────────────────────────────────────
 
 describe("AutoMemoryQueue", () => {
+  beforeEach(() => {
+    autoMemoryQueue.resetForTests(null);
+  });
+
+  afterEach(async () => {
+    if (autoMemoryQueue.getStats().processing > 0) {
+      await autoMemoryQueue.waitForIdleForTests();
+    }
+    autoMemoryQueue.resetForTests(null);
+  });
+
   test("enqueue returns immediately (fire-and-forget)", () => {
     const start = Date.now();
     autoMemoryQueue.enqueue({ turn: "test", timestamp: Date.now() });

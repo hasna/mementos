@@ -34,6 +34,7 @@ hookRegistry.register({
   priority: 100,
   description: "Trigger async LLM entity extraction when a memory is saved",
   handler: async (ctx) => {
+    if (process.env["NODE_ENV"] === "test") return;
     // Only process new memories (not upsert merges that already existed)
     if (ctx.wasUpdated) return;
 

@@ -14,6 +14,7 @@ import {
   processConversationTurn,
   getAutoMemoryStats,
   configureAutoMemory,
+  resetAutoMemoryForTests,
 } from "./auto-memory.js";
 
 /** Register an agent and optionally a project, returning their IDs */
@@ -98,7 +99,8 @@ async function waitForQueue(timeoutMs = 3000): Promise<void> {
 // Setup
 // ============================================================================
 
-beforeEach(() => {
+beforeEach(async () => {
+  await resetAutoMemoryForTests();
   resetDatabase();
   getDatabase();
 
@@ -116,7 +118,8 @@ beforeEach(() => {
   globalThis.fetch = fetchMock.fn;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await resetAutoMemoryForTests();
   globalThis.fetch = originalFetch;
 });
 

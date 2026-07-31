@@ -1,6 +1,25 @@
 // SQLite migration SQL strings — extracted from database.ts for readability.
 // Each entry is executed in order; the _migrations table tracks which have run.
 
+export const MEMORY_VERSION_SNAPSHOT_TRIGGER = `
+CREATE TRIGGER IF NOT EXISTS memories_version_snapshot
+BEFORE UPDATE ON memories
+WHEN NEW.version > OLD.version
+BEGIN
+  INSERT OR IGNORE INTO memory_versions (
+    id, memory_id, version, value, importance, scope, category, tags,
+    summary, pinned, status, when_to_use, created_at
+  ) VALUES (
+    lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-' ||
+      lower(hex(randomblob(2))) || '-' || lower(hex(randomblob(2))) || '-' ||
+      lower(hex(randomblob(6))),
+    OLD.id, OLD.version, OLD.value, OLD.importance, OLD.scope, OLD.category,
+    OLD.tags, OLD.summary, OLD.pinned, OLD.status, OLD.when_to_use,
+    OLD.updated_at
+  );
+END;
+`;
+
 export const MIGRATIONS: string[] = [
   // Migration 1: Core schema
   `
@@ -974,5 +993,10 @@ CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_memory ON memory_reflec
 CREATE INDEX IF NOT EXISTS idx_memory_reflection_lessons_kind ON memory_reflection_lessons(kind);
 
 INSERT OR IGNORE INTO _migrations (id) VALUES (35);
+`,
+  // Migration 36: Snapshot every logical memory version before it is replaced.
+  `
+${MEMORY_VERSION_SNAPSHOT_TRIGGER}
+INSERT OR IGNORE INTO _migrations (id) VALUES (36);
 `,
 ];
