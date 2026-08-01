@@ -8,6 +8,7 @@ import {
   getMemory,
   updateMemory,
   deleteMemory,
+  bulkDeleteMemories,
 } from "./memories.js";
 import { MemoryNotFoundError } from "../types/index.js";
 import type { CreateMemoryInput } from "../types/index.js";
@@ -174,5 +175,77 @@ describe("deleteMemory with a partial id", () => {
 
   it("reports false for an id that matches nothing", () => {
     expect(deleteMemory("ffffffff")).toBe(false);
+  });
+});
+
+describe("bulkDeleteMemories with partial ids", () => {
+  // `WHERE id IN (...)` is an exact match, so a partial matched nothing and the
+  // caller was told "0 memories affected" at rc=0 while the row survived.
+  // Called out separately because, unlike the rest of this file, no server
+  // redeploy repairs it — the bulk path would have stayed broken permanently
+  // after the deploy that fixed everything else here.
+  it("deletes the rows the prefixes resolve to", () => {
+    const a = seed();
+    const b = seed();
+
+    expect(bulkDeleteMemories([shortId(a.id), shortId(b.id)])).toBe(2);
+    expect(getMemory(a.id)).toBeNull();
+    expect(getMemory(b.id)).toBeNull();
+  });
+
+  it("mixes full and partial ids without dropping either", () => {
+    const partial = seed();
+    const full = seed();
+
+    expect(bulkDeleteMemories([shortId(partial.id), full.id])).toBe(2);
+    expect(getMemory(partial.id)).toBeNull();
+    expect(getMemory(full.id)).toBeNull();
+  });
+
+  it("leaves rows the prefixes do not resolve to alone", () => {
+    const target = seed();
+    const bystander = seed();
+
+    expect(bulkDeleteMemories([shortId(target.id)])).toBe(1);
+    expect(getMemory(target.id)).toBeNull();
+    expect(getMemory(bystander.id)).not.toBeNull();
+  });
+
+  it("counts nothing for an id that matches nothing", () => {
+    const survivor = seed();
+
+    expect(bulkDeleteMemories(["ffffffff"])).toBe(0);
+    expect(getMemory(survivor.id)).not.toBeNull();
+  });
+});
+
+describe("an empty id never resolves", () => {
+  // Prefix resolution builds `LIKE '<prefix>%'`, so an empty string became
+  // `LIKE '%'` and matched every row — meaning that on a single-row store an
+  // empty id resolved to that row and deleted it. The single-row case is the
+  // whole point: with two rows the match is ambiguous and returns null, so this
+  // hides until a store is nearly empty, and "" is exactly what arrives from an
+  // unchecked argv or a trimmed field.
+  it("bulkDeleteMemories deletes nothing when the store holds exactly one row", () => {
+    const only = seed();
+
+    expect(bulkDeleteMemories([""])).toBe(0);
+    expect(getMemory(only.id)).not.toBeNull();
+  });
+
+  it("deleteMemory deletes nothing when the store holds exactly one row", () => {
+    const only = seed();
+
+    expect(deleteMemory("")).toBe(false);
+    expect(getMemory(only.id)).not.toBeNull();
+  });
+
+  it("updateMemory does not resolve an empty id onto the only row", () => {
+    const only = seed({ value: "ORIGINAL" } as Partial<CreateMemoryInput>);
+
+    expect(() => updateMemory("", { version: only.version, value: "NEVER" })).toThrow(
+      MemoryNotFoundError,
+    );
+    expect(getMemory(only.id)?.value).toBe("ORIGINAL");
   });
 });
