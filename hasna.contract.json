@@ -2,15 +2,73 @@
   "$schema": "./node_modules/@hasna/contracts/dist/hasna.contract.schema.json",
   "schema": "hasna.service_contract.v1",
   "name": "mementos",
-  "class": "service",
+  "class": "cli-with-store",
   "contractVersion": "v1",
-  "kitVersion": "0.4.1",
-  "description": "Universal memory system for AI agents — CLI + MCP server + REST serve API + typed SDK. self_hosted service backed by pure-remote Postgres (Amendment A1).",
-  "bins": ["mementos", "mementos-mcp", "mementos-serve"],
+  "kitVersion": "0.8.5",
+  "description": "Universal memory system for AI agents — CLI, MCP server, REST API, and TypeScript SDK over one SQLite or PostgreSQL store.",
+  "bins": [
+    "mementos",
+    "mementos-mcp",
+    "mementos-serve"
+  ],
+  "hosting": [
+    "user-hosted"
+  ],
+  "serviceSurfaces": [
+    {
+      "name": "http-api",
+      "kind": "api",
+      "status": "supported",
+      "bin": "mementos-serve",
+      "authMode": "api-key",
+      "health": { "method": "GET", "path": "/health", "public": true },
+      "readiness": { "method": "GET", "path": "/ready", "public": true },
+      "version": { "method": "GET", "path": "/version", "public": true },
+      "apiBasePath": "/v1",
+      "openApiPath": "/v1/openapi.json"
+    },
+    {
+      "name": "typescript-sdk",
+      "kind": "sdk",
+      "status": "supported",
+      "authMode": "api-key",
+      "exportSubpath": "./sdk",
+      "clientClassName": "MementosClient"
+    },
+    {
+      "name": "mcp",
+      "kind": "mcp",
+      "status": "supported",
+      "mcpBin": "mementos-mcp",
+      "authMode": "local-only"
+    },
+    {
+      "name": "cli",
+      "kind": "cli",
+      "status": "supported",
+      "bin": "mementos",
+      "authMode": "local-only"
+    }
+  ],
   "storage": {
-    "mode": "cloud",
+    "mode": "sqlite",
+    "engines": [
+      "sqlite",
+      "postgres"
+    ],
     "envPrefix": "HASNA_MEMENTOS_",
     "aliasEnvPrefix": "MEMENTOS_",
-    "databaseUrlSecretRef": "hasna/oss/mementos/database-url"
+    "sqlitePath": "~/.hasna/mementos/mementos.db",
+    "pgTestGate": {
+      "envVar": "MEMENTOS_TEST_DATABASE_URL",
+      "command": "bun run test:pg"
+    }
+  },
+  "metadata": {
+    "release": {
+      "artifactScan": {
+        "script": "scan-artifact"
+      }
+    }
   }
 }
