@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { unlinkSync, existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -38,8 +38,15 @@ afterAll(() => {
 async function runCli(
   ...args: string[]
 ): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  return runCliWithEnv({}, ...args);
+}
+
+async function runCliWithEnv(
+  env: Record<string, string>,
+  ...args: string[]
+): Promise<{ stdout: string; stderr: string; exitCode: number }> {
   const proc = Bun.spawn(["bun", "run", CLI_PATH, ...args], {
-    env: CLI_ENV,
+    env: { ...CLI_ENV, ...env },
     stdout: "pipe",
     stderr: "pipe",
   });
@@ -611,6 +618,31 @@ describe("CLI", () => {
   test("profile list shows profiles", async () => {
     const { exitCode } = await runCli("profile", "list");
     expect(exitCode).toBe(0);
+  });
+
+  test("config set refuses malformed global config without rewriting it", async () => {
+    const home = mkdtempSync(join(tmpdir(), "mementos-config-home-"));
+    const configDir = join(home, ".hasna", "mementos");
+    const configPath = join(configDir, "config.json");
+    const malformed = '{"active_profile":"keep","default_scope":"shared"';
+    mkdirSync(configDir, { recursive: true });
+    writeFileSync(configPath, malformed, "utf-8");
+
+    try {
+      const { stderr, exitCode } = await runCliWithEnv(
+        { HOME: home, USERPROFILE: home },
+        "config",
+        "set",
+        "default_scope",
+        "global",
+      );
+
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain("Cannot update global config");
+      expect(readFileSync(configPath, "utf-8")).toBe(malformed);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   test("pin by partial ID", async () => {

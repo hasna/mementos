@@ -706,9 +706,14 @@ export function readFileConfig(): Record<string, unknown> {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) return {};
   try {
-    return JSON.parse(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-  } catch {
-    return {};
+    const data = JSON.parse(readFileSync(configPath, "utf-8")) as unknown;
+    if (data === null || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("expected a JSON object");
+    }
+    return data as Record<string, unknown>;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot update global config at ${configPath}: ${detail}`);
   }
 }
 
