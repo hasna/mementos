@@ -214,6 +214,21 @@ function readGlobalConfig(): Record<string, unknown> {
   try { return JSON.parse(readFileSync(p, "utf-8")) as Record<string, unknown>; } catch { return {}; }
 }
 
+function readGlobalConfigForWrite(): Record<string, unknown> {
+  const p = globalConfigPath();
+  if (!existsSync(p)) return {};
+  try {
+    const data = JSON.parse(readFileSync(p, "utf-8")) as unknown;
+    if (data === null || typeof data !== "object" || Array.isArray(data)) {
+      throw new Error("expected a JSON object");
+    }
+    return data as Record<string, unknown>;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot update global config at ${p}: ${detail}`);
+  }
+}
+
 function writeGlobalConfig(data: Record<string, unknown>): void {
   const p = globalConfigPath();
   ensureDir(dirname(p));
@@ -229,7 +244,7 @@ export function getActiveProfile(): string | null {
 }
 
 export function setActiveProfile(name: string | null): void {
-  const cfg = readGlobalConfig();
+  const cfg = readGlobalConfigForWrite();
   if (name === null) {
     delete cfg["active_profile"];
   } else {
