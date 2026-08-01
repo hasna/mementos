@@ -1,7 +1,7 @@
 import { SqliteAdapter as Database } from "../storage.js";
 import type { Agent } from "../types/index.js";
 import { AgentConflictError } from "../types/index.js";
-import { getDatabase, now, shortUuid, resolvePartialId } from "./database.js";
+import { getDatabase, now, shortUuid, resolvePartialId, escapeLikePrefix } from "./database.js";
 import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
@@ -126,10 +126,12 @@ export function getAgent(
     | null;
   if (row) return parseAgentRow(row);
 
-  // Try partial ID
+  // Try partial ID. Escaped for the same reason as resolvePartialId: an
+  // unescaped `_` or `%` in a caller-supplied id is a live SQL wildcard and
+  // resolves onto an agent the caller never named.
   const rows = d
-    .query("SELECT * FROM agents WHERE id LIKE ?")
-    .all(`${idOrName}%`) as Record<string, unknown>[];
+    .query("SELECT * FROM agents WHERE id LIKE ? ESCAPE '\\'")
+    .all(`${escapeLikePrefix(idOrName)}%`) as Record<string, unknown>[];
   if (rows.length === 1) return parseAgentRow(rows[0]!);
 
   return null;
