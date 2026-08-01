@@ -1,0 +1,69 @@
+{
+  "schema": "hasna.project_panel.v1",
+  "id": "mementos_panel_contract-fixtures",
+  "createdAt": "2026-08-01T12:00:00.000Z",
+  "projectId": "contract-fixtures",
+  "provider": {
+    "kind": "mementos",
+    "id": "mementos_contract-fixtures",
+    "name": "Mementos",
+    "sourcePackage": "@hasna/mementos",
+    "externalId": "contract-fixtures"
+  },
+  "kind": "mementos",
+  "title": "Mementos",
+  "summary": "No active memories are available for this project yet.",
+  "state": "empty",
+  "generatedAt": "2026-08-01T12:00:00.000Z",
+  "freshness": "unknown",
+  "metrics": [
+    {
+      "id": "active_memories",
+      "label": "Active memories",
+      "value": 0,
+      "status": "unknown"
+    }
+  ],
+  "items": [],
+  "actions": [
+    {
+      "kind": "action",
+      "id": "mementos:list",
+      "name": "List project memories",
+      "externalId": "mementos:list",
+      "sourcePackage": "@hasna/mementos"
+    }
+  ],
+  "resourceRefs": [
+    {
+      "kind": "project",
+      "id": "contract-fixtures",
+      "name": "contract-fixtures",
+      "uri": "project://contract-fixtures",
+      "externalId": "contract-fixtures",
+      "sourcePackage": "@hasna/mementos"
+    }
+  ],
+  "renderFragment": {
+    "renderer": "json_render",
+    "title": "Mementos",
+    "spec": {
+      "component": "project.mementos.summary",
+      "metrics": [
+        "active_memories",
+        "pinned",
+        "high_importance",
+        "decisions",
+        "assumptions"
+      ],
+      "itemLimit": 20
+    }
+  },
+  "warnings": [
+    "No mementos project matched \"contract-fixtures\"; used the provided value as project_id filter."
+  ],
+  "metadata": {
+    "project_found": false,
+    "filter_project_id": "contract-fixtures"
+  }
+}
