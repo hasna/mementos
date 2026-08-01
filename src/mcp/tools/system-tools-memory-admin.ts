@@ -80,7 +80,12 @@ export function registerSystemMemoryAdminTools({ server, z, createMemory, getMem
     "memory_gdpr_erase",
     "GDPR right to be forgotten: erase all memories containing a PII identifier. Replaces content with [REDACTED], preserves anonymized audit trail. IRREVERSIBLE.",
     {
-      identifier: z.string().describe("PII to search for and erase (name, email, etc.)"),
+      // `.min(1)` so an empty identifier cannot reach the handler at all: it
+      // yields the LIKE pattern `%%`, which matches every row, and this tool's
+      // own description calls the operation IRREVERSIBLE (80b3c695). The
+      // library guard in `lib/gdpr.ts` is the backstop; this stops it at the
+      // wire so the refusal is a schema error rather than a caught exception.
+      identifier: z.string().min(1).describe("PII to search for and erase (name, email, etc.)"),
       project_id: z.string().optional(),
       dry_run: z.boolean().optional().describe("Preview what would be erased without actually erasing (default: false)"),
     },
