@@ -1083,11 +1083,43 @@ export function updateMemory(
   if (!db && isApiMode()) {
     const { status, data } = apiJson<Memory>("PATCH", `/memories/${encodeURIComponent(id)}`, input, { allow404: true });
     if (status === 404) throw new MemoryNotFoundError(id);
+
+    // Verify the write actually happened rather than trusting a 200. Every
+    // update bumps `version`, so a returned record whose version did not move
+    // past the one we submitted means the server accepted the request and
+    // changed nothing — which is precisely how this defect presented: HTTP 200,
+    // a success receipt naming the field, and the old value still in the store.
+    //
+    // This check is deliberately here on the CLIENT and not only in the SQL
+    // path below, because a client always talks to whatever server image is
+    // deployed. A server fixed today does not fix the operator running against
+    // one that is not yet redeployed; this makes such a server fail loudly
+    // instead of lying.
+    if (
+      data &&
+      typeof input.version === "number" &&
+      typeof data.version === "number" &&
+      data.version <= input.version
+    ) {
+      throw new Error(
+        `Update did not persist for memory ${id}: the server returned success but the record is unchanged ` +
+          `(version still ${data.version}). Your data was NOT written. ` +
+          `The server is likely running a build predating the partial-id fix — pass the full 36-character id as a workaround.`,
+      );
+    }
     return data;
   }
   const d = db || getDatabase();
   const existing = getMemory(id, d);
   if (!existing) throw new MemoryNotFoundError(id);
+
+  // `id` may be a prefix: getMemory resolves partials, the WHERE clauses below
+  // do not. Bind the resolved id everywhere from here on, or the write targets
+  // zero rows while the confirming re-read resolves the prefix again and hands
+  // back the untouched row as a success. Callers reaching this with a partial
+  // are not hypothetical — in api mode the CLI forwards the operator's 8-char
+  // id straight to the server, which calls this function with it.
+  const memoryId = existing.id;
 
   if (existing.version !== input.version) {
     throw new VersionConflictError(id, input.version, existing.version);
@@ -1144,19 +1176,30 @@ export function updateMemory(
     sets.push("tags = ?");
     params.push(JSON.stringify(input.tags));
     // Update tags table
-    d.run("DELETE FROM memory_tags WHERE memory_id = ?", [id]);
+    d.run("DELETE FROM memory_tags WHERE memory_id = ?", [memoryId]);
     const insertTag = d.prepare(
       "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (?, ?)"
     );
     for (const tag of input.tags) {
-      insertTag.run(id, tag);
+      insertTag.run(memoryId, tag);
     }
   }
 
-  params.push(id);
-  d.run(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`, params);
+  params.push(memoryId);
+  const result = d.run(`UPDATE memories SET ${sets.join(", ")} WHERE id = ?`, params);
 
-  const updated = getMemory(id, d)!;
+  // A write that touched nothing must never be reported as a write. The row was
+  // read successfully a few lines up, so zero affected rows means the statement
+  // did not do what the caller asked and the caller cannot tell from the return
+  // value alone — which is exactly how this failed silently before.
+  if (result.changes === 0) {
+    throw new Error(
+      `Update affected no rows for memory ${memoryId}: the record was read but not written. ` +
+        `This is a bug in @hasna/mementos, not a bad argument — please report it.`,
+    );
+  }
+
+  const updated = getMemory(memoryId, d)!;
 
   // Remove stale entity links if value changed (LLM pipeline re-links async)
   if (input.value !== undefined) {
@@ -1193,11 +1236,16 @@ export function deleteMemory(id: string, db?: Database): boolean {
     return status !== 404;
   }
   const d = db || getDatabase();
+  // Resolve a prefix the same way the read path does. Without this, `forget`
+  // given one of the 8-char ids that search/recall/save print deleted nothing
+  // and answered "No memory found" — a false negative about the store, for an
+  // id the CLI had just handed the operator.
+  const memoryId = resolvePartialId(d, "memories", id) ?? id;
   // Fire PostMemoryDelete hook (non-blocking)
-  const result = d.run("DELETE FROM memories WHERE id = ?", [id]);
+  const result = d.run("DELETE FROM memories WHERE id = ?", [memoryId]);
   if (result.changes > 0) {
     void hookRegistry.runHooks("PostMemoryDelete", {
-      memoryId: id,
+      memoryId,
       timestamp: Date.now(),
     });
   }
