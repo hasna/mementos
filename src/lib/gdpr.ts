@@ -16,9 +16,19 @@ export interface GdprErasureResult {
 
 /**
  * Erase all memories containing the given PII identifier.
- * Replaces value, summary, and key with "[REDACTED]".
- * Clears tags and metadata that might contain PII.
+ *
+ * Replaces `value` with "[REDACTED]", clears `summary`, `tags` and `metadata`,
+ * and rewrites `key` to `[REDACTED]:<memory id>` — per-row, for the reason given
+ * at the UPDATE below. Nothing derived from the original key is retained.
+ *
  * Preserves the audit trail (audit_log entries have hashes, not content).
+ *
+ * NOTE: an erased memory is no longer reachable by its original key, so a later
+ * `save` under that key creates a NEW record rather than merging into the
+ * tombstone. That is deliberate: silently resurrecting an erased row and
+ * re-associating it with the data subject is precisely what erasure must
+ * prevent. Every foreign key into `memories` references `memories(id)` — no
+ * relational integrity depends on `key`, which is a human lookup handle only.
  */
 export function gdprErase(
   identifier: string,
@@ -98,11 +108,37 @@ export function gdprErase(
     };
   }
 
-  // Redact each memory
+  // Redact each memory.
+  //
+  // `key` is written HERE and was not before: the SELECT above matches on five
+  // columns and this UPDATE wrote only four, so a row matched BECAUSE its key
+  // held the identifier was reported erased with that identifier still in place
+  // — and still full-text searchable, since `memories_fts` indexes `key`. The
+  // receipt said erased while the subject remained identifiable, which is the
+  // one failure mode an erasure API must not have (0a68d690).
+  //
+  // The redacted key is PER-ROW, not a bare '[REDACTED]'. The schema carries
+  //   CREATE UNIQUE INDEX idx_memories_unique_key
+  //     ON memories(key, scope, COALESCE(agent_id,''), COALESCE(project_id,''),
+  //                 COALESCE(session_id,''))
+  // so a constant would throw `UNIQUE constraint failed` the moment a second row
+  // in the same scope is erased — measured, not inferred. This loop is not
+  // transactional, so that throw aborts a multi-row erase PART-WAY THROUGH,
+  // leaving some rows scrubbed and some not. One data subject spread across
+  // several memories is the ordinary case here, so the constant form fails on
+  // the common path.
+  //
+  // Suffixing the primary key makes it unique by construction and discloses
+  // nothing new — the same ids are returned to the caller in `memory_ids`. A
+  // HASH of the original key was rejected: the identifiers this function takes
+  // are enumerable (email addresses), so a hash is brute-forceable and remains
+  // personal data under GDPR — it would leave the subject recoverable while the
+  // receipt claims erasure, which is this very defect wearing a different form.
   const memoryIds: string[] = [];
   for (const row of rows) {
     d.run(
       `UPDATE memories SET
+        key = '[REDACTED]:' || id,
         value = '[REDACTED]',
         summary = NULL,
         tags = '[]',
