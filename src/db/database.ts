@@ -277,6 +277,11 @@ export function resolvePartialId(
   if (!ALLOWED_TABLES.has(table)) {
     throw new Error(`Invalid table name: ${table}`);
   }
+  // An empty prefix must never resolve. `LIKE '%'` matches every row, so on a
+  // single-row table an empty id resolved to that row — which turned
+  // `delete("")` into "delete the only record". Harmless-looking, and the one
+  // input most likely to arrive from an unchecked argv or a trimmed field.
+  if (partialId === "") return null;
   if (partialId.length >= 36) {
     const row = db
       .query(`SELECT id FROM ${table} WHERE id = ?`)
