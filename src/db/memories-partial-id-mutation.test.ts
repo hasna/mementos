@@ -8,6 +8,7 @@ import {
   getMemory,
   updateMemory,
   deleteMemory,
+  bulkDeleteMemories,
 } from "./memories.js";
 import { MemoryNotFoundError } from "../types/index.js";
 import type { CreateMemoryInput } from "../types/index.js";
@@ -174,5 +175,46 @@ describe("deleteMemory with a partial id", () => {
 
   it("reports false for an id that matches nothing", () => {
     expect(deleteMemory("ffffffff")).toBe(false);
+  });
+});
+
+describe("bulkDeleteMemories with partial ids", () => {
+  // `WHERE id IN (...)` is an exact match, so a partial matched nothing and the
+  // caller was told "0 memories affected" at rc=0 while the row survived.
+  // Called out separately because, unlike the rest of this file, no server
+  // redeploy repairs it — the bulk path would have stayed broken permanently
+  // after the deploy that fixed everything else here.
+  it("deletes the rows the prefixes resolve to", () => {
+    const a = seed();
+    const b = seed();
+
+    expect(bulkDeleteMemories([shortId(a.id), shortId(b.id)])).toBe(2);
+    expect(getMemory(a.id)).toBeNull();
+    expect(getMemory(b.id)).toBeNull();
+  });
+
+  it("mixes full and partial ids without dropping either", () => {
+    const partial = seed();
+    const full = seed();
+
+    expect(bulkDeleteMemories([shortId(partial.id), full.id])).toBe(2);
+    expect(getMemory(partial.id)).toBeNull();
+    expect(getMemory(full.id)).toBeNull();
+  });
+
+  it("leaves rows the prefixes do not resolve to alone", () => {
+    const target = seed();
+    const bystander = seed();
+
+    expect(bulkDeleteMemories([shortId(target.id)])).toBe(1);
+    expect(getMemory(target.id)).toBeNull();
+    expect(getMemory(bystander.id)).not.toBeNull();
+  });
+
+  it("counts nothing for an id that matches nothing", () => {
+    const survivor = seed();
+
+    expect(bulkDeleteMemories(["ffffffff"])).toBe(0);
+    expect(getMemory(survivor.id)).not.toBeNull();
   });
 });

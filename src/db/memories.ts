@@ -1260,18 +1260,24 @@ export function bulkDeleteMemories(ids: string[], db?: Database): number {
   }
   const d = db || getDatabase();
 
-  const placeholders = ids.map(() => "?").join(",");
+  // Resolve prefixes the way the read path does, for the same reason
+  // deleteMemory does: `IN (...)` is an exact match, so a partial id silently
+  // matches nothing and the caller is told "0 memories affected" at rc=0.
+  // An id that resolves to nothing is left as-is so it simply matches no row.
+  const resolvedIds = ids.map((id) => resolvePartialId(d, "memories", id) ?? id);
+
+  const placeholders = resolvedIds.map(() => "?").join(",");
   // Count first — result.changes includes FTS5 trigger operations
   const countRow = d
     .query(
       `SELECT COUNT(*) as c FROM memories WHERE id IN (${placeholders})`
     )
-    .get(...(ids as SQLQueryBindings[])) as { c: number };
+    .get(...(resolvedIds as SQLQueryBindings[])) as { c: number };
   const count = countRow.c;
   if (count > 0) {
     d.run(
       `DELETE FROM memories WHERE id IN (${placeholders})`,
-      ids as SQLQueryBindings[]
+      resolvedIds as SQLQueryBindings[]
     );
   }
   return count;
