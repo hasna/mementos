@@ -3,7 +3,7 @@ process.env["MEMENTOS_DB_PATH"] = ":memory:";
 
 import { describe, it, expect, beforeEach } from "bun:test";
 import { getDatabase, resetDatabase } from "../db/database.js";
-import { createMemory, getMemory } from "../db/memories.js";
+import { bulkUpsertMemories, createMemory, getMemory } from "../db/memories.js";
 import { gdprErase } from "./gdpr.js";
 
 // ============================================================================
@@ -38,9 +38,10 @@ import { gdprErase } from "./gdpr.js";
 // abort a multi-row erase PART-WAY THROUGH: some rows scrubbed, some not, and an
 // exception instead of a receipt. One data subject appearing in several memories
 // is the ORDINARY case for this function, so the naive fix fails on the common
-// path rather than an exotic one. The `<marker>:<id>` form is unique by
-// construction because `id` is the primary key, and it discloses nothing new —
-// those same ids are already returned to the caller in `memory_ids`.
+// path rather than an exotic one. The `<marker>:<random-token>` form is unique
+// in practice without copying `id`: ids are normally UUIDs, but the supported
+// bulk-restore path preserves caller-supplied ids verbatim, so an imported id
+// can itself contain the data subject's identifier.
 //
 // Every assertion asserts THE LITERAL IDENTIFIER IS ABSENT rather than that a
 // marker is present. A marker-present assertion passes against a key rewritten
@@ -211,5 +212,26 @@ describe("gdprErase redacts the key column (0a68d690)", () => {
     expect(
       (db.query("SELECT key FROM memories WHERE key LIKE ?").all("%bob@example.com%") as unknown[]).length,
     ).toBe(0);
+  });
+
+  it("does not copy a caller-preserved imported id into the redacted key", () => {
+    // `bulkUpsertMemories` is a faithful restore path: it preserves the incoming
+    // id rather than replacing it with a UUID. A redaction marker derived from
+    // `id` therefore reintroduces the identifier into the FTS-indexed key.
+    const db = getDatabase();
+    const imported = bulkUpsertMemories(
+      [{ id: ID, key: "safe-key", value: `value contains ${ID}`, scope: "global", source: "imported" }],
+      db,
+    );
+    expect(imported.inserted).toBe(1);
+
+    const result = gdprErase(ID, {}, db);
+
+    expect(result.erased_count).toBe(1);
+    expect(result.memory_ids).toEqual([ID]);
+    expect(keyOf(ID)).not.toContain(ID);
+    expect(valueOf(ID)).toBe("[REDACTED]");
+    expect(keysExposingIdentifier()).toEqual([]);
+    expect(ftsRowidsMatchingIdentifier()).toEqual([]);
   });
 });

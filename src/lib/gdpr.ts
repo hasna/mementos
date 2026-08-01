@@ -18,8 +18,9 @@ export interface GdprErasureResult {
  * Erase all memories containing the given PII identifier.
  *
  * Replaces `value` with "[REDACTED]", clears `summary`, `tags` and `metadata`,
- * and rewrites `key` to `[REDACTED]:<memory id>` — per-row, for the reason given
- * at the UPDATE below. Nothing derived from the original key is retained.
+ * and rewrites `key` to `[REDACTED]:<random token>` — per-row, for the reason
+ * given at the UPDATE below. Nothing derived from the original key or imported
+ * row id is retained.
  *
  * Preserves the audit trail (audit_log entries have hashes, not content).
  *
@@ -128,24 +129,30 @@ export function gdprErase(
   // several memories is the ordinary case here, so the constant form fails on
   // the common path.
   //
-  // Suffixing the primary key makes it unique by construction and discloses
-  // nothing new — the same ids are returned to the caller in `memory_ids`. A
-  // HASH of the original key was rejected: the identifiers this function takes
-  // are enumerable (email addresses), so a hash is brute-forceable and remains
-  // personal data under GDPR — it would leave the subject recoverable while the
-  // receipt claims erasure, which is this very defect wearing a different form.
+  // Do not derive this key from either the original key or the memory id.
+  // `bulkUpsertMemories` faithfully preserves imported ids, and those ids are
+  // caller-controlled rather than guaranteed opaque UUIDs. Copying `id` here can
+  // therefore move the data subject's identifier into the FTS-indexed key while
+  // returning an erasure success receipt.
+  //
+  // A HASH of the original key/id was rejected: the identifiers this function
+  // takes are enumerable (email addresses), so a hash is brute-forceable and
+  // remains personal data under GDPR — it would leave the subject recoverable
+  // while the receipt claims erasure, which is this very defect wearing a
+  // different form.
   const memoryIds: string[] = [];
   for (const row of rows) {
+    const redactedKey = `[REDACTED]:${crypto.randomUUID()}`;
     d.run(
       `UPDATE memories SET
-        key = '[REDACTED]:' || id,
+        key = ?,
         value = '[REDACTED]',
         summary = NULL,
         tags = '[]',
         metadata = '{}',
         updated_at = ?
        WHERE id = ?`,
-      [timestamp, row.id]
+      [redactedKey, timestamp, row.id]
     );
 
     // Clear tags from junction table
