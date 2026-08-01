@@ -30,6 +30,33 @@ export function gdprErase(
   db?: Database
 ): GdprErasureResult {
   const d = db || getDatabase();
+
+  // An absent identifier must never erase. `%${identifier}%` collapses to `%%`
+  // on an empty string, which matches EVERY row — so `gdprErase("")` redacted
+  // the whole store, and a single space (`% %`) reached every row containing
+  // one. Escaping cannot reach this: there is nothing to escape (80b3c695).
+  //
+  // This mirrors `resolvePartialId` in `db/database.ts`, which already carries
+  // `if (partialId === "") return null;` against the identical `LIKE '%'`
+  // hazard — the NON-destructive lookup had the guard and the IRREVERSIBLE
+  // erase did not.
+  //
+  // The check is placed BEFORE the SELECT, so it covers `dry_run` and the erase
+  // together. That matters: the two share one query, so a preview of an empty
+  // identifier reported "would erase <the entire store>" as a correct answer and
+  // CONFIRMED the operator in the mistake instead of warning them. Both paths
+  // are pinned by tests rather than left as an accident of ordering.
+  //
+  // `trim()` decides emptiness only. The identifier itself is matched
+  // UNTRIMMED — trimming the matched value would silently change which rows a
+  // legitimate identifier reaches.
+  if (identifier.trim() === "") {
+    throw new Error(
+      "GDPR erase requires a non-empty identifier: an empty or whitespace-only " +
+        "identifier matches every memory and would redact the entire store"
+    );
+  }
+
   const timestamp = now();
 
   // Find all memories containing the identifier in key, value, summary, tags, or metadata.
