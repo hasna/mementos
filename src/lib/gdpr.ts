@@ -6,7 +6,7 @@
  */
 
 import { SqliteAdapter as Database } from "../storage.js";
-import { getDatabase, now } from "../db/database.js";
+import { escapeLikePrefix, getDatabase, now } from "../db/database.js";
 
 export interface GdprErasureResult {
   erased_count: number;
@@ -32,11 +32,23 @@ export function gdprErase(
   const d = db || getDatabase();
   const timestamp = now();
 
-  // Find all memories containing the identifier in key, value, summary, tags, or metadata
+  // Find all memories containing the identifier in key, value, summary, tags, or metadata.
+  //
+  // The identifier is a LITERAL to be found, never a pattern. Without the
+  // `ESCAPE` clause and the escaping below, `_` and `%` arriving inside it were
+  // live wildcards: `_` matches any single character, and underscores are
+  // ordinary in email local-parts — the exact input this function takes. Erasing
+  // "first_last@example.com" redacted a second row reading "firstXlast@..."
+  // that the operator never named (dd80bbe1).
+  //
+  // `dry_run` returns from the SAME SELECT below, so the preview endorsed the
+  // over-matched set as correct and confirmed the operator in the mistake. That
+  // shared query is why escaping here fixes preview and action together, and it
+  // is pinned by a parity test rather than left as an accident of structure.
   const conditions: string[] = [
-    "(key LIKE ? OR value LIKE ? OR summary LIKE ? OR tags LIKE ? OR metadata LIKE ?)",
+    "(key LIKE ? ESCAPE '\\' OR value LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\' OR metadata LIKE ? ESCAPE '\\')",
   ];
-  const searchParam = `%${identifier}%`;
+  const searchParam = `%${escapeLikePrefix(identifier)}%`;
   const params: (string | number)[] = [searchParam, searchParam, searchParam, searchParam, searchParam];
 
   if (options.project_id) {
