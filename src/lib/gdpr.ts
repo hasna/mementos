@@ -22,6 +22,10 @@ export interface GdprErasureResult {
  * given at the UPDATE below. Nothing derived from the original key or imported
  * row id is retained.
  *
+ * The erase runs in ONE TRANSACTION and is therefore all-or-nothing: a caller
+ * never observes a partially-erased subject, and a failed attempt leaves the
+ * store fully intact so a retry starts from a clean, still-fully-matching set.
+ *
  * Preserves the audit trail (audit_log entries have hashes, not content).
  *
  * NOTE: an erased memory is no longer reachable by its original key, so a later
@@ -140,11 +144,40 @@ export function gdprErase(
   // remains personal data under GDPR — it would leave the subject recoverable
   // while the receipt claims erasure, which is this very defect wearing a
   // different form.
-  const memoryIds: string[] = [];
-  for (const row of rows) {
-    const redactedKey = `[REDACTED]:${crypto.randomUUID()}`;
-    d.run(
-      `UPDATE memories SET
+  //
+  // THE WHOLE LOOP IS ONE TRANSACTION, and that is a SEPARATE guarantee from the
+  // non-derived key above — the two close different halves of the same failure
+  // and neither substitutes for the other.
+  //
+  // The key choice governs WHETHER a write fails. The transaction governs WHAT
+  // THE STORE LOOKS LIKE WHEN ONE DOES. Written row-by-row with no transaction,
+  // any mid-loop failure aborts PART-WAY: rows before it scrubbed, rows at and
+  // after it still carrying the identifier — and because the function throws
+  // rather than returning, THERE IS NO RECEIPT for that partial state, so the
+  // caller cannot even learn how far it got. Measured on the id-derived key at
+  // 1a736623, three subject rows and one colliding bystander: attempts 1/2/3 all
+  // threw `UNIQUE constraint failed`, each leaving 2 of 3 rows still carrying the
+  // identifier. Retry could not recover, because the one row that HAD been
+  // redacted stopped matching the identifier, so every retry restarted at the
+  // same failing row — permanent denial of erasure.
+  //
+  // A non-derived key removes the specific collision that caused that, but it
+  // does not make the loop atomic: any other mid-loop failure — a constraint, a
+  // trigger, a disk error — still splits the subject, and a half-erased data
+  // subject with no receipt is exactly what an erasure API must never produce.
+  // So the atomicity is pinned by its own test that injects a mid-loop failure,
+  // rather than left to rest on collisions now being unreachable.
+  //
+  // `d.transaction` is the storage adapter's own idiom (see `lib/reflection.ts`).
+  // The receipt ids are built INSIDE and returned OUT of the closure rather than
+  // pushed into an outer array: on rollback there must be no half-filled receipt
+  // left behind describing writes that did not survive.
+  const memoryIds = d.transaction(() => {
+    const ids: string[] = [];
+    for (const row of rows) {
+      const redactedKey = `[REDACTED]:${crypto.randomUUID()}`;
+      d.run(
+        `UPDATE memories SET
         key = ?,
         value = '[REDACTED]',
         summary = NULL,
@@ -152,14 +185,16 @@ export function gdprErase(
         metadata = '{}',
         updated_at = ?
        WHERE id = ?`,
-      [redactedKey, timestamp, row.id]
-    );
+        [redactedKey, timestamp, row.id]
+      );
 
-    // Clear tags from junction table
-    d.run("DELETE FROM memory_tags WHERE memory_id = ?", [row.id]);
+      // Clear tags from junction table
+      d.run("DELETE FROM memory_tags WHERE memory_id = ?", [row.id]);
 
-    memoryIds.push(row.id);
-  }
+      ids.push(row.id);
+    }
+    return ids;
+  });
 
   return {
     erased_count: memoryIds.length,
