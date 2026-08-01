@@ -289,9 +289,10 @@ export function resolvePartialId(
     return row?.id ?? null;
   }
 
+  const escapedPrefix = partialId.replace(/[\\%_]/g, (char) => `\\${char}`);
   const rows = db
-    .query(`SELECT id FROM ${table} WHERE id LIKE ?`)
-    .all(`${partialId}%`) as { id: string }[];
+    .query(`SELECT id FROM ${table} WHERE id LIKE ? ESCAPE '\\'`)
+    .all(`${escapedPrefix}%`) as { id: string }[];
   if (rows.length === 1) {
     return rows[0]!.id;
   }

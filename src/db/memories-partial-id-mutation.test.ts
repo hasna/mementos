@@ -248,4 +248,31 @@ describe("an empty id never resolves", () => {
     );
     expect(getMemory(only.id)?.value).toBe("ORIGINAL");
   });
+
+  it("deleteMemory treats LIKE wildcard characters as literal id prefixes", () => {
+    const only = seed();
+
+    expect(deleteMemory("%")).toBe(false);
+    expect(deleteMemory("_")).toBe(false);
+    expect(getMemory(only.id)).not.toBeNull();
+  });
+
+  it("bulkDeleteMemories treats LIKE wildcard characters as literal id prefixes", () => {
+    const only = seed();
+
+    expect(bulkDeleteMemories(["%", "_"])).toBe(0);
+    expect(getMemory(only.id)).not.toBeNull();
+  });
+
+  it("updateMemory treats LIKE wildcard characters as literal id prefixes", () => {
+    const only = seed({ value: "ORIGINAL" } as Partial<CreateMemoryInput>);
+
+    expect(() => updateMemory("%", { version: only.version, value: "NEVER" })).toThrow(
+      MemoryNotFoundError,
+    );
+    expect(() => updateMemory("_", { version: only.version, value: "NEVER" })).toThrow(
+      MemoryNotFoundError,
+    );
+    expect(getMemory(only.id)?.value).toBe("ORIGINAL");
+  });
 });
