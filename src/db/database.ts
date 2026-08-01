@@ -269,6 +269,25 @@ const ALLOWED_TABLES = new Set([
   "webhook_hooks",
 ]);
 
+/**
+ * Escape the SQL `LIKE` metacharacters so a caller-supplied id prefix is matched
+ * LITERALLY rather than as a pattern.
+ *
+ * `\` is replaced FIRST, or the backslashes this function itself introduces
+ * would be escaped a second time and the pattern would match nothing.
+ *
+ * Escaping is the right remedy here rather than rejecting any prefix outside the
+ * UUID charset `[0-9a-f-]`, because the id space is not UUID-only in practice:
+ * `bulkUpsertMemories` writes a caller-supplied `id` verbatim and validates no
+ * charset, so an imported row can legitimately carry `_` or `%` in its id. A
+ * charset rejection would make exactly those rows unaddressable by prefix, which
+ * trades a wrong-row deletion for a silent inability to reach a real row.
+ * Escaping fixes the injection at the root while keeping every id addressable.
+ */
+export function escapeLikePrefix(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
 export function resolvePartialId(
   db: Database,
   table: string,
@@ -290,8 +309,8 @@ export function resolvePartialId(
   }
 
   const rows = db
-    .query(`SELECT id FROM ${table} WHERE id LIKE ?`)
-    .all(`${partialId}%`) as { id: string }[];
+    .query(`SELECT id FROM ${table} WHERE id LIKE ? ESCAPE '\\'`)
+    .all(`${escapeLikePrefix(partialId)}%`) as { id: string }[];
   if (rows.length === 1) {
     return rows[0]!.id;
   }
