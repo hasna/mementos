@@ -32,7 +32,7 @@ Required arguments are shown as `<name>` and optional arguments as `[name]`.
 | `update <id>` | Update a memory by full or partial ID | `--value`, `--importance`, `--tags`, `--summary`, `--pin`, `--unpin`, `--category`, `--scope`, `--status` |
 | `forget <keyOrId>` | Delete by ID or an unambiguous key | `--scope`, `--agent`, `--project`, `--all` |
 | `remove <nameOrId>` | Delete by name or ID; compatibility alias | `--agent`, `--scope` |
-| `recall <key>` | Recall an exact key, with fuzzy fallback | `--scope`, `--agent`, `--project` |
+| `recall <key>` (alias `get`) | Recall an exact key. Exits 1 if absent; `--fuzzy` returns the nearest record instead and exits 2 | `--scope`, `--agent`, `--project`, `--fuzzy` |
 | `show <id>` | Show the full record; partial IDs work locally | — |
 | `list` | List memories with filters | `--scope`, `--category`, `--tags`, `--importance-min`, `--pinned`, `--agent`, `--project`, `--session`, `--status`, paging/output options |
 | `search <query>` | Full-text and fuzzy search | scope/category/tag/project/agent/session filters, paging/output options, `--verbose`, `--history`, `--popular` |
@@ -68,6 +68,32 @@ second active row, or update the existing ID.
 
 `update` requires at least one field option. It obtains the current version
 before writing; callers do not pass a version on the CLI.
+
+### `recall` exit status — reading it is enough
+
+`recall` (and its alias `get`) answers "does this exact key exist", and the exit
+status alone is a sufficient answer. No caller needs to parse the output:
+
+| exit | meaning |
+| --- | --- |
+| `0` | the requested key was found, exactly — the printed record IS the one asked for |
+| `1` | nothing was returned |
+| `2` | `--fuzzy` only: a **different** record was substituted for the requested key |
+
+Without `--fuzzy`, only `0` and `1` are reachable and nothing is printed on a
+miss. With `--fuzzy`, the nearest record is returned when the exact key is
+absent, but the status is `2` rather than `0`, so a shell `if` still treats it as
+a miss while a caller that cares can tell a neighbour from an empty result. In
+`--json`, a substitution carries `fuzzy_match: true` plus `requested_key` and
+`returned_key`.
+
+Previously `recall` had no `--fuzzy` flag: the fallback was unconditional and
+exited `0` while returning a different record. Because the search only reaches
+for a neighbour when one is *near*, it failed closed on an invented key and open
+on a near miss — so negative controls built from invented strings passed while
+the command was substituting records. Scripts written against that behaviour
+should either add `--fuzzy` to keep the fallback (and accept exit `2`) or, more
+usually, keep the new default, which is what an existence check wanted anyway.
 
 ### Paging and output
 
