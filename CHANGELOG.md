@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — `recall` matches exactly; fuzzy fallback is opt-in
+## 0.14.72 — `recall` matches exactly; fuzzy fallback is opt-in
 
 **Behaviour change.** `mementos recall <key>` no longer substitutes a different
 record when the requested key is absent.
@@ -22,6 +22,27 @@ The previous behaviour failed **closed** on an invented key (exit `1`) and
 built from an invented string therefore passed while the command was
 substituting records, which is why this survived so long; the regression suite
 added here exercises the near-miss arm specifically.
+
+### Exit codes, stated plainly because callers script against them
+
+| case | before | 0.14.72 |
+| --- | --- | --- |
+| exact key present | `0` | `0` (unchanged) |
+| near-miss key, no `--fuzzy` | `0` + a different record | `1`, no record printed |
+| key absent entirely | `1` | `1` (unchanged) |
+| near-miss key, with `--fuzzy` | n/a | `2` + the neighbour |
+
+A caller that treats any non-zero as "not found" keeps working. A caller that
+relied on a bare `recall <key>` returning a neighbour must now pass `--fuzzy`.
+
+### Also carried by this release
+
+These landed on `main` after 0.14.71 was published and ship here for the first
+time; they are unrelated to the `recall` change.
+
+- Stop destroying the global config file when it is unparseable (#27).
+- Align with `@hasna/contracts` conformance (moderate) for iapp-mementos (#18).
+- Add mementos project-panel contract fixtures.
 
 ## 0.14.68 — Harden storage cloud-runtime diagnostics
 
