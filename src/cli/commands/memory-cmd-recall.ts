@@ -6,16 +6,19 @@ import { getMemoryByKey, touchMemory } from "../../db/memories.js";
 import { searchMemories } from "../../lib/search.js";
 import type { MemoryScope } from "../../types/index.js";
 import { outputJson, formatMemoryDetail, makeHandleError, type GlobalOpts } from "../helpers.js";
+import { RECALL_EXIT_FUZZY, RECALL_EXIT_NOT_FOUND } from "./memory-cmd-recall-exit.js";
 
 export function registerRecallCommand(program: Command): void {
   const handleError = makeHandleError(program);
 
   program
     .command("recall <key>")
-    .description("Recall a memory by key")
+    .alias("get")
+    .description("Recall a memory by exact key (use --fuzzy to fall back to the nearest match)")
     .option("--scope <scope>", "Scope filter")
     .option("--agent <name>", "Agent filter")
     .option("--project <path>", "Project filter")
+    .option("--fuzzy", "If the exact key is absent, return the nearest match instead (exits 2)")
     .action((key: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
@@ -29,7 +32,12 @@ export function registerRecallCommand(program: Command): void {
 
         const memory = getMemoryByKey(key, opts.scope as string | undefined, agentId, projectId);
 
-        if (memory) {
+        // Both store backends filter on `key = ?`, so this should always hold.
+        // It is asserted anyway because the whole point of this command is that
+        // a returned record IS the record that was asked for: if a backend ever
+        // loosens that filter, this degrades to an honest "not found" instead of
+        // silently reviving the substitution bug on the exact path.
+        if (memory && memory.key === key) {
           touchMemory(memory.id);
           if (globalOpts.json) {
             outputJson(memory);
@@ -39,31 +47,51 @@ export function registerRecallCommand(program: Command): void {
           return;
         }
 
-        const results = searchMemories(key, {
-          scope: opts.scope as MemoryScope | undefined,
-          agent_id: agentId,
-          project_id: projectId,
-          limit: 1,
-        });
+        if (opts.fuzzy) {
+          const results = searchMemories(key, {
+            scope: opts.scope as MemoryScope | undefined,
+            agent_id: agentId,
+            project_id: projectId,
+            limit: 1,
+          });
 
-        if (results.length > 0) {
-          const best = results[0]!;
-          touchMemory(best.memory.id);
-          if (globalOpts.json) {
-            outputJson({ fuzzy_match: true, score: best.score, match_type: best.match_type, memory: best.memory });
-          } else {
-            console.log(chalk.yellow(`No exact match, showing best result (score: ${best.score.toFixed(2)}, match: ${best.match_type}):`));
-            console.log(formatMemoryDetail(best.memory));
+          if (results.length > 0) {
+            const best = results[0]!;
+            touchMemory(best.memory.id);
+            if (globalOpts.json) {
+              outputJson({
+                fuzzy_match: true,
+                requested_key: key,
+                returned_key: best.memory.key,
+                score: best.score,
+                match_type: best.match_type,
+                memory: best.memory,
+              });
+            } else {
+              console.error(
+                chalk.yellow(
+                  `No memory with key "${key}". Showing the nearest match "${best.memory.key}" ` +
+                    `(score: ${best.score.toFixed(2)}, match: ${best.match_type}) — this is a DIFFERENT record.`
+                )
+              );
+              console.log(formatMemoryDetail(best.memory));
+            }
+            // A substituted record is not the record that was asked for, so the
+            // exit status must not say "found".
+            process.exit(RECALL_EXIT_FUZZY);
           }
-          return;
         }
+
+        const message = opts.fuzzy
+          ? `No memory found for key: ${key}`
+          : `No memory found for key: ${key} (exact match; pass --fuzzy to return the nearest record instead)`;
 
         if (globalOpts.json) {
-          outputJson({ error: `No memory found for key: ${key}` });
+          outputJson({ error: message, requested_key: key });
         } else {
-          console.error(chalk.yellow(`No memory found for key: ${key}`));
+          console.error(chalk.yellow(message));
         }
-        process.exit(1);
+        process.exit(RECALL_EXIT_NOT_FOUND);
       } catch (e) {
         handleError(e);
       }

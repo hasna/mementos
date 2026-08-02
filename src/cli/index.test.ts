@@ -8,6 +8,7 @@ import {
   blankLlmProviderEnv,
   isolatedStoreEnv,
 } from "../test-support/store-isolation.js";
+import { RECALL_EXIT_FUZZY, RECALL_EXIT_NOT_FOUND } from "./commands/memory-cmd-recall-exit.js";
 
 // Use a temp file DB so all subprocess calls share the same database
 const DB_PATH = join(tmpdir(), `mementos-cli-test-${Date.now()}.db`);
@@ -331,6 +332,120 @@ describe("CLI", () => {
     const output = (stdout + stderr).toLowerCase();
     expect(output).toContain("no memory found");
   });
+});
+
+// ===========================================================================
+// `recall` answers "does key X exist", and callers read the EXIT CODE.
+//
+// The defect these tests exist for (todos 961d1ebc): recall fell back to a
+// fuzzy search and returned a DIFFERENT record at exit 0. Its asymmetry is why
+// it survived review for so long, and it dictates the shape of this block:
+//
+//   far key never saved   -> exit 1   (fails CLOSED — the path that works)
+//   NEAR-MISS never saved -> exit 0   (fails OPEN — returns someone else's row)
+//
+// Every negative control anyone wrote used an invented string, which is far
+// from everything and therefore exercised only the working path. Three seats
+// ran that control on the same day and all three passed while the instrument
+// was broken. So the NEAR-MISS arm below is the load-bearing one: a suite that
+// tests only the far key reproduces the original blind spot exactly.
+// ===========================================================================
+describe("recall key identity (todos 961d1ebc)", () => {
+  const STEM = "recall-identity-neighbour-record-with-a-long-distinctive-key";
+  const NEAR_MISS = `${STEM}-XYZ`;
+  const FAR = "zzq-recall-identity-far-key-4471";
+
+  beforeAll(async () => {
+    const { exitCode } = await runCli("save", STEM, "the neighbour record");
+    expect(exitCode).toBe(0);
+  });
+
+  test("a near-miss key IS near: --fuzzy substitutes the neighbour for it", async () => {
+    // Positive control for the arms below. Without this, a near-miss that the
+    // search engine considers far would make the exit-code assertions pass for
+    // the wrong reason — they would be testing the far-key path under a
+    // near-miss name, which is the very mistake this block exists to prevent.
+    const { stdout, stderr, exitCode } = await runCli("recall", NEAR_MISS, "--fuzzy");
+    expect(stdout + stderr).toContain(STEM);
+    expect(exitCode).not.toBe(RECALL_EXIT_NOT_FOUND);
+  });
+
+  test("exact key present: exit 0 and the returned key is the requested key", async () => {
+    const { stdout, exitCode } = await runCli("--json", "recall", STEM);
+    expect(exitCode).toBe(0);
+    expect(JSON.parse(stdout).key).toBe(STEM);
+  });
+
+  test("NEAR-MISS key never saved: exit is non-zero and NO record is returned", async () => {
+    const { stdout, stderr, exitCode } = await runCli("recall", NEAR_MISS);
+    expect(exitCode).not.toBe(0);
+    // Not merely "an error was printed": the neighbour's key must not appear at
+    // all. The original defect printed a full, well-formed record.
+    expect(stdout).not.toContain(STEM);
+    expect(stderr.toLowerCase()).toContain("no memory found");
+  });
+
+  test("NEAR-MISS key never saved, --json: error payload, no memory, non-zero exit", async () => {
+    const { stdout, exitCode } = await runCli("--json", "recall", NEAR_MISS);
+    expect(exitCode).not.toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.error).toBeDefined();
+    expect(parsed.key).toBeUndefined();
+    expect(parsed.requested_key).toBe(NEAR_MISS);
+  });
+
+  test("far key never saved: still exit non-zero (no regression)", async () => {
+    const { stdout, exitCode } = await runCli("recall", FAR);
+    expect(exitCode).not.toBe(0);
+    expect(stdout).not.toContain(STEM);
+  });
+
+  test("--fuzzy returns the neighbour AND signals that it substituted", async () => {
+    const { stdout, stderr, exitCode } = await runCli("recall", NEAR_MISS, "--fuzzy");
+    // The record is still returned — the opt-in behaviour is preserved.
+    expect(stdout).toContain(STEM);
+    // ...but the exit code must not claim the requested key was found.
+    expect(exitCode).toBe(RECALL_EXIT_FUZZY);
+    expect(exitCode).not.toBe(0);
+    // The warning names both keys, so a human reading the output can see the swap.
+    expect(stderr).toContain(NEAR_MISS);
+    expect(stderr).toContain(STEM);
+  });
+
+  test("--fuzzy --json marks the substitution and carries both keys", async () => {
+    const { stdout, exitCode } = await runCli("--json", "recall", NEAR_MISS, "--fuzzy");
+    expect(exitCode).toBe(RECALL_EXIT_FUZZY);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.fuzzy_match).toBe(true);
+    expect(parsed.requested_key).toBe(NEAR_MISS);
+    expect(parsed.returned_key).toBe(STEM);
+    expect(parsed.memory.key).toBe(STEM);
+  });
+
+  test("--fuzzy on an exact hit is a plain hit: exit 0, no substitution marker", async () => {
+    const { stdout, exitCode } = await runCli("--json", "recall", STEM, "--fuzzy");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.key).toBe(STEM);
+    expect(parsed.fuzzy_match).toBeUndefined();
+  });
+
+  // `mementos get` did not exist and exited 1 with "unknown command" — a FALSE
+  // ABSENT that is byte-identical, to a caller reading only rc, to a genuine
+  // miss. That was the other half of the trap, so `get` is now an exact alias.
+  test("get is an exact alias: hit exits 0, near-miss exits non-zero", async () => {
+    const hit = await runCli("--json", "get", STEM);
+    expect(hit.exitCode).toBe(0);
+    expect(JSON.parse(hit.stdout).key).toBe(STEM);
+
+    const miss = await runCli("get", NEAR_MISS);
+    expect(miss.exitCode).not.toBe(0);
+    expect(miss.stdout).not.toContain(STEM);
+    expect((miss.stdout + miss.stderr).toLowerCase()).not.toContain("unknown command");
+  });
+});
+
+describe("cli memory commands (continued)", () => {
 
   test("list shows memories", async () => {
     const { stdout } = await runCli("list");

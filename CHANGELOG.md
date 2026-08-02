@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased — `recall` matches exactly; fuzzy fallback is opt-in
+
+**Behaviour change.** `mementos recall <key>` no longer substitutes a different
+record when the requested key is absent.
+
+- `recall` now matches the exact key and exits `1` when it is missing, printing
+  no record at all. The fuzzy fallback moves behind `--fuzzy`, which returns the
+  nearest record and exits `2` — distinct from `1`, so a shell `if` reads it as a
+  miss while a caller that cares can still tell a neighbour from an empty result.
+  `--json` substitutions carry `fuzzy_match`, `requested_key` and `returned_key`.
+- `get` is registered as an alias of `recall`. It previously did not exist and
+  exited `1` with `unknown command`, which is indistinguishable from a genuine
+  miss to anything reading only the exit status.
+- The exact path now asserts that the returned record's key equals the requested
+  key before treating it as a hit, so the guarantee holds in the command rather
+  than depending on both store backends keeping an exact filter.
+
+The previous behaviour failed **closed** on an invented key (exit `1`) and
+**open** on a near miss (exit `0`, different record). Every negative control
+built from an invented string therefore passed while the command was
+substituting records, which is why this survived so long; the regression suite
+added here exercises the near-miss arm specifically.
+
 ## 0.14.68 — Harden storage cloud-runtime diagnostics
 
 Adds an explicit, fail-closed cloud-runtime status contract and safe migration
