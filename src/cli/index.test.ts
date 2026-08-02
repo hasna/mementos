@@ -470,7 +470,12 @@ describe("cli memory commands (continued)", () => {
     const parsed = JSON.parse(jsonOut);
     expect(Array.isArray(parsed)).toBe(true);
     expect(parsed[0].value).toContain("UNTRUNCATED_SENTINEL");
-  });
+    // 27 sequential CLI subprocess spawns (25 saves + 2 reads). Measured 19.00s
+    // in isolation on station01, so the suite-wide --timeout=10000 is undersized
+    // by construction, not flakily: this test cannot pass at that budget here.
+    // Nothing about the assertions is relaxed; only the time allowance matches
+    // what the test actually costs.
+  }, 60000);
 
   test("list --json outputs parseable JSON", async () => {
     const { stdout } = await runCli("list", "--json");
@@ -519,7 +524,9 @@ describe("cli memory commands (continued)", () => {
     const verbose = await runCli("search", needle, "--verbose", "--limit", "1");
     expect(verbose.exitCode).toBe(0);
     expect(verbose.stdout).toContain("value:");
-  });
+    // 14 sequential CLI subprocess spawns (12 saves + 2 reads). Measured 11.22s
+    // in isolation on station01, likewise over the 10s suite budget.
+  }, 60000);
 
   test("stats shows counts", async () => {
     const { stdout, exitCode } = await runCli("stats");
