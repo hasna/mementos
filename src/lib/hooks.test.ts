@@ -1,3 +1,5 @@
+process.env["MEMENTOS_DB_PATH"] = ":memory:";
+
 /**
  * Hooks system tests.
  * Tests: HookRegistry, WebhookHooks DB layer, integration with entity/relation/session lifecycle.
