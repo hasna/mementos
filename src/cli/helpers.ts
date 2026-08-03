@@ -87,9 +87,13 @@ const entityTypeColor: Record<string, (s: string) => string> = {
   organization: chalk.white,
 };
 
-export function colorEntityType(type: string): string {
+// `suffix` lets callers pull trailing punctuation (e.g. a ":") INSIDE the
+// styled span while still selecting the colour from the RAW type — see todos
+// fa88836c. The colour lookup must not see the punctuation, or every suffixed
+// call would fall through to chalk.white.
+export function colorEntityType(type: string, suffix = ""): string {
   const colorFn = entityTypeColor[type] || chalk.white;
-  return colorFn(type);
+  return colorFn(`${type}${suffix}`);
 }
 
 export function resolveEntityArg(nameOrId: string, type?: EntityType): Entity {

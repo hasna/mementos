@@ -167,6 +167,11 @@ describe("colon-after-styled-value sites (todos fa88836c)", () => {
     expect(exitCode).toBe(0);
     expect(rawStdout).toContain("\x1b[");
     expect(rawStdout).toContain("depends_on:");
+    // Site 2b: src/cli/commands/graph.ts:167 — the entity-type row SIX LINES
+    // above, printed by this same command, had the identical defect via
+    // colorEntityType() (helpers.ts:90), which returns a chalk-styled string.
+    // The seeded entities above are created with --type tool.
+    expect(rawStdout).toContain("tool:");
   });
 
   // Site 3: src/cli/commands/memory-cmd-chain.ts:33 — `${chalk.bold(m.key)}: ${value}`
