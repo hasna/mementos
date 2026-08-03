@@ -111,7 +111,7 @@ export function registerToolsCommand(program: Command): void {
         if (stats.common_errors.length > 0) {
           console.log(chalk.bold("\n  Common errors:"));
           for (const err of stats.common_errors) {
-            console.log(`    ${chalk.red(err.error_type)}: ${err.count} times`);
+            console.log(`    ${chalk.red(`${err.error_type}:`)} ${err.count} times`);
           }
         }
 

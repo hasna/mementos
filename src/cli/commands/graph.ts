@@ -170,7 +170,7 @@ export function registerGraphCommands(program: Command): void {
         console.log();
         console.log(chalk.bold(`Relations: ${stats.relations.total}`));
         for (const r of relationRows) {
-          console.log(`  ${chalk.cyan(r.relation_type)}: ${r.count}`);
+          console.log(`  ${chalk.cyan(`${r.relation_type}:`)} ${r.count}`);
         }
 
         console.log();
