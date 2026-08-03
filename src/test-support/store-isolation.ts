@@ -114,10 +114,17 @@ function envWithoutStoreSelectors(): Record<string, string> {
 }
 
 export interface StubApiEnvOptions {
-  /** Pin the (non-authoritative) local SQLite path too, for belt and braces. */
-  dbPath?: string;
   /** Stub bearer token. Never a real credential — the stub does not check it. */
   apiKey?: string;
+
+  // REMOVED 2026-08-03: `dbPath`, documented as "pin the (non-authoritative)
+  // local SQLite path too, for belt and braces". It had exactly one caller,
+  // which passed nothing. Since precedence 1 landed, a local path is no longer
+  // non-authoritative — it OUTRANKS the API selectors — so this option would
+  // have silently disabled the very API mode this helper exists to create, and
+  // pointed the suite at a SQLite file instead of its stub server. Belt and
+  // braces that cuts the belt. Deleted rather than fixed because nothing uses
+  // it and a live option is a live hazard.
 }
 
 /**
@@ -133,11 +140,43 @@ export interface StubApiEnvOptions {
  */
 export function stubApiEnv(baseUrl: string, options: StubApiEnvOptions = {}): Record<string, string> {
   const env = envWithoutStoreSelectors();
-  if (options.dbPath) {
-    for (const key of DB_PATH_ENV_KEYS) env[key] = options.dbPath;
-  }
+  // An inherited DB_PATH would outrank the stub credentials and send the suite
+  // to a SQLite file instead of the stub server (precedence 1), so drop it.
+  for (const key of DB_PATH_ENV_KEYS) delete env[key];
   env[API_URL_ENV_KEYS[0]] = baseUrl;
   env[API_KEY_ENV_KEYS[0]] = options.apiKey ?? "stub-key-not-a-secret";
+  return env;
+}
+
+/**
+ * Build a child env that DOES resolve to the cloud API — the negative case the
+ * isolation guards are proved against.
+ *
+ * This exists because of the 2026-08-03 precedence-1 fix. Before it, a cloud
+ * case could be built by taking any env and adding an API url+key, and several
+ * tests did exactly that on top of {@link isolatedStoreEnv}. An explicit
+ * `MEMENTOS_DB_PATH` now DEFEATS the API selectors (see getApiConfig in
+ * src/db/api-mode.ts), so that recipe silently produces a LOCAL backend — which
+ * would leave the isolation guards' positive controls unable to observe the bad
+ * state they exist to detect, and `assertLocalStoreBackend`'s own self-test
+ * unable to fail. Both would still be green.
+ *
+ * So the DB_PATH keys are removed here explicitly, and that removal is the
+ * load-bearing line rather than an afterthought: it is the only way to reach the
+ * cloud backend now. They are NOT in STORE_SELECTOR_ENV_KEYS because that set
+ * means "moves the store OFF local SQLite", and DB_PATH does the opposite.
+ *
+ * @param baseUrl  point this at a closed loopback port, never a real endpoint
+ * @param apiKey   never a real credential
+ */
+export function cloudSelectingEnv(
+  baseUrl: string,
+  apiKey = "not-a-real-key",
+): Record<string, string> {
+  const env = envWithoutStoreSelectors();
+  for (const key of DB_PATH_ENV_KEYS) delete env[key];
+  env[API_URL_ENV_KEYS[0]] = baseUrl;
+  env[API_KEY_ENV_KEYS[0]] = apiKey;
   return env;
 }
 
