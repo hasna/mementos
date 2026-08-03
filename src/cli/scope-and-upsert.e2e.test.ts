@@ -244,6 +244,46 @@ describe("scope persistence and save fork (e2e)", () => {
     expect(await countActiveRowsWithKey("fork-explicit")).toBe(2);
   });
 
+  // ── HC-00149's other half: `save` never warned about the -s misroute ──────
+
+  test("save warns when --session is handed a scope word", async () => {
+    const w = await save("session-scope-word", "v", "--session", "shared");
+    // The write is legal, so this is advice and must NOT change the exit code.
+    expect(w.exitCode).toBe(0);
+    expect(`${w.stdout}${w.stderr}`).toContain("--scope");
+
+    // And it really did misroute: session carries the scope word, scope did not
+    // move. Asserting the warning text alone would not prove the misroute.
+    const stored = await show(w.id);
+    expect(stored.session_id).toBe("shared");
+    expect(stored.scope).toBe("private");
+  });
+
+  test("save stays silent when --session carries an ordinary session id", async () => {
+    // NEGATIVE CONTROL, deliberately a NEAR-MISS rather than an absurd string:
+    // a realistic session id must not trip the warning. Without this the test
+    // above could pass on a warning that fires unconditionally, which would
+    // train every reader to ignore it.
+    const w = await save("session-ordinary", "v", "--session", "sess-2026-08-03-a1");
+    expect(w.exitCode).toBe(0);
+    expect(`${w.stdout}${w.stderr}`).not.toContain("--scope");
+  });
+
+  test("the fork refusal names agent, the bucket column it used to omit", async () => {
+    // agent is one of the four columns the bucket compares, but the target
+    // descriptor listed only three. When agent is the sole difference the
+    // refusal printed matching scope/project/session on both lines and looked
+    // self-contradictory.
+    const first = await save("fork-descriptor", "v1", "--scope", "private");
+    expect(first.exitCode).toBe(0);
+
+    const second = await save("fork-descriptor", "v2", "--scope", "shared");
+    expect(second.exitCode).toBe(1);
+    const out = `${second.stdout}${second.stderr}`;
+    expect(out).toContain("scope/project/session/agent");
+    expect(out).toContain("agent=none)");
+  });
+
   test("save reports whether it created a new row or updated an existing one", async () => {
     const first = await runCli("save", "created-vs-updated", "v1");
     expect(first.exitCode).toBe(0);
