@@ -181,6 +181,34 @@ export function registerCrudCommands(program: Command): void {
           if (project) input.project_id = project.id;
         }
 
+        // HC-00149's other half. `update` already refuses a no-op and points at
+        // the shadowed short flag; `save` never did, so `save k v -s shared`
+        // stayed silently wrong — it writes session_id="shared" and leaves scope
+        // at its default, which is the opposite of what the author asked for.
+        //
+        // Measured on the live fleet store 2026-08-03: 96 of 1142 active rows
+        // carry a session_id that is literally a scope word (87 "shared", 7
+        // "private", 2 "global"). Nobody has ever named a session "shared".
+        //
+        // Warn rather than throw: the write itself is legal, `--session shared`
+        // is not forgeable as an error, and 80 skill-file call sites across six
+        // skill homes currently depend on it succeeding. Failing here would
+        // convert a documentation bug into a fleet outage. Advice on stderr
+        // keeps stdout clean for `--json` consumers.
+        if (
+          typeof input.session_id === "string" &&
+          (MEMORY_SCOPES as readonly string[]).includes(input.session_id)
+        ) {
+          console.error(
+            chalk.yellow(
+              `Warning: --session "${input.session_id}" looks like a scope, not a session id. ` +
+                `Note that -s is the global --session, not --scope; this save is writing ` +
+                `session_id="${input.session_id}" and leaving scope at "${input.scope ?? "private"}". ` +
+                `If you meant the scope, pass --scope ${input.session_id} (long form only).`,
+            ),
+          );
+        }
+
         // `save` is documented as "create or upsert", but the upsert matches on
         // the FIVE-column tuple (key, scope, agent_id, project_id, session_id)
         // — see createMemory's merge branch in src/db/memories.ts. So the same
@@ -212,14 +240,20 @@ export function registerCrudCommands(program: Command): void {
             const rows = sameKey
               .map((m) => `  ${m.id.slice(0, 8)}  scope=${m.scope}  project=${m.project_id ?? "none"}  session=${m.session_id ?? "none"}  agent=${m.agent_id ?? "none"}`)
               .join("\n");
+            // The bucket is FOUR columns (scope, agent, project, session) but
+            // this descriptor listed three, omitting agent. When agent is the
+            // only column that differs — two agents saving one key, which is
+            // the common fleet case — the target line and the existing-row line
+            // printed identical scope/project/session and the refusal read as
+            // self-contradictory. Name every column that is actually compared.
             throw new Error(
               `Refusing to fork key "${key}": ${sameKey.length} active memor${sameKey.length === 1 ? "y" : "ies"} ` +
                 `already ${sameKey.length === 1 ? "uses" : "use"} it, ` +
-                `but none matches the scope/project/session this save targets ` +
-                `(scope=${input.scope ?? "private"}, project=${input.project_id ?? "none"}, session=${input.session_id ?? "none"}).\n` +
+                `but none matches the scope/project/session/agent this save targets ` +
+                `(scope=${input.scope ?? "private"}, project=${input.project_id ?? "none"}, session=${input.session_id ?? "none"}, agent=${input.agent_id ?? "none"}).\n` +
                 `${rows}\n` +
                 `Saving would create a second active row under the same key. Either target the existing row ` +
-                `(match its scope/project/session flags, or use \`mementos update <id>\`), or pass \`--dedupe create\` ` +
+                `(match its scope/project/session/agent flags, or use \`mementos update <id>\`), or pass \`--dedupe create\` ` +
                 `to fork deliberately.`,
             );
           }
