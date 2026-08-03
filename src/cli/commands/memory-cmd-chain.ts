@@ -30,7 +30,7 @@ export function registerChainCommand(program: Command): void {
           const m = memories[i]!;
           const order = m.sequence_order !== null && m.sequence_order !== undefined ? m.sequence_order : i + 1;
           const value = m.value.length > 120 ? m.value.slice(0, 120) + "..." : m.value;
-          console.log(`  ${chalk.cyan(String(order) + ".")} ${chalk.bold(m.key)}: ${value}`);
+          console.log(`  ${chalk.cyan(String(order) + ".")} ${chalk.bold(`${m.key}:`)} ${value}`);
         }
       } catch (e) {
         handleError(e);
