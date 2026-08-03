@@ -1,5 +1,52 @@
 # Changelog
 
+## 0.14.73 — `save` refuses an unresolvable `--agent`/`--project`
+
+**Behaviour change.** `mementos save` no longer discards a scoping flag it
+cannot resolve.
+
+- `save` now exits `1` when `--agent` or `--project` names something that does
+  not resolve, instead of dropping the flag and writing at rc=0. Both flags are
+  fixed at the same site, because repairing one leaves the mechanism live on the
+  other. A row owned by a real agent was already protected by the existing fork
+  guard; the damage was confined to the **unowned** bucket — 826 of 1185 active
+  rows, 69.7% — where the save silently overwrote and misattributed. (#43)
+- `save` now **warns** when the global `--session` flag receives a scope word
+  (`shared`/`private`/`global`) — the guard `update` already had. Warn rather
+  than throw, deliberately: roughly 80 live call sites depend on rc=0 today, and
+  throwing would convert a documentation bug into a fleet outage. Those sites
+  write `session_id="shared"` with scope left private and record the opposite of
+  what they claim; fleet-wide, 96 of 1142 active rows carry a session_id that is
+  literally a scope word. (#42)
+- The fork-refusal message compared four columns and printed three, omitting
+  `agent`. Where agent was the sole difference the message was self-contradictory
+  — identical scope, project and session on both sides, and a refusal anyway. It
+  now names the column that actually differs. (#42)
+
+### Upgrade note
+
+`--agent` and `--project` change from fail-open to fail-closed, so a caller
+passing an unregistered name now fails loudly where it previously succeeded and
+misfiled. Measured before merge: zero of 74–85 `mementos save` call sites across
+the skill homes pass either flag. Seats passing one by hand will be told to run
+`mementos register-agent <name>` — 347 of 500 live conversations identities are
+absent from the mementos registry.
+
+Already-damaged rows are **unrecoverable**: `createMemory` writes the same value
+to both `agent_id` and `created_by_agent`, so an overwritten row is
+indistinguishable from a legitimately unowned one.
+
+### Also carried by this release
+
+- Test-only: the two subprocess-heavy CLI tests in `src/cli/index.test.ts` now
+  carry an explicit 60000ms budget. Each spawns a CLI subprocess per assertion
+  setup step (27 and 14 spawns) and costs 19.00s and 11.22s against the suite's
+  10s default, so `list compact` failed deterministically on a contended box.
+  Read as flakiness for a long time because a timed-out test reports the
+  **budget**, not the duration. No assertion is relaxed. This also unblocked
+  `npm publish`, whose `prepublishOnly` runs the same suite — two publish
+  attempts of 0.14.72 aborted on that one test. (#41)
+
 ## 0.14.72 — `recall` matches exactly; fuzzy fallback is opt-in
 
 **Behaviour change.** `mementos recall <key>` no longer substitutes a different
