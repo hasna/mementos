@@ -6,6 +6,7 @@ import { unlinkSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { assertLocalStoreBackend, isolatedStoreEnv } from "../test-support/store-isolation.js";
+import { stripAnsi } from "../test-support/strip-ansi.js";
 
 const DB_PATH = join(tmpdir(), `mementos-doctor-test-${Date.now()}.db`);
 const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
@@ -40,7 +41,13 @@ async function runCli(
     new Response(proc.stderr).text(),
   ]);
   const exitCode = await proc.exited;
-  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode };
+  // Strip ANSI colour codes before the caller ever sees this output: the
+  // assertions in this suite test CONTENT (does the doctor report a version,
+  // a file size, ...), not styling. Without this, whether the suite passes
+  // depends on whether the calling shell exports FORCE_COLOR — see the
+  // "check labels survive ANSI colour codes" regression test below for the
+  // mechanism (todos 8f39d670).
+  return { stdout: stripAnsi(stdout.trim()), stderr: stripAnsi(stderr.trim()), exitCode };
 }
 
 describe("doctor command", () => {
@@ -102,5 +109,35 @@ describe("doctor command", () => {
   test("appears in --help output", async () => {
     const { stdout } = await runCli("--help");
     expect(stdout).toContain("doctor");
+  });
+
+  // Regression for todos 8f39d670: `doctor` bolds each check LABEL with
+  // `chalk.bold(name)` and appends the literal ": " afterwards — see
+  // src/cli/commands/system-doctor.ts. chalk's bold reset code lands between
+  // the label and the colon, so `Version\x1b[22m: 0.14.68` never contains the
+  // literal substring "Version:". Any agent whose shell exports FORCE_COLOR
+  // (or any other TTY-detection path that resolves colour on) sees this
+  // suite fail even though `doctor`'s content is correct — a suite that is
+  // only green in some shells is not a suite anyone can trust. Force colour
+  // ON here, deliberately, so the suite actually exercises the coloured
+  // rendering path rather than merely disabling the failure mode.
+  test("check labels survive ANSI colour codes (env-coupling regression)", async () => {
+    const proc = Bun.spawn(["bun", "run", CLI_PATH, "doctor"], {
+      env: { ...CLI_ENV, FORCE_COLOR: "3" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const rawStdout = (await new Response(proc.stdout).text()).trim();
+    await proc.exited;
+
+    // Sanity: this run must actually BE coloured, or the assertions below
+    // would pass vacuously regardless of whether stripAnsi works at all.
+    expect(rawStdout).toContain("\x1b[1m");
+
+    const stdout = stripAnsi(rawStdout);
+    expect(stdout).toContain("Version:");
+    expect(stdout).toContain("DB file size:");
+    expect(stdout).toContain("Orphaned tags:");
+    expect(stdout).toMatch(/Version:\s+\d+\.\d+\.\d+/);
   });
 });
