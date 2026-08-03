@@ -149,11 +149,47 @@ export function registerCrudCommands(program: Command): void {
             ? templateDefaults.tags
             : undefined;
 
-        // Resolve agent name/partial-id → actual agent ID (avoids FK violation)
+        // Resolve agent name/partial-id → actual agent ID (avoids FK violation).
+        //
+        // An unresolvable name is REFUSED rather than dropped. Dropping it left
+        // `agent_id` undefined, and the upsert bucket collapses "undefined" and
+        // "no --agent at all" onto the same value — `?? ""` in the fork guard
+        // below, `COALESCE(agent_id,'')` in createMemory. So `--agent <typo>`
+        // silently retargeted the write onto the UNOWNED row for this key and
+        // upserted it, reporting rc=0 "Updated".
+        //
+        // Two things made that worth a throw rather than a warning:
+        //   1. It is destructive. Measured on the fleet store 2026-08-03, 812 of
+        //      1169 active rows (69.5%) carry a NULL agent_id, so the unowned
+        //      bucket is the majority of the store, not an empty corner.
+        //   2. It is not recoverable afterwards. `agent_id` and
+        //      `created_by_agent` are both NULL whether the caller passed a bogus
+        //      agent or passed none, so an overwritten row is indistinguishable
+        //      from a legitimately unowned one.
+        //
+        // The sibling `--session` guard added in #42 only WARNS, and that remains
+        // right for it: `--session shared` writes a legal row and is a
+        // documentation bug, whereas this writes to a bucket the caller did not
+        // name and destroys what was there. The blast radius was measured before
+        // choosing: across four skill homes there are 74 `mementos save` call
+        // sites and ZERO of them pass `--agent` or `--project`.
+        //
+        // A row owned by a REAL other agent was never at risk here — its bucket
+        // differs, so the fork guard below already refused it.
         let resolvedAgentId: string | undefined;
         if (globalOpts.agent) {
           const ag = getAgent(globalOpts.agent);
-          resolvedAgentId = ag?.id; // undefined if agent not found — don't store unresolvable IDs
+          if (!ag) {
+            throw new Error(
+              `Unknown agent "${globalOpts.agent}": no registered agent matches that name or id.\n` +
+                `Refusing to save. Dropping the flag would write this memory to the unowned ` +
+                `(no-agent) row for key "${key}", overwriting whatever is there under an owner ` +
+                `you did not name.\n` +
+                `Register the agent first:  mementos register-agent ${globalOpts.agent}\n` +
+                `Or omit --agent to write to the unowned row deliberately.`,
+            );
+          }
+          resolvedAgentId = ag.id;
         }
 
         const input: CreateMemoryInput = {
@@ -175,10 +211,26 @@ export function registerCrudCommands(program: Command): void {
           session_id: globalOpts.session,
         };
 
-        // Resolve project from --project path
+        // Resolve project from --project path. Refused when unresolvable, for
+        // exactly the reason given for --agent above: project_id is another
+        // column of the same upsert bucket, so a path that is not a registered
+        // project silently retargeted the write onto the no-project row and
+        // upserted it. Same defect, same function, same consequence — fixing one
+        // and leaving the other would be fixing the instance instead of the
+        // mechanism.
         if (globalOpts.project) {
-          const project = getProject(resolve(globalOpts.project));
-          if (project) input.project_id = project.id;
+          const projectPath = resolve(globalOpts.project);
+          const project = getProject(projectPath);
+          if (!project) {
+            throw new Error(
+              `Unknown project "${projectPath}": no registered project matches that path.\n` +
+                `Refusing to save. Dropping the flag would write this memory to the no-project ` +
+                `row for key "${key}", overwriting whatever is there in a scope you did not name.\n` +
+                `Register it first:  mementos projects --add --path ${projectPath} --name <name>\n` +
+                `Or omit --project to write outside any project deliberately.`,
+            );
+          }
+          input.project_id = project.id;
         }
 
         // HC-00149's other half. `update` already refuses a no-op and points at
