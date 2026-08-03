@@ -87,9 +87,16 @@ const entityTypeColor: Record<string, (s: string) => string> = {
   organization: chalk.white,
 };
 
-export function colorEntityType(type: string): string {
+// `suffix` (e.g. ":") is appended to the RENDERED text only, never to the
+// colour-lookup key — `entityTypeColor` is keyed on bare type names
+// ("tool", "person", ...), so passing `${type}${suffix}` as the lookup key
+// itself would miss the map for every call and silently fall back to
+// chalk.white, losing the per-type colour. Defaults to "" so every existing
+// call site (which never needs a trailing colon inside the styled span)
+// keeps its exact prior behaviour.
+export function colorEntityType(type: string, suffix = ""): string {
   const colorFn = entityTypeColor[type] || chalk.white;
-  return colorFn(type);
+  return colorFn(`${type}${suffix}`);
 }
 
 export function resolveEntityArg(nameOrId: string, type?: EntityType): Entity {
