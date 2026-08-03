@@ -1,25 +1,49 @@
-// Regression coverage for todos fa88836c: three CLI display sites append a
+// Regression coverage for todos fa88836c: CLI display sites append a
 // literal ":" AFTER a chalk-styled DYNAMIC value instead of INSIDE the styled
 // span:
 //
 //   src/cli/commands/system-tools.ts:114      `${chalk.red(err.error_type)}: ${err.count} times`
-//   src/cli/commands/graph.ts:173              `${chalk.cyan(r.relation_type)}: ${r.count}`
+//   src/cli/commands/graph.ts:167              `${colorEntityType(r.type)}: ${r.count}`           (entity rows, via helper)
+//   src/cli/commands/graph.ts:173              `${chalk.cyan(r.relation_type)}: ${r.count}`        (relation rows)
 //   src/cli/commands/memory-cmd-chain.ts:33    `${chalk.cyan(String(order) + ".")} ${chalk.bold(m.key)}: ${value}`
 //
-// This mirrors the ALREADY-FIXED defect in system-doctor.ts (todos 8f39d670,
-// PR #46, 7615c27): chalk's SGR reset code lands BETWEEN the styled text and
-// the literal ":" appended after the closing `)`, so a plain substring match
-// for "<value>:" fails whenever the child process resolves colour on
-// (FORCE_COLOR set). See src/test-support/strip-ansi.ts for the mechanism.
+// The mechanism is the one behind system-doctor.ts's OWN test regression
+// (todos 8f39d670, PR #46, 7615c27): chalk's SGR reset code lands BETWEEN the
+// styled text and a literal ":" appended after the closing `)`, so a plain
+// substring match for "<value>:" fails whenever the child process resolves
+// colour on (FORCE_COLOR set). IMPORTANT — PR #46 did NOT fix this at the
+// SOURCE: system-doctor.ts still renders `chalk.bold(check.name)` followed by
+// a bare ": " today, unchanged. What #46 changed was doctor.test.ts, adding
+// stripAnsi() so the TEST asserts against content rather than styling — a
+// deliberate and correct choice there, because doctor's label case has no
+// per-value colour semantics to preserve. This suite's sites are different:
+// see below. See src/test-support/strip-ansi.ts for the stripping mechanism
+// itself.
 //
-// UNLIKE the doctor case, these three style a DYNAMIC VALUE (an error type, a
-// relation type, a memory key) rather than a fixed LABEL. Fixing the source
-// so the colon sits inside the styled span makes the colon itself take the
-// dynamic value's colour — a small, real, user-visible change. This suite
-// exists to (a) prove per-site whether the substring actually breaks under
-// colour, and (b) pin the CHOSEN behaviour (colon-inside-span) as a
-// regression once a fix lands, exactly as doctor.test.ts's colour regression
-// test does for the label case.
+// UNLIKE the doctor case, these sites style a DYNAMIC VALUE (an error type,
+// an entity type, a relation type, a memory key) rather than a fixed LABEL,
+// and two of them (entity type, relation type) carry PER-VALUE colour that a
+// test-side stripAnsi fix would not touch or break — which is why this suite
+// fixes the SOURCE instead of only adjusting the test, unlike #46. Fixing the
+// source so the colon sits inside the styled span makes the colon itself
+// take the dynamic value's colour — a small, real, user-visible change. This
+// suite exists to (a) prove per-site whether the substring actually breaks
+// under colour, and (b) pin the CHOSEN behaviour (colon-inside-span) as a
+// regression once a fix lands.
+//
+// The entity-type site (graph.ts:167) goes through a HELPER,
+// `colorEntityType(type: string)`, rather than a direct `chalk.<colour>()`
+// call, and the helper uses `type` as BOTH the colour-lookup key (against
+// `entityTypeColor`, keyed on bare type names like "tool") AND the rendered
+// text. Passing `${r.type}:` as the helper's `type` argument would break the
+// colour lookup (the map has no ":"-suffixed keys, so it would silently fall
+// back to chalk.white for every entity type) — so the fix here is a
+// backward-compatible optional `suffix` parameter on the helper itself,
+// keeping the lookup key and the rendered text independent. The other 7
+// call sites of `colorEntityType` (src/cli/commands/entity.ts:90,101,188 and
+// src/cli/commands/graph.ts:69,79,89,128) never append a literal ":" after
+// the call and are unaffected — none of them pass a `suffix`, so they keep
+// the exact prior behaviour.
 //
 // Each site gets a value that would legitimately appear in the field being
 // styled, so the assertion is a real content check, not a synthetic string
@@ -161,11 +185,16 @@ describe("colon-after-styled-value sites (todos fa88836c)", () => {
     expect(rawStdout).toContain("timeout:");
   });
 
-  // Site 2: src/cli/commands/graph.ts:173 — `${chalk.cyan(r.relation_type)}: ${r.count}`
-  test("graph stats: relation_type: literal substring survives colour in RAW output", async () => {
+  // Site 2a: src/cli/commands/graph.ts:167 — `${colorEntityType(r.type)}: ${r.count}` (entity rows)
+  // Site 2b: src/cli/commands/graph.ts:173 — `${chalk.cyan(r.relation_type)}: ${r.count}` (relation rows)
+  // Both loops sit in the SAME `graph stats` command output, so both are
+  // checked in one run: seeded entities are all type "tool", seeded relation
+  // is "depends_on".
+  test("graph stats: entity type AND relation_type: literal substring survives colour in RAW output", async () => {
     const { rawStdout, exitCode } = await runCliColour("graph", "stats");
     expect(exitCode).toBe(0);
     expect(rawStdout).toContain("\x1b[");
+    expect(rawStdout).toContain("tool:");
     expect(rawStdout).toContain("depends_on:");
   });
 
