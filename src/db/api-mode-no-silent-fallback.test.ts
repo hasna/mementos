@@ -32,6 +32,7 @@ import {
   isApiMode,
   MementosStoreConfigError,
 } from "./api-mode.js";
+import { getDbPath } from "./database.js";
 
 const URL_VAR = API_URL_ENV_KEYS[0];
 const KEY_VAR = API_KEY_ENV_KEYS[0];
@@ -169,6 +170,20 @@ describe("api mode — explicit and unambiguous configurations still work", () =
 
     expect(isApiMode()).toBe(false);
     expect(getApiConfig()).toBeNull();
+  });
+
+  test("PRECEDENCE 1: routing and the actual SQLite path choose the same nonempty alias", () => {
+    process.env[URL_VAR] = API_URL;
+    process.env[KEY_VAR] = FAKE_KEY;
+    process.env[DB_PATH_ENV_KEYS[1]] = "/tmp/mementos-precedence-1-fallback.db";
+
+    for (const ignoredPrimary of ["", "   "]) {
+      process.env[DB_PATH_VAR] = ignoredPrimary;
+
+      expect(isApiMode()).toBe(false);
+      expect(getApiConfig()).toBeNull();
+      expect(getDbPath()).toBe(process.env[DB_PATH_ENV_KEYS[1]]!);
+    }
   });
 
   test("PRECEDENCE 1 does NOT fire on an empty or whitespace DB path", () => {
