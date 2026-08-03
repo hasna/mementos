@@ -25,10 +25,18 @@ const CLI_PATH = new URL("./index.tsx", import.meta.url).pathname;
 /**
  * A subprocess env pinned to the temp SQLite DB.
  *
- * `MEMENTOS_DB_PATH` alone does NOT disable cloud routing: `isApiMode()`
- * (src/db/api-mode.ts) engages whenever an API url+key are both present and no
- * DATABASE_URL is set. On a machine with mementos creds exported that sends
- * "local" test writes to the live fleet store.
+ * HISTORY, kept because it is why this harness is shaped the way it is: until
+ * 2026-08-03 `MEMENTOS_DB_PATH` alone did NOT disable cloud routing —
+ * `isApiMode()` engaged whenever an API url+key were both present and no
+ * DATABASE_URL was set, so on a machine with mementos creds exported these
+ * "local" e2e writes went to the live fleet store. An explicit DB_PATH now
+ * outranks the API selectors (precedence 1, enforced in getApiConfig).
+ *
+ * That does NOT make the isolation below redundant, and it must not be
+ * simplified away. DB_PATH does not neutralise a `DATABASE_URL` or a storage
+ * mode var, `isolatedStoreEnv` is derived from the resolvers' own key lists so
+ * it keeps covering selectors added later, and defence here does not depend on
+ * a single precedence rule in another module staying as it is today.
  *
  * The selector list is NOT retyped here. It is derived from the resolver's own
  * exported keys by src/test-support/store-isolation.ts, so a selector added to

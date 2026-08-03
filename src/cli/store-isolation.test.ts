@@ -11,6 +11,7 @@ import { MEMENTOS_STORAGE_ENV, MEMENTOS_STORAGE_FALLBACK_ENV } from "../storage.
 import {
   STORE_SELECTOR_ENV_KEYS,
   assertLocalStoreBackend,
+  cloudSelectingEnv,
   isolatedStoreEnv,
 } from "../test-support/store-isolation.js";
 import type { StoreBackendReport } from "../db/store-backend.js";
@@ -69,11 +70,32 @@ async function reportFor(env: Record<string, string>): Promise<StoreBackendRepor
 }
 
 describe("store-isolation guard", () => {
-  test("POSITIVE CONTROL: the pre-fix harness env resolves to the cloud store", async () => {
-    // This is the old code, reconstructed exactly: spread the ambient env, set
-    // the scratch DB path, blank the DSN and mode vars — and leave the API
-    // selectors alone. If this does NOT come back as cloud, the probe is blind
-    // and every other assertion in this file is worthless.
+  test("POSITIVE CONTROL: an env with API selectors and no DB_PATH resolves to the cloud store", async () => {
+    // If this does NOT come back as cloud, the probe is blind and every other
+    // assertion in this file is worthless.
+    //
+    // The control USED to plant the API selectors on top of a scratch DB_PATH,
+    // reconstructing the original defective harness. The 2026-08-03 precedence-1
+    // fix makes that env resolve LOCAL — correctly — so as written it could no
+    // longer observe a cloud backend, and would have gone on passing as a
+    // control that cannot see the state it exists to detect. It is rebuilt on
+    // the only recipe that still reaches cloud: API selectors, no DB_PATH.
+    const report = await reportFor(cloudSelectingEnv(UNREACHABLE_API_URL, FAKE_API_KEY));
+    expect(report.api_mode).toBe(true);
+    expect(report.backend).toBe("cloud-api");
+    expect(report.selected_by).toContain("presence");
+  });
+
+  test("PRECEDENCE 1: the original defective harness env now resolves LOCAL, not cloud", async () => {
+    // The exact env the old positive control planted — ambient spread, scratch
+    // DB path, DSN and mode blanked, API selectors left in place. This is the
+    // measured shape that sent "local" test writes to the shared production
+    // store, and the one an operator reproduces by hand when they set a scratch
+    // DB_PATH without stripping their exported credentials.
+    //
+    // Blanking the DSN is deliberate and was load-bearing for the old defect: it
+    // SATISFIES api mode's "no DATABASE_URL present" precondition, so nothing
+    // else could have stopped the flip to cloud. Only precedence 1 does.
     const preFixEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
       MEMENTOS_DB_PATH: DB_PATH,
@@ -82,18 +104,21 @@ describe("store-isolation guard", () => {
       MEMENTOS_DATABASE_URL: "",
       HASNA_MEMENTOS_STORAGE_MODE: "",
       MEMENTOS_STORAGE_MODE: "",
-      // Stand in for the operator's exported credentials so the control does not
-      // depend on this machine's shell — and point somewhere unreachable.
       HASNA_MEMENTOS_API_URL: UNREACHABLE_API_URL,
       HASNA_MEMENTOS_API_KEY: FAKE_API_KEY,
     };
 
     const report = await reportFor(preFixEnv);
-    expect(report.api_mode).toBe(true);
-    expect(report.backend).toBe("cloud-api");
-    // Blanking the DSN does not merely fail to help — it SATISFIES api mode's
-    // "no DATABASE_URL present" precondition, making the flip more certain.
-    expect(report.selected_by).toContain("presence");
+    expect(report.api_mode).toBe(false);
+    expect(report.backend).toBe("local-sqlite");
+    expect(report.db_path).toBe(DB_PATH);
+    // The credentials are still PRESENT in the child env — they were merely
+    // outranked. Reporting them as absent would tell an operator their key had
+    // failed to load, which is a different problem with a different remedy.
+    expect(report.api_key_present).toBe(true);
+    expect(report.api_endpoint).toBe(`${UNREACHABLE_API_URL}/v1`);
+    // And the report must say WHICH key won, not fall back to "default".
+    expect(report.selected_by).toContain("MEMENTOS_DB_PATH");
   });
 
   test("isolatedStoreEnv neutralizes ambient API credentials", async () => {
@@ -118,6 +143,17 @@ describe("store-isolation guard", () => {
     }
   });
 
+  // PRE-EXISTING FLAKE, fixed on sight while working in this file (2026-08-03).
+  // This test spawns ONE subprocess PER SELECTOR, so its cost is O(selectors) —
+  // and STORE_SELECTOR_ENV_KEYS is explicitly designed to grow whenever a
+  // resolver gains a key. A fixed 5000ms default therefore rots by construction,
+  // and it had already rotted: measured on UNMODIFIED origin/main 5db748c3 at
+  // station load ~14-15, three consecutive filtered runs gave 4.43s, 4.97s and a
+  // FAILURE at 5008ms. It is not this change that made it marginal, and it is
+  // not a performance assertion — the assertions are the backend checks inside
+  // the loop. Given a budget with real headroom rather than left to fail
+  // whenever the box is busy, which is how a red suite trains people to re-run
+  // rather than read it.
   test("no single selector can escape isolation on its own", async () => {
     // One at a time, so a key that is silently not covered cannot hide behind
     // another key that is.
@@ -137,14 +173,17 @@ describe("store-isolation guard", () => {
         delete process.env[API_URL_ENV_KEYS[0]];
       }
     }
-  });
+  }, 30_000);
 
   test("assertLocalStoreBackend THROWS on a non-local child rather than proceeding", async () => {
-    const badEnv: Record<string, string> = {
-      ...isolatedStoreEnv(DB_PATH),
-      [API_URL_ENV_KEYS[0]]: UNREACHABLE_API_URL,
-      [API_KEY_ENV_KEYS[0]]: FAKE_API_KEY,
-    };
+    // This is the self-test of the guard that six e2e suites call in beforeAll
+    // to fail loudly BEFORE they write. It has to be built on an env that really
+    // does resolve to cloud, or the guard is left with a self-test that cannot
+    // fail while the guard still protects live writes. Since precedence 1 landed
+    // that means no DB_PATH — layering API selectors over isolatedStoreEnv(),
+    // which is what this test used to do, now yields a LOCAL child and the
+    // rejection never happens.
+    const badEnv = cloudSelectingEnv(UNREACHABLE_API_URL, FAKE_API_KEY);
     // Fail loudly, and say enough for an operator to act: which backend, and why.
     await expect(assertLocalStoreBackend(CLI_PATH, badEnv)).rejects.toThrow(/REFUSING TO RUN/);
     await expect(assertLocalStoreBackend(CLI_PATH, badEnv)).rejects.toThrow(/cloud-api/);
@@ -205,12 +244,9 @@ describe("store-isolation guard", () => {
   });
 
   test("the mode report never carries a credential value", async () => {
-    const env: Record<string, string> = {
-      ...isolatedStoreEnv(DB_PATH),
-      [API_URL_ENV_KEYS[0]]: UNREACHABLE_API_URL,
-      [API_KEY_ENV_KEYS[0]]: FAKE_API_KEY,
-    };
-    const report = await reportFor(env);
+    // Built on the cloud recipe so api_mode is genuinely true — this assertion
+    // is about what a report CARRYING a live endpoint prints, so it must be one.
+    const report = await reportFor(cloudSelectingEnv(UNREACHABLE_API_URL, FAKE_API_KEY));
     expect(report.api_mode).toBe(true);
     expect(report.api_key_present).toBe(true);
     // The key must be reported as present, never echoed — this report is printed

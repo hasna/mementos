@@ -5,7 +5,7 @@ import {
   getStorageConnectionString,
   isServerContext,
 } from "../storage.js";
-import { isApiMode } from "./api-mode.js";
+import { DB_PATH_ENV_KEYS, isApiMode } from "./api-mode.js";
 import { existsSync, mkdirSync, cpSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { MIGRATIONS } from "./migrations.js";
@@ -55,9 +55,13 @@ function migrateGlobalDir(): void {
 }
 
 export function getDbPath(): string {
-  const envPath = process.env["HASNA_MEMENTOS_DB_PATH"] ?? process.env["MEMENTOS_DB_PATH"];
-  if (envPath) {
-    return envPath;
+  // Use the API resolver's canonical key order and nonempty semantics. Routing
+  // treats a blank/whitespace preferred key as absent and may select the alias;
+  // resolving the actual SQLite path differently would silently open another
+  // dataset after API mode had already been disabled by that alias.
+  for (const key of DB_PATH_ENV_KEYS) {
+    const envPath = process.env[key]?.trim();
+    if (envPath) return envPath;
   }
 
   const cwd = process.cwd();

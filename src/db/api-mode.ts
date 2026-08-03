@@ -90,6 +90,31 @@ export function getApiModeEnvSources(): { urlKey: string | null; keyKey: string 
 }
 
 /**
+ * What the environment CONFIGURES, regardless of which store finally wins.
+ *
+ * Distinct from {@link getApiConfig}, which answers "may I build a cloud
+ * request?" and returns null once an explicit DB_PATH outranks the credentials
+ * (precedence 1). An operator report needs both halves separately: conflating
+ * them prints "no API key configured" at someone whose key is configured and
+ * merely outranked, which points them at a credential problem they do not have.
+ *
+ * Never returns a credential value — the endpoint is not secret, the key is
+ * reported only as a boolean.
+ */
+export function getConfiguredApiEnv(): {
+  baseUrl: string | null;
+  apiKeyPresent: boolean;
+  dbPathKey: string | null;
+} {
+  const rawBase = firstEnv(API_URL_ENV_KEYS);
+  return {
+    baseUrl: rawBase ? normalizeBase(rawBase) : null,
+    apiKeyPresent: Boolean(firstEnvKey(API_KEY_ENV_KEYS)),
+    dbPathKey: firstEnvKey(DB_PATH_ENV_KEYS),
+  };
+}
+
+/**
  * Escape hatch for a test that genuinely must reach a non-loopback endpoint.
  * Opt-in by design: the default has to be safe, because the failure it prevents
  * is silent and lands in a shared store.
@@ -173,13 +198,26 @@ export class MementosStoreConfigError extends Error {
  * dataset with no error and no flag. From the caller's side that is
  * indistinguishable from a store that is working.
  *
+ * THIS FUNCTION ONLY ASSERTS. It returns `void`, so it cannot select anything —
+ * the precedence table below describes the RESOLVER, which is `getApiConfig()`
+ * immediately after it, and each early `return` here only suppresses the
+ * ambiguity error for a case that is already unambiguous. Steps 1 and 2 are
+ * therefore implemented in `getApiConfig()` and `isApiMode()` respectively, and
+ * the table is documented here because this is where the error text lives.
+ *
+ * Keeping the table honest about that is not cosmetic. Until 2026-08-03 step 1
+ * was implemented NOWHERE: the `return` below reads as a selection, and an
+ * operator who read it concluded that a scratch DB_PATH made them safe while a
+ * fully-configured environment still routed every read and write to the shared
+ * production store.
+ *
  * Precedence, highest first:
  *  1. An explicit SQLite path (`HASNA_MEMENTOS_DB_PATH` / `MEMENTOS_DB_PATH`) is
  *     the narrowest, most specific signal and selects LOCAL, so local dev,
  *     tooling and import/export keep working when a stray credential is exported
- *     globally.
- *  2. A client DSN present disables API mode. Unchanged here, and tracked
- *     separately — a DSN on a client is forbidden and handled in database.ts.
+ *     globally. ENFORCED in `getApiConfig()`, which returns null for it.
+ *  2. A client DSN present disables API mode. ENFORCED in `isApiMode()`. A DSN
+ *     on a client is forbidden and is tracked separately in database.ts.
  *  3. Both API URL and API key present -> API mode.
  *  4. Exactly ONE of them present -> ERROR naming the missing variable.
  *  5. Neither present -> LOCAL. The documented single-operator default.
@@ -187,7 +225,10 @@ export class MementosStoreConfigError extends Error {
  * Never reads, logs, or embeds a credential value — only variable NAMES.
  */
 export function assertUnambiguousStoreEnv(): void {
-  if (firstEnvKey(DB_PATH_ENV_KEYS)) return; // 1. explicit local selection
+  // 1. Explicit local path: unambiguous, so there is no error to raise. The
+  // SELECTION itself happens in getApiConfig(); this return only skips the
+  // half-configured check below, which would otherwise fire on a stray API URL.
+  if (firstEnvKey(DB_PATH_ENV_KEYS)) return;
   if (hasDatabaseUrl()) return; // 2. unchanged DSN behaviour
 
   const urlKey = firstEnvKey(API_URL_ENV_KEYS);
@@ -213,6 +254,25 @@ export function assertUnambiguousStoreEnv(): void {
 
 export function getApiConfig(): ApiConfig | null {
   assertUnambiguousStoreEnv();
+
+  // Precedence 1, ACTUALLY APPLIED. Until 2026-08-03 this rule existed only in
+  // the docstring on assertUnambiguousStoreEnv: that function returns `void`, so
+  // its `if (firstEnvKey(DB_PATH_ENV_KEYS)) return;` exits the ERROR CHECK and
+  // selects nothing. An explicit local path therefore suppressed the
+  // half-configured error but did NOT stop a fully-configured environment from
+  // routing to the cloud — so an operator who set a scratch DB_PATH by hand,
+  // read the precedence table, and concluded they were isolated was still
+  // reading and writing the shared production store, silently and successfully.
+  //
+  // The guard lives HERE rather than in isApiMode() on purpose. getApiConfig()
+  // is the single chokepoint every cloud read and write funnels through
+  // (apiRequestRaw calls it and cannot build a request without it), whereas
+  // isApiMode() is a mode check that 30+ domain call sites must each remember to
+  // consult. This file already made exactly that call once, for the same reason
+  // — see assertRequestAllowedUnderTest, which was placed in the transport
+  // rather than at process start because a check one layer up left gaps.
+  if (firstEnvKey(DB_PATH_ENV_KEYS)) return null;
+
   const rawBase = firstEnv(API_URL_ENV_KEYS);
   const apiKey = firstEnv(API_KEY_ENV_KEYS);
   if (!rawBase || !apiKey) return null;

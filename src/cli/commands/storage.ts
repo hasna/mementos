@@ -91,6 +91,14 @@ function installStorageSubcommands(storage: Command, program: Command): void {
         console.log(`Storage mode: ${report.storage_mode}`);
         if (report.backend === "local-sqlite") {
           console.log(`Database: ${report.db_path}`);
+          // Say out loud that live credentials were outranked. Staying silent
+          // here is the shape of the defect this reporting exists to prevent,
+          // pointed the other way: an operator who exported an API key and is
+          // being served local SQLite should not have to infer that from an
+          // absence. `selected_by` already names the key that won.
+          if (report.api_key_present && report.api_endpoint) {
+            console.log(`API endpoint (configured, OUTRANKED): ${report.api_endpoint}`);
+          }
         } else {
           console.log(`API endpoint: ${report.api_endpoint ?? "(none)"}`);
           console.log(`API key: ${report.api_key_present ? "configured" : "not configured"}`);
