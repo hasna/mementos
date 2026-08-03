@@ -156,6 +156,46 @@ export function getDatabase(dbPath?: string): Database {
     if (getStorageMode() === "cloud") {
       return getCloudDatabase();
     }
+    // ── Unpinned-test-open guard (fail-closed) ──────────────────────────────
+    // Todos 57b8b8c5. `if (!db && isApiMode())` gates 30+ domain call sites
+    // (src/db/{memories,agents,entities,...}.ts) onto the API transport when
+    // API mode is on — but with API mode correctly disabled (as the test
+    // preload, src/test-support/preload-local-store.ts, guarantees under
+    // `bun test`), an in-process test that reaches this function without an
+    // explicit `dbPath` and without a DB_PATH env key resolves to whatever
+    // getDbPath() picks by default, which under `bun test` is the real,
+    // shared, on-disk local store — silently, with no error. This is the
+    // in-process mirror of the split-brain guard above: that one stops a
+    // local write from happening in API mode, this one stops a live-store
+    // write from happening in a TEST process that forgot to pin a path.
+    //
+    // Scoped to NODE_ENV === "test" so CLI/MCP/server processes are
+    // unaffected: an operator running the real CLI with no pin is supposed
+    // to get the real store. It only READS the DB_PATH env keys in this
+    // condition and never sets them, so it cannot interact with the
+    // getApiConfig() DB_PATH precedence guard in either direction.
+    //
+    // NAMED RESIDUAL: this is not a complete chokepoint for local opens.
+    // src/lib/storage-sync.ts:616 and :697 construct
+    // `new SqliteAdapter(getDbPath())` directly and bypass getDatabase()
+    // entirely; an unpinned test reaching the local branch of a storage-sync
+    // merge/pull is not covered by this guard.
+    if (process.env["NODE_ENV"] === "test") {
+      const hasExplicitDbPath = DB_PATH_ENV_KEYS.some(
+        (key) => process.env[key]?.trim()
+      );
+      if (!hasExplicitDbPath) {
+        throw new Error(
+          "REFUSING-UNPINNED-TEST-OPEN: a test process tried to open the default local " +
+            `SQLite store (${getDbPath()}) with no explicit dbPath argument and no ` +
+            `${DB_PATH_ENV_KEYS.join("/")} set. Pass an explicit dbPath (e.g. ":memory:" ` +
+            "or a scratch file), or set one of those env keys to a scratch path, before " +
+            "calling getDatabase(). This guard exists because an unpinned test process " +
+            "would otherwise silently read and write the real, shared, on-disk memory " +
+            "store (todos 57b8b8c5)."
+        );
+      }
+    }
   }
 
   const path = dbPath || getDbPath();
