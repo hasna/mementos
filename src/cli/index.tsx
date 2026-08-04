@@ -55,16 +55,19 @@ applyGlobalOptions(program);
 // other status, including the domain 1 and 2 in memory-cmd-recall-exit.ts, is
 // passed through unchanged. See exit-codes.ts for the full contract.
 //
-// ORDER IS LOAD-BEARING: Commander copies _exitCallback into each subcommand at
-// .command() time (copyInheritedSettings, command.js:98), so this MUST be
-// installed before registerAllCommands() below or subcommands inherit null and
-// keep exiting 1. exit-codes.test.ts asserts the nested case for that reason.
-//
 // Commander writes the error text before calling this hook, so messages are
-// unaffected; only the status changes.
-program.exitOverride((err) => {
-  process.exit(resolveExitCode(err));
-});
+// unaffected; only the status changes. Install it on every node after the full
+// tree is registered: `.command()` copies inherited settings, but addCommand()
+// deliberately does not. A separately constructed tree such as `brains` would
+// otherwise keep Commander's default exit 1 on both its root and descendants.
+function applyExitCodeContract(command: Command): void {
+  command.exitOverride((err) => {
+    process.exit(resolveExitCode(err));
+  });
+  for (const subcommand of command.commands) {
+    applyExitCodeContract(subcommand);
+  }
+}
 
 let startupWarningShown = false;
 program.hook("preAction", (_thisCommand, actionCommand) => {
@@ -90,6 +93,7 @@ program.hook("preAction", (_thisCommand, actionCommand) => {
 // the SAME tree that ships. See register-all.ts for why that matters.
 
 registerAllCommands(program);
+applyExitCodeContract(program);
 
 // ============================================================================
 // Parse and run

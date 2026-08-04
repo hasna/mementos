@@ -167,6 +167,19 @@ describe("end-to-end: an unknown verb and a genuine miss are DISTINGUISHABLE", (
     expect(nestedUnknown.exitCode).not.toBe(RECALL_EXIT_NOT_FOUND);
   });
 
+  test("a separately constructed command tree attached with addCommand uses EXIT_USAGE", async () => {
+    // `brains` builds its complete Command tree independently, then attaches it
+    // with addCommand(). Commander does not copy inherited settings in that
+    // attachment path, so this exercises a different path from `agents` above.
+    const brainsUnknown = await runCli("brains", "zzq-not-a-verb-518ad20c");
+    const genuineMiss = await runCli("get", NEAR_MISS_KEY);
+
+    expect(brainsUnknown.exitCode).toBe(EXIT_USAGE);
+    expect(genuineMiss.exitCode).toBe(RECALL_EXIT_NOT_FOUND);
+    expect(brainsUnknown.exitCode).not.toBe(genuineMiss.exitCode);
+    expect(brainsUnknown.stderr).toContain("unknown command");
+  });
+
   test("a command GROUP named with no subcommand is a usage error", async () => {
     // `mementos synthesis` printed its usage and exited 1 — indistinguishable
     // from `mementos synthesis run` failing for a real runtime reason. That
