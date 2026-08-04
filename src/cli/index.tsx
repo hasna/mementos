@@ -8,6 +8,7 @@ import { getDatabase } from "../db/database.js";
 import { getPrimaryMachineStartupWarning } from "../db/machines.js";
 import { skipsStartupDbAccess } from "./startup-side-effects.js";
 import { applyGlobalOptions } from "./global-options.js";
+import { resolveExitCode } from "./exit-codes.js";
 import { registerAllCommands } from "./register-all.js";
 
 // ============================================================================
@@ -45,6 +46,25 @@ program
 // Declared in one place so the "no subcommand may reuse a global short flag"
 // invariant is testable rather than a review convention. See global-options.ts.
 applyGlobalOptions(program);
+
+// A REJECTED COMMAND LINE MUST NOT LOOK LIKE A DATA ANSWER (todos 518ad20c).
+// Commander exits 1 for an unknown verb, an unknown option and a missing
+// argument — the same status `recall`/`get` uses for "key not found" — so a
+// caller branching on the exit code alone read its own typo as an authoritative
+// absence. resolveExitCode moves only that class to EXIT_USAGE (64); every
+// other status, including the domain 1 and 2 in memory-cmd-recall-exit.ts, is
+// passed through unchanged. See exit-codes.ts for the full contract.
+//
+// ORDER IS LOAD-BEARING: Commander copies _exitCallback into each subcommand at
+// .command() time (copyInheritedSettings, command.js:98), so this MUST be
+// installed before registerAllCommands() below or subcommands inherit null and
+// keep exiting 1. exit-codes.test.ts asserts the nested case for that reason.
+//
+// Commander writes the error text before calling this hook, so messages are
+// unaffected; only the status changes.
+program.exitOverride((err) => {
+  process.exit(resolveExitCode(err));
+});
 
 let startupWarningShown = false;
 program.hook("preAction", (_thisCommand, actionCommand) => {
