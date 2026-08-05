@@ -803,4 +803,46 @@ export const PG_MIGRATIONS: string[] = [
 
   INSERT INTO _migrations (id) VALUES (36) ON CONFLICT DO NOTHING;
   `,
+
+  // Migration 37: audit-log value hashes must never be fabricated.
+  //
+  // The SQLite side of this migration removes `hex(randomblob(16))` from the
+  // three audit triggers and NULLs the values it already wrote; see the long note
+  // on migration 37 in `migrations.ts`. Postgres has `md5()` and has always
+  // written a genuine digest, so there is nothing to repair in this data.
+  //
+  // The three functions are re-asserted anyway, byte-identical to migration 22,
+  // so that the numbered guarantee "audit value hashes are real digests or NULL"
+  // holds on BOTH backends at the same migration id, and so that a Postgres store
+  // whose functions were replaced out-of-band is restored. `CREATE OR REPLACE` on
+  // an identical body is a no-op; no row is touched.
+  `
+  CREATE OR REPLACE FUNCTION audit_memory_insert() RETURNS trigger AS $$
+  BEGIN
+    INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, new_value_hash, created_at)
+    VALUES (gen_random_uuid()::text, NEW.id, NEW.key, 'create', NEW.agent_id, md5(COALESCE(NEW.value, '')), NOW());
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  CREATE OR REPLACE FUNCTION audit_memory_update() RETURNS trigger AS $$
+  BEGIN
+    INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, old_value_hash, new_value_hash, changes, created_at)
+    VALUES (gen_random_uuid()::text, NEW.id, NEW.key, 'update', NEW.agent_id, md5(COALESCE(OLD.value, '')), md5(COALESCE(NEW.value, '')),
+      json_build_object('version_from', OLD.version, 'version_to', NEW.version, 'importance_from', OLD.importance, 'importance_to', NEW.importance)::text,
+      NOW());
+    RETURN NEW;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  CREATE OR REPLACE FUNCTION audit_memory_delete() RETURNS trigger AS $$
+  BEGIN
+    INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, old_value_hash, created_at)
+    VALUES (gen_random_uuid()::text, OLD.id, OLD.key, 'delete', OLD.agent_id, md5(COALESCE(OLD.value, '')), NOW());
+    RETURN OLD;
+  END;
+  $$ LANGUAGE plpgsql;
+
+  INSERT INTO _migrations (id) VALUES (37) ON CONFLICT DO NOTHING;
+  `,
 ];

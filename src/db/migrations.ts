@@ -999,4 +999,67 @@ INSERT OR IGNORE INTO _migrations (id) VALUES (35);
 ${MEMORY_VERSION_SNAPSHOT_TRIGGER}
 INSERT OR IGNORE INTO _migrations (id) VALUES (36);
 `,
+
+  // Migration 37: audit-log value hashes must never be FABRICATED.
+  //
+  // All three audit triggers wrote `hex(randomblob(16))` into old_value_hash /
+  // new_value_hash, because SQLite ships no `md5()`. Those columns exist so an
+  // operator can prove WHAT a row held without the audit log storing content, by
+  // comparing `md5(candidate)` against the stored digest. Random data makes every
+  // such comparison return "no match" — which reads as "nothing is recoverable"
+  // rather than "the instrument is broken". It fails toward a confident wrong
+  // answer, on exactly the surface an operator reaches for during a data-loss
+  // incident, and a test asserting the column is non-empty PASSES on it.
+  //
+  // A digest cannot be computed inside a SQLite trigger at all: SQLite has no
+  // md5(), and `bun:sqlite` exposes no user-defined-function API (measured on
+  // bun 1.3.14 — neither `db.function` nor `db.createFunction` exists, while
+  // `hex(randomblob(4))` evaluates fine, so the absence is the function's and not
+  // the probe's). NULL is therefore the honest value here: a 32-hex random string
+  // is indistinguishable from a real md5, and an absent column is strictly better
+  // than one that cannot be trusted, because absence is visible and randomness is
+  // not. Postgres computes `md5(COALESCE(...))` natively and is unchanged.
+  //
+  // The two UPDATEs repair rows already written. `audit.ts` calls this log
+  // append-only, and that rule governs APPLICATION code — a migration removing
+  // values the schema itself fabricated is schema repair, not content mutation.
+  // Without it the fix would only reach rows created after the upgrade, leaving
+  // every historical row still presenting random data as a digest. The filter is
+  // deliberately narrow rather than a blanket wipe: `hex()` emits UPPERCASE, and
+  // a genuine md5 hex digest is lowercase, so anything containing a character
+  // outside [0-9A-F] — i.e. any real digest — is preserved and only the
+  // fabricated shape is cleared.
+  `
+DROP TRIGGER IF EXISTS audit_memory_insert;
+CREATE TRIGGER audit_memory_insert AFTER INSERT ON memories BEGIN
+  INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, created_at)
+  VALUES (hex(randomblob(4)), new.id, new.key, 'create', new.agent_id, datetime('now'));
+END;
+
+DROP TRIGGER IF EXISTS audit_memory_update;
+CREATE TRIGGER audit_memory_update AFTER UPDATE ON memories BEGIN
+  INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, changes, created_at)
+  VALUES (hex(randomblob(4)), new.id, new.key, 'update', new.agent_id,
+    json_object('version_from', old.version, 'version_to', new.version, 'importance_from', old.importance, 'importance_to', new.importance),
+    datetime('now'));
+END;
+
+DROP TRIGGER IF EXISTS audit_memory_delete;
+CREATE TRIGGER audit_memory_delete AFTER DELETE ON memories BEGIN
+  INSERT INTO memory_audit_log (id, memory_id, memory_key, operation, agent_id, created_at)
+  VALUES (hex(randomblob(4)), old.id, old.key, 'delete', old.agent_id, datetime('now'));
+END;
+
+UPDATE memory_audit_log SET old_value_hash = NULL
+  WHERE old_value_hash IS NOT NULL
+    AND length(old_value_hash) = 32
+    AND old_value_hash NOT GLOB '*[^0-9A-F]*';
+
+UPDATE memory_audit_log SET new_value_hash = NULL
+  WHERE new_value_hash IS NOT NULL
+    AND length(new_value_hash) = 32
+    AND new_value_hash NOT GLOB '*[^0-9A-F]*';
+
+INSERT OR IGNORE INTO _migrations (id) VALUES (37);
+`,
 ];

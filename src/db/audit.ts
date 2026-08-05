@@ -12,7 +12,21 @@ export interface AuditEntry {
   memory_key: string | null;
   operation: "create" | "update" | "delete" | "archive" | "restore" | "read";
   agent_id: string | null;
+  /**
+   * md5 hex digest of the value the row held BEFORE the operation, or `null`.
+   *
+   * `null` means the digest is UNAVAILABLE, never that the value was empty. It is
+   * the honest answer on SQLite, which has no `md5()` and whose driver
+   * (`bun:sqlite`) exposes no user-defined-function API, so a trigger cannot
+   * compute one. Postgres computes `md5(COALESCE(...))` natively and populates it.
+   *
+   * So: compare `md5(candidate)` against a NON-NULL value to prove what a row
+   * held. A `null` is a statement about the BACKEND and must never be read as
+   * evidence about the content — treating it as a failed match is the confident
+   * wrong answer migration 37 exists to prevent.
+   */
   old_value_hash: string | null;
+  /** md5 hex digest of the value AFTER the operation, or `null`. See `old_value_hash`. */
   new_value_hash: string | null;
   changes: Record<string, unknown>;
   created_at: string;
