@@ -18,6 +18,7 @@
  * The probe rows are deleted before exit; the connection string is never
  * printed, in full or in part.
  */
+import { createHash } from "node:crypto";
 import { PgAdapterAsync } from "../src/storage.js";
 import { applyPgMigrations } from "../src/db/pg-migrate.js";
 
@@ -80,7 +81,44 @@ try {
   if (afterDelete) fail("delete did not remove the probe row");
   checks++;
 
-  console.log(`[pg-test-gate] PASS: ${checks} live PostgreSQL checks (schema, round-trip, delete)`);
+  // 4. Audit value hashes are REAL digests, not fabricated data.
+  //
+  //    The SQLite triggers wrote `hex(randomblob(16))` here until migration 37,
+  //    because SQLite has no md5(); they now write NULL. Postgres has md5() and
+  //    must write the true digest — this is the half of that contract that only a
+  //    live server can prove. Asserting the column is merely POPULATED would pass
+  //    on random data, which is exactly how the SQLite defect survived, so both
+  //    assertions below compare against the digest of a value this gate knows.
+  const expectedDigest = createHash("md5").update(probeValue, "utf8").digest("hex");
+
+  const createdAudit = await pg.get(
+    "SELECT new_value_hash FROM memory_audit_log WHERE memory_id = $1 AND operation = 'create'",
+    memoryId
+  );
+  if (!createdAudit) fail("no 'create' audit row: the audit_memory_insert trigger did not fire");
+  if (createdAudit.new_value_hash !== expectedDigest) {
+    fail(
+      `create audit new_value_hash is not md5 of the written value ` +
+        `(expected ${expectedDigest}, got ${String(createdAudit.new_value_hash)})`
+    );
+  }
+
+  const deletedAudit = await pg.get(
+    "SELECT old_value_hash FROM memory_audit_log WHERE memory_id = $1 AND operation = 'delete'",
+    memoryId
+  );
+  if (!deletedAudit) fail("no 'delete' audit row: the audit_memory_delete trigger did not fire");
+  if (deletedAudit.old_value_hash !== expectedDigest) {
+    fail(
+      `delete audit old_value_hash is not md5 of the deleted value ` +
+        `(expected ${expectedDigest}, got ${String(deletedAudit.old_value_hash)})`
+    );
+  }
+  checks++;
+
+  console.log(
+    `[pg-test-gate] PASS: ${checks} live PostgreSQL checks (schema, round-trip, delete, audit-value-hash)`
+  );
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 } finally {
