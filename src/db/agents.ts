@@ -170,7 +170,7 @@ function paginatedAgentQuery(
   filter: AgentListFilter
 ): { sql: string; params: Array<string | number> } {
   const { limit, offset } = normalizedAgentListFilter(filter);
-  let sql = `${baseSql} ORDER BY last_seen_at DESC, id ASC`;
+  let sql = `${baseSql} ORDER BY created_at ASC, id ASC`;
   const params = [...baseParams];
 
   if (limit !== undefined) {

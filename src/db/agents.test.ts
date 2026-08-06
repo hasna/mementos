@@ -162,25 +162,41 @@ describe("listAgents", () => {
     expect(names).toContain("gamma");
   });
 
-  test("ordered by last_seen_at DESC", () => {
-    const a = registerAgent("first");
-    const b = registerAgent("second");
-    // Re-register "first" to bump its last_seen_at
-    Bun.sleepSync(5);
-    registerAgent("first");
-    const agents = listAgents();
-    expect(agents).toHaveLength(2);
-    // "first" was re-registered last, so it should be first in the list
-    expect(agents[0]!.name).toBe("first");
-    expect(agents[1]!.name).toBe("second");
+  test("ordered by created_at ASC with id as the immutable tie-breaker", () => {
+    const db = getDatabase();
+    const first = registerAgent("first");
+    const tied = [registerAgent("second"), registerAgent("third")].sort((left, right) =>
+      left.id.localeCompare(right.id)
+    );
+    db.run("UPDATE agents SET created_at = ?, last_seen_at = ? WHERE id = ?", [
+      "2026-01-01T00:00:00.000Z",
+      "2025-01-03T00:00:00.000Z",
+      first.id,
+    ]);
+    for (const agent of tied) {
+      db.run("UPDATE agents SET created_at = ?, last_seen_at = ? WHERE id = ?", [
+        "2026-01-02T00:00:00.000Z",
+        "2025-01-02T00:00:00.000Z",
+        agent.id,
+      ]);
+    }
+
+    touchAgent(tied[1]!.id, db);
+
+    expect(listAgents(db).map((agent) => agent.id)).toEqual([
+      first.id,
+      tied[0]!.id,
+      tied[1]!.id,
+    ]);
   });
 
   test("respects limit and offset, including an empty terminal page", () => {
     const db = getDatabase();
     const created = ["page-a", "page-b", "page-c"].map((name, index) => {
       const agent = registerAgent(name);
-      db.run("UPDATE agents SET last_seen_at = ? WHERE id = ?", [
+      db.run("UPDATE agents SET created_at = ?, last_seen_at = ? WHERE id = ?", [
         new Date(Date.UTC(2026, 7, 6, 12, 0, index)).toISOString(),
+        new Date(Date.UTC(2025, 7, 6, 12, 0, 3 - index)).toISOString(),
         agent.id,
       ]);
       return agent;
@@ -192,11 +208,46 @@ describe("listAgents", () => {
     const terminal = listAgents({ limit: 2, offset: 3 });
     const legacyDbArg = listAgents(db);
 
-    expect(first.map((agent) => agent.id)).toEqual([created[2]!.id, created[1]!.id]);
-    expect(second.map((agent) => agent.id)).toEqual([created[0]!.id]);
-    expect(offsetOnly.map((agent) => agent.id)).toEqual([created[1]!.id, created[0]!.id]);
+    expect(first.map((agent) => agent.id)).toEqual([created[0]!.id, created[1]!.id]);
+    expect(second.map((agent) => agent.id)).toEqual([created[2]!.id]);
+    expect(offsetOnly.map((agent) => agent.id)).toEqual([created[1]!.id, created[2]!.id]);
     expect(terminal).toEqual([]);
     expect(legacyDbArg).toHaveLength(3);
+  });
+
+  test("keeps forward paging complete when an unseen agent heartbeats between pages", () => {
+    const db = getDatabase();
+    const created = ["stable-page-a", "stable-page-b", "stable-page-c", "stable-page-d"].map(
+      (name, index) => {
+        const agent = registerAgent(name);
+        db.run("UPDATE agents SET created_at = ?, last_seen_at = ? WHERE id = ?", [
+          new Date(Date.UTC(2026, 0, 1, 0, 0, index)).toISOString(),
+          new Date(Date.UTC(2025, 0, 1, 0, 0, 4 - index)).toISOString(),
+          agent.id,
+        ]);
+        return agent;
+      }
+    );
+    const expectedIds = created.map((agent) => agent.id);
+    const pageSize = 2;
+    const seenIds = listAgents({ limit: pageSize, offset: 0 }, db).map((agent) => agent.id);
+
+    expect(seenIds).toEqual(expectedIds.slice(0, pageSize));
+    expect(seenIds).not.toContain(created[3]!.id);
+
+    touchAgent(created[3]!.id, db);
+
+    let offset = pageSize;
+    while (true) {
+      const page = listAgents({ limit: pageSize, offset }, db);
+      if (page.length === 0) break;
+      seenIds.push(...page.map((agent) => agent.id));
+      offset += page.length;
+    }
+
+    expect(seenIds).toHaveLength(expectedIds.length);
+    expect(new Set(seenIds).size).toBe(expectedIds.length);
+    expect([...seenIds].sort()).toEqual([...expectedIds].sort());
   });
 
   test("uses a non-negative limit for offset-only adapter queries", () => {
