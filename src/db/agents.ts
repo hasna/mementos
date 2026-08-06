@@ -5,6 +5,12 @@ import { getDatabase, now, shortUuid, resolvePartialId, escapeLikePrefix } from 
 import { isApiMode, apiJson, toQuery } from "./api-mode.js";
 
 const CONFLICT_WINDOW_MS = 30 * 60 * 1000; // 30 minutes
+const UNBOUNDED_AGENT_LIST_LIMIT = Number.MAX_SAFE_INTEGER;
+
+export interface AgentListFilter {
+  limit?: number;
+  offset?: number;
+}
 
 function parseAgentRow(row: Record<string, unknown>): Agent {
   return {
@@ -137,15 +143,71 @@ export function getAgent(
   return null;
 }
 
-export function listAgents(db?: Database): Agent[] {
-  if (!db && isApiMode()) {
-    const { data } = apiJson<{ agents: Agent[] }>("GET", "/agents");
+function normalizedAgentListFilter(filter: AgentListFilter): AgentListFilter {
+  const limit = Number.isFinite(filter.limit)
+    ? Math.max(0, Math.floor(filter.limit!))
+    : undefined;
+  const offset = Number.isFinite(filter.offset)
+    ? Math.max(0, Math.floor(filter.offset!))
+    : undefined;
+  return { limit, offset };
+}
+
+function isDatabaseAdapter(
+  value: AgentListFilter | Database
+): value is Database {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "query" in value &&
+    typeof value.query === "function"
+  );
+}
+
+function paginatedAgentQuery(
+  baseSql: string,
+  baseParams: Array<string | number>,
+  filter: AgentListFilter
+): { sql: string; params: Array<string | number> } {
+  const { limit, offset } = normalizedAgentListFilter(filter);
+  let sql = `${baseSql} ORDER BY last_seen_at DESC, id ASC`;
+  const params = [...baseParams];
+
+  if (limit !== undefined) {
+    sql += " LIMIT ?";
+    params.push(limit);
+  } else if ((offset ?? 0) > 0) {
+    sql += " LIMIT ?";
+    params.push(UNBOUNDED_AGENT_LIST_LIMIT);
+  }
+  if ((offset ?? 0) > 0) {
+    sql += " OFFSET ?";
+    params.push(offset!);
+  }
+
+  return { sql, params };
+}
+
+export function listAgents(db?: Database): Agent[];
+export function listAgents(filter: AgentListFilter, db?: Database): Agent[];
+export function listAgents(
+  filterOrDb: AgentListFilter | Database = {},
+  db?: Database
+): Agent[] {
+  const explicitDb = isDatabaseAdapter(filterOrDb) ? filterOrDb : db;
+  const filter = isDatabaseAdapter(filterOrDb) ? {} : filterOrDb;
+  const normalized = normalizedAgentListFilter(filter);
+  if (!explicitDb && isApiMode()) {
+    const q = toQuery({
+      limit: normalized.limit,
+      offset: normalized.offset,
+    });
+    const { data } = apiJson<{ agents: Agent[] }>("GET", `/agents${q}`);
     return data?.agents ?? [];
   }
-  const d = db || getDatabase();
-  const rows = d
-    .query("SELECT * FROM agents ORDER BY last_seen_at DESC")
-    .all() as Record<string, unknown>[];
+  const d = explicitDb || getDatabase();
+  const { sql, params } = paginatedAgentQuery("SELECT * FROM agents", [], normalized);
+  const rows = d.query(sql).all(...params) as Record<string, unknown>[];
   return rows.map(parseAgentRow);
 }
 
@@ -164,18 +226,34 @@ export function touchAgent(idOrName: string, db?: Database): void {
   d.run("UPDATE agents SET last_seen_at = ? WHERE id = ?", [now(), agent.id]);
 }
 
-export function listAgentsByProject(projectId: string, db?: Database): Agent[] {
-  if (!db && isApiMode()) {
-    const q = toQuery({ project_id: projectId });
+export function listAgentsByProject(projectId: string, db?: Database): Agent[];
+export function listAgentsByProject(
+  projectId: string,
+  filter: AgentListFilter,
+  db?: Database
+): Agent[];
+export function listAgentsByProject(
+  projectId: string,
+  filterOrDb: AgentListFilter | Database = {},
+  db?: Database
+): Agent[] {
+  const explicitDb = isDatabaseAdapter(filterOrDb) ? filterOrDb : db;
+  const filter = isDatabaseAdapter(filterOrDb) ? {} : filterOrDb;
+  const normalized = normalizedAgentListFilter(filter);
+  if (!explicitDb && isApiMode()) {
+    const q = toQuery({ project_id: projectId, ...normalized });
     const { data } = apiJson<{ agents: Agent[] }>("GET", `/agents${q}`);
     return data?.agents ?? [];
   }
-  const d = db || getDatabase();
+  const d = explicitDb || getDatabase();
   // Resolve partial project ID to full UUID
   const resolvedId = resolvePartialId(d, "projects", projectId) || projectId;
-  const rows = d
-    .query("SELECT * FROM agents WHERE active_project_id = ? ORDER BY last_seen_at DESC")
-    .all(resolvedId) as Record<string, unknown>[];
+  const { sql, params } = paginatedAgentQuery(
+    "SELECT * FROM agents WHERE active_project_id = ?",
+    [resolvedId],
+    normalized
+  );
+  const rows = d.query(sql).all(...params) as Record<string, unknown>[];
   return rows.map(parseAgentRow);
 }
 

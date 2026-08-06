@@ -70,17 +70,23 @@ export function registerAgentCommands(program: Command): void {
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const allAgents = listAgents();
         const limit = positiveIntOrDefault(opts.limit, DEFAULT_COMPACT_LIMIT);
         const offset = cursorOrOffset(opts.cursor, opts.offset) ?? 0;
-        const agents = globalOpts.json
-          ? allAgents
-          : allAgents.slice(offset, offset + limit + 1);
+        const explicitPagination =
+          opts.limit !== undefined ||
+          opts.cursor !== undefined ||
+          opts.offset !== undefined;
+        const agents = listAgents({
+          limit: globalOpts.json
+            ? (explicitPagination ? limit : undefined)
+            : limit + 1,
+          offset,
+        });
         const hasMore = !globalOpts.json && agents.length > limit;
         const displayAgents = hasMore ? agents.slice(0, limit) : agents;
 
         if (globalOpts.json) {
-          outputJson(allAgents);
+          outputJson(agents);
           return;
         }
 

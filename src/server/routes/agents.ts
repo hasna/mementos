@@ -12,12 +12,23 @@ import {
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson, getSearchParams } from "../helpers.js";
 
+function paginationInt(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return Math.floor(parsed);
+}
+
 // GET /api/agents — list agents
 addRoute("GET", "/api/agents", (_req: Request, url: URL) => {
   const q = getSearchParams(url);
+  const pagination = {
+    limit: paginationInt(q["limit"]),
+    offset: paginationInt(q["cursor"] ?? q["offset"]),
+  };
   const agents = q["project_id"]
-    ? listAgentsByProject(q["project_id"])
-    : listAgents();
+    ? listAgentsByProject(q["project_id"], pagination)
+    : listAgents(pagination);
   if (q["fields"]) {
     const fields = q["fields"].split(",").map((f: string) => f.trim());
     const filtered = agents.map(a => Object.fromEntries(fields.map((f: string) => [f, (a as unknown as Record<string, unknown>)[f]]).filter(([, v]) => v !== undefined)));

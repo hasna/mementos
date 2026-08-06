@@ -398,6 +398,33 @@ describe("GET /api/agents", () => {
     expect(Array.isArray(data.agents)).toBe(true);
     expect(typeof data.count).toBe("number");
   });
+
+  test("honors limit, cursor, offset, and an empty terminal page", async () => {
+    await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: `pagination-rest-a-${Date.now()}` }),
+    });
+    await api("/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: `pagination-rest-b-${Date.now()}` }),
+    });
+
+    const all = await api("/api/agents");
+    const first = await api("/api/agents?limit=1&cursor=0");
+    const second = await api("/api/agents?limit=1&cursor=1");
+    const offset = await api("/api/agents?limit=1&offset=1");
+    const offsetOnly = await api("/api/agents?offset=1");
+    const terminal = await api(`/api/agents?limit=1&cursor=${all.data.agents.length}`);
+
+    expect(first.data.agents).toHaveLength(1);
+    expect(second.data.agents).toHaveLength(1);
+    expect(second.data.agents[0].id).not.toBe(first.data.agents[0].id);
+    expect(offset.data.agents[0].id).toBe(second.data.agents[0].id);
+    expect(offsetOnly.data.agents.map((agent: { id: string }) => agent.id)).toEqual(
+      all.data.agents.slice(1).map((agent: { id: string }) => agent.id)
+    );
+    expect(terminal.data.agents).toEqual([]);
+  });
 });
 
 // ============================================================================

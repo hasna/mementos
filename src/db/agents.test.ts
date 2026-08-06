@@ -166,12 +166,58 @@ describe("listAgents", () => {
     const a = registerAgent("first");
     const b = registerAgent("second");
     // Re-register "first" to bump its last_seen_at
+    Bun.sleepSync(5);
     registerAgent("first");
     const agents = listAgents();
     expect(agents).toHaveLength(2);
     // "first" was re-registered last, so it should be first in the list
     expect(agents[0]!.name).toBe("first");
     expect(agents[1]!.name).toBe("second");
+  });
+
+  test("respects limit and offset, including an empty terminal page", () => {
+    const db = getDatabase();
+    const created = ["page-a", "page-b", "page-c"].map((name, index) => {
+      const agent = registerAgent(name);
+      db.run("UPDATE agents SET last_seen_at = ? WHERE id = ?", [
+        new Date(Date.UTC(2026, 7, 6, 12, 0, index)).toISOString(),
+        agent.id,
+      ]);
+      return agent;
+    });
+
+    const first = listAgents({ limit: 2, offset: 0 });
+    const second = listAgents({ limit: 2, offset: 2 });
+    const offsetOnly = listAgents({ offset: 1 }, db);
+    const terminal = listAgents({ limit: 2, offset: 3 });
+    const legacyDbArg = listAgents(db);
+
+    expect(first.map((agent) => agent.id)).toEqual([created[2]!.id, created[1]!.id]);
+    expect(second.map((agent) => agent.id)).toEqual([created[0]!.id]);
+    expect(offsetOnly.map((agent) => agent.id)).toEqual([created[1]!.id, created[0]!.id]);
+    expect(terminal).toEqual([]);
+    expect(legacyDbArg).toHaveLength(3);
+  });
+
+  test("uses a non-negative limit for offset-only adapter queries", () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    const db = {
+      query(sql: string) {
+        capturedSql = sql;
+        return {
+          all(...params: unknown[]) {
+            capturedParams = params;
+            return [];
+          },
+        };
+      },
+    } as unknown as ReturnType<typeof getDatabase>;
+
+    expect(listAgents({ offset: 4 }, db)).toEqual([]);
+    expect(capturedSql).toEndWith("LIMIT ? OFFSET ?");
+    expect(capturedSql).not.toContain("LIMIT -1");
+    expect(capturedParams).toEqual([Number.MAX_SAFE_INTEGER, 4]);
   });
 });
 
@@ -304,7 +350,7 @@ describe("listAgentsByProject", () => {
     const proj = registerProject("list-proj", "/tmp/list-proj");
     const a = registerAgent("agent-on-proj");
     updateAgent(a.id, { active_project_id: proj.id });
-    const result = listAgentsByProject(proj.id);
+    const result = listAgentsByProject(proj.id, getDatabase());
     expect(result.some(x => x.id === a.id)).toBe(true);
   });
 
