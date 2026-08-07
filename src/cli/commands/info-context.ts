@@ -11,6 +11,7 @@ import {
 import { searchMemories } from "../../lib/search.js";
 import type { MemoryCategory, MemoryScope, MemoryFilter } from "../../types/index.js";
 import {
+  resolveAgentFilter,
   outputJson,
   makeHandleError,
   type GlobalOpts,
@@ -41,7 +42,7 @@ export function registerContextCommand(program: Command): void {
         const categories = categoriesRaw
           ? (categoriesRaw.split(",").map((c: string) => c.trim()) as MemoryCategory[])
           : undefined;
-        const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+        const agentId = resolveAgentFilter((opts.agent as string | undefined) || globalOpts.agent);
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         const visibleMachineId = resolveVisibleMachineId(opts.machine as string | undefined);
 

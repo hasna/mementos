@@ -4,6 +4,7 @@ import { getProject } from "../../db/projects.js";
 import { listMemories } from "../../db/memories.js";
 import type { MemoryCategory, MemoryScope, MemoryFilter } from "../../types/index.js";
 import {
+  resolveAgentFilter,
   outputJson,
   makeHandleError,
   type GlobalOpts,
@@ -22,7 +23,7 @@ export function registerExportCommand(program: Command): void {
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+        const agentId = resolveAgentFilter((opts.agent as string | undefined) || globalOpts.agent);
         const projectPath =
           (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
