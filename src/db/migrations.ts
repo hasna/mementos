@@ -1,6 +1,8 @@
 // SQLite migration SQL strings — extracted from database.ts for readability.
 // Each entry is executed in order; the _migrations table tracks which have run.
 
+import { sqliteMementosProjectRegistrationSchemaSql } from "../project-registration/schema.js";
+
 export const MEMORY_VERSION_SNAPSHOT_TRIGGER = `
 CREATE TRIGGER IF NOT EXISTS memories_version_snapshot
 BEFORE UPDATE ON memories
@@ -1061,5 +1063,13 @@ UPDATE memory_audit_log SET new_value_hash = NULL
     AND new_value_hash NOT GLOB '*[^0-9A-F]*';
 
 INSERT OR IGNORE INTO _migrations (id) VALUES (37);
+`,
+
+  // Migration 38: immutable receipts and ownership bindings for the opt-in
+  // Projects full-registration contract. Ordinary project registration remains
+  // unchanged; only callers of the project-registration authority use this data.
+  `
+${sqliteMementosProjectRegistrationSchemaSql()}
+INSERT OR IGNORE INTO _migrations (id) VALUES (38);
 `,
 ];
