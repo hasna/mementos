@@ -4,7 +4,10 @@
  * Equivalent of the SQLite migrations in database.ts, translated for PostgreSQL.
  * Each element is a standalone SQL string that must be executed in order.
  */
-import { postgresMementosProjectRegistrationSchemaSql } from "../project-registration/schema.js";
+import {
+  postgresMementosProjectGuardedUpdateSchemaSql,
+  postgresMementosProjectRegistrationSchemaSql,
+} from "../project-registration/schema.js";
 
 export const PG_MIGRATIONS: string[] = [
   // Migration 1: Core schema
@@ -854,5 +857,12 @@ export const PG_MIGRATIONS: string[] = [
   `
   ${postgresMementosProjectRegistrationSchemaSql()}
   INSERT INTO _migrations (id) VALUES (38) ON CONFLICT DO NOTHING;
+  `,
+
+  // Guarded stable-ID project updates. Kept as a new migration so existing
+  // remote stores at migration 38 receive the immutable update receipt lane.
+  `
+  ${postgresMementosProjectGuardedUpdateSchemaSql()}
+  INSERT INTO _migrations (id) VALUES (39) ON CONFLICT DO NOTHING;
   `,
 ];

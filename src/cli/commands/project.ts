@@ -5,7 +5,9 @@ import {
   registerProject,
   getProject,
   listProjects,
-  updateProject,
+  applyProjectUpdate,
+  previewProjectUpdate,
+  rollbackProjectUpdate,
 } from "../../db/projects.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
 import {
@@ -43,6 +45,12 @@ export function registerProjectCommands(program: Command): void {
     .option("--path <path>", "Project path")
     .option("--description <text>", "Project description")
     .option("--memory-prefix <prefix>", "Project memory prefix")
+    .option("--expected-revision <revision>", "Exact updated_at revision required for compare-and-swap")
+    .option("--idempotency-key <key>", "Caller-owned key for one guarded mutation")
+    .option("--operation-id <id>", "Operation identifier (defaults to the idempotency key)")
+    .option("--step-id <id>", "Step identifier (defaults to mementos_project_update)")
+    .option("--dry-run", "Validate and preview the guarded update without writing")
+    .option("--rollback-receipt <id>", "Restore the exact before snapshot from an accepted update receipt")
     .option("--limit <n>", "Max results (compact default: 20)", parseInt)
     .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--offset <n>", "Offset for pagination", parseInt)
@@ -100,7 +108,8 @@ export function registerProjectCommands(program: Command): void {
           if (opts.memoryPrefix !== undefined) {
             updates.memory_prefix = opts.memoryPrefix as string;
           }
-          if (Object.keys(updates).length === 0) {
+          const rollbackReceipt = opts.rollbackReceipt as string | undefined;
+          if (Object.keys(updates).length === 0 && !rollbackReceipt) {
             console.error(
               chalk.red(
                 "At least one of --name, --path, --description, or --memory-prefix is required when updating"
@@ -108,20 +117,48 @@ export function registerProjectCommands(program: Command): void {
             );
             process.exit(1);
           }
-
-          const project = updateProject(opts.update as string, updates);
-          if (!project) {
-            console.error(chalk.red(`Project not found: ${opts.update as string}`));
+          if (Object.keys(updates).length > 0 && rollbackReceipt) {
+            console.error(chalk.red("Project fields and --rollback-receipt cannot be used together"));
             process.exit(1);
           }
+          const expectedRevision = opts.expectedRevision as string | undefined;
+          const idempotencyKey = opts.idempotencyKey as string | undefined;
+          if (!expectedRevision || !idempotencyKey) {
+            console.error(chalk.red(
+              "--expected-revision and --idempotency-key are required for every project update",
+            ));
+            process.exit(1);
+          }
+          const common = {
+            authority_id: "mementos",
+            tenant_id: "default",
+            corpus_id: "default",
+            operation_id: (opts.operationId as string | undefined) ?? idempotencyKey,
+            step_id: (opts.stepId as string | undefined)
+              ?? (rollbackReceipt ? "mementos_project_rollback" : "mementos_project_update"),
+            idempotency_key: idempotencyKey,
+            expected_revision: expectedRevision,
+          };
+          const result = rollbackReceipt
+            ? rollbackProjectUpdate(opts.update as string, {
+              ...common,
+              accepted_receipt_id: rollbackReceipt,
+            })
+            : opts.dryRun
+              ? previewProjectUpdate(opts.update as string, { ...common, updates })
+              : applyProjectUpdate(opts.update as string, { ...common, updates });
 
           if (globalOpts.json) {
-            outputJson(project);
+            outputJson(result);
           } else {
-            console.log(chalk.green("Project updated:"));
-            console.log(`  ${chalk.bold("ID:")}     ${project.id}`);
-            console.log(`  ${chalk.bold("Name:")}   ${project.name}`);
-            console.log(`  ${chalk.bold("Path:")}   ${project.path}`);
+            console.log(chalk.green(result.dry_run ? "Project update preview:" : "Project updated:"));
+            console.log(`  ${chalk.bold("ID:")}       ${result.project.id}`);
+            console.log(`  ${chalk.bold("Name:")}     ${result.project.name}`);
+            console.log(`  ${chalk.bold("Path:")}     ${result.project.path}`);
+            console.log(`  ${chalk.bold("Revision:")} ${result.project.updated_at}`);
+            if (result.receipt) {
+              console.log(`  ${chalk.bold("Receipt:")}  ${result.receipt.receipt_id}`);
+            }
           }
           return;
         }

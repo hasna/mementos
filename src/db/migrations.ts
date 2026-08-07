@@ -1,7 +1,10 @@
 // SQLite migration SQL strings — extracted from database.ts for readability.
 // Each entry is executed in order; the _migrations table tracks which have run.
 
-import { sqliteMementosProjectRegistrationSchemaSql } from "../project-registration/schema.js";
+import {
+  sqliteMementosProjectGuardedUpdateSchemaSql,
+  sqliteMementosProjectRegistrationSchemaSql,
+} from "../project-registration/schema.js";
 
 export const MEMORY_VERSION_SNAPSHOT_TRIGGER = `
 CREATE TRIGGER IF NOT EXISTS memories_version_snapshot
@@ -1071,5 +1074,13 @@ INSERT OR IGNORE INTO _migrations (id) VALUES (37);
   `
 ${sqliteMementosProjectRegistrationSchemaSql()}
 INSERT OR IGNORE INTO _migrations (id) VALUES (38);
+`,
+
+  // Migration 39: guarded stable-ID project updates. This is separate from
+  // migration 38 so databases that already applied the registration authority
+  // receive the new immutable update receipt lane.
+  `
+${sqliteMementosProjectGuardedUpdateSchemaSql()}
+INSERT OR IGNORE INTO _migrations (id) VALUES (39);
 `,
 ];

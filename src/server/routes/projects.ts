@@ -1,11 +1,18 @@
 import {
+  applyProjectUpdate,
+  getProjectUpdateReceipt,
+  previewProjectUpdate,
   registerProject,
   listProjects,
   getProject,
-  updateProject,
-  ProjectCollisionError,
+  rollbackProjectUpdate,
+  ProjectGuardedUpdateError,
 } from "../../db/projects.js";
-import type { UpdateProjectInput } from "../../types/index.js";
+import type {
+  ProjectAuthorityIdentity,
+  ProjectGuardedRollbackRequest,
+  ProjectGuardedUpdateRequest,
+} from "../../types/index.js";
 import { listAgentsByProject } from "../../db/agents.js";
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson, getSearchParams } from "../helpers.js";
@@ -45,41 +52,71 @@ addRoute("GET", "/api/projects/:id", (_req, _url, params) => {
   return json(project);
 });
 
-// PATCH /api/projects/:id — update a project by exact stable ID
-addRoute("PATCH", "/api/projects/:id", async (req, _url, params) => {
+function guardedUpdateError(error: ProjectGuardedUpdateError): Response {
+  const status = error.code === "PROJECT_UPDATE_AUTHORITY_MISMATCH"
+    ? 403
+    : error.code === "PROJECT_UPDATE_NOT_FOUND"
+      || error.code === "PROJECT_UPDATE_RECEIPT_NOT_FOUND"
+      ? 404
+      : error.code === "PROJECT_UPDATE_INVALID_INPUT"
+        ? 400
+        : 409;
+  return errorResponse(error.message, status, { code: error.code, ...error.details });
+}
+
+// Direct writes are deliberately disabled. The guarded route below binds the
+// exact stable ID, expected revision, caller idempotency key, and receipt.
+addRoute("PATCH", "/api/projects/:id", () => errorResponse(
+  "Unguarded project updates are disabled; use POST /projects/:id/guarded-update",
+  428,
+));
+
+addRoute("POST", "/api/projects/:id/guarded-update", async (req, _url, params) => {
   const body = (await readJson(req)) as Record<string, unknown> | null;
   if (!body) return errorResponse("Invalid JSON body", 400);
-
-  const input: UpdateProjectInput = {};
-  for (const field of ["name", "path"] as const) {
-    if (body[field] === undefined) continue;
-    if (typeof body[field] !== "string" || body[field].trim().length === 0) {
-      return errorResponse(`${field} must be a non-empty string`, 400);
-    }
-    input[field] = body[field];
-  }
-  for (const field of ["description", "memory_prefix"] as const) {
-    if (body[field] === undefined) continue;
-    if (body[field] !== null && typeof body[field] !== "string") {
-      return errorResponse(`${field} must be a string or null`, 400);
-    }
-    input[field] = body[field] as string | null;
-  }
-  if (Object.keys(input).length === 0) {
-    return errorResponse(
-      "At least one of name, path, description, or memory_prefix is required",
-      400
-    );
-  }
-
   try {
-    const project = updateProject(params["id"]!, input);
-    if (!project) return errorResponse("Project not found", 404);
-    return json(project);
+    const request = body as unknown as ProjectGuardedUpdateRequest & { dry_run?: boolean };
+    return json(request.dry_run
+      ? previewProjectUpdate(params["id"]!, request)
+      : applyProjectUpdate(params["id"]!, request));
   } catch (error) {
-    if (error instanceof ProjectCollisionError) {
-      return errorResponse(error.message, 409);
-    }
+    if (error instanceof ProjectGuardedUpdateError) return guardedUpdateError(error);
+    throw error;
+  }
+});
+
+addRoute("POST", "/api/projects/:id/guarded-rollback", async (req, _url, params) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body) return errorResponse("Invalid JSON body", 400);
+  try {
+    return json(rollbackProjectUpdate(
+      params["id"]!,
+      body as unknown as ProjectGuardedRollbackRequest,
+    ));
+  } catch (error) {
+    if (error instanceof ProjectGuardedUpdateError) return guardedUpdateError(error);
+    throw error;
+  }
+});
+
+addRoute("POST", "/api/projects/:id/update-receipts/lookup", async (req, _url, params) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body || typeof body["receipt_id"] !== "string") {
+    return errorResponse("receipt_id is required", 400);
+  }
+  try {
+    const identity: ProjectAuthorityIdentity = {
+      authority_id: String(body["authority_id"] ?? ""),
+      tenant_id: String(body["tenant_id"] ?? ""),
+      corpus_id: String(body["corpus_id"] ?? ""),
+    };
+    return json(getProjectUpdateReceipt(
+      params["id"]!,
+      body["receipt_id"],
+      identity,
+    ));
+  } catch (error) {
+    if (error instanceof ProjectGuardedUpdateError) return guardedUpdateError(error);
     throw error;
   }
 });

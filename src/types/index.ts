@@ -228,6 +228,59 @@ export interface UpdateProjectInput {
   memory_prefix?: string | null;
 }
 
+export interface ProjectAuthorityIdentity {
+  authority_id: string;
+  tenant_id: string;
+  corpus_id: string;
+}
+
+export interface ProjectGuardedUpdateRequest extends ProjectAuthorityIdentity {
+  operation_id: string;
+  step_id: string;
+  idempotency_key: string;
+  expected_revision: string;
+  updates: UpdateProjectInput;
+}
+
+export interface ProjectGuardedRollbackRequest extends ProjectAuthorityIdentity {
+  operation_id: string;
+  step_id: string;
+  idempotency_key: string;
+  expected_revision: string;
+  accepted_receipt_id: string;
+}
+
+export interface ProjectUpdateReceipt {
+  receipt_id: string;
+  authority: "mementos";
+  route: "mementos.project-guarded-update.v1";
+  package_version: string;
+  authority_id: string;
+  tenant_id: string;
+  corpus_id: string;
+  operation_id: string;
+  step_id: string;
+  direction: "forward" | "rollback";
+  idempotency_key: string;
+  request_digest: string;
+  outcome: "accepted";
+  target_id: string;
+  expected_revision: string;
+  result_revision: string;
+  result_digest: string;
+  accepted_receipt_id: string | null;
+  before_project: Project;
+  after_project: Project;
+  created_at: string;
+}
+
+export interface ProjectGuardedUpdateResult {
+  dry_run: boolean;
+  applied: boolean;
+  project: Project;
+  receipt: ProjectUpdateReceipt | null;
+}
+
 // ============================================================================
 // Stats
 // ============================================================================

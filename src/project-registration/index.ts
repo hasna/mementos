@@ -13,7 +13,9 @@ export {
 } from "./http.js";
 export {
   postgresMementosProjectRegistrationSchemaSql,
+  postgresMementosProjectGuardedUpdateSchemaSql,
   sqliteMementosProjectRegistrationSchemaSql,
+  sqliteMementosProjectGuardedUpdateSchemaSql,
 } from "./schema.js";
 export {
   MEMENTOS_PROJECT_REFERENCE_SURFACES,
@@ -28,6 +30,7 @@ export {
   MEMENTOS_PROJECT_REGISTRATION_CALLER_ROUTE,
   MEMENTOS_PROJECT_REGISTRATION_ROUTE,
   MEMENTOS_PROJECT_REGISTRATION_SCHEMA_VERSION,
+  MEMENTOS_PROJECT_GUARDED_UPDATE_ROUTE,
   MementosProjectRegistrationError,
 } from "./types.js";
 export type {
