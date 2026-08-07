@@ -49,6 +49,16 @@ addRoute("POST", "/api/memories/search", async (req) => {
   if (body["scope"]) filter.scope = body["scope"] as MemoryScope;
   if (body["category"]) filter.category = body["category"] as MemoryCategory;
   if (body["tags"]) filter.tags = body["tags"] as string[];
+  // agent_id and project_id were absent here while all three sibling search
+  // routes below read them. The client always sent both — `searchBody()` in
+  // src/lib/search.ts puts them on the wire — so they arrived and were dropped,
+  // which made the filter INERT rather than merely wrong: `search --agent me`
+  // returned every agent's memories, byte-identical to no filter at all. A full
+  // result set reads as a working search, so nothing announced the failure.
+  // Omitting a filter WIDENS; that is the invisible direction, and it is why
+  // these two lines are a data-exposure fix and not a completeness one.
+  if (body["agent_id"]) filter.agent_id = body["agent_id"] as string;
+  if (body["project_id"]) filter.project_id = body["project_id"] as string;
   if (body["session_id"]) filter.session_id = body["session_id"] as string;
   if (body["namespace"]) filter.namespace = body["namespace"] as string;
   if (body["limit"]) filter.limit = body["limit"] as number;
