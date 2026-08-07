@@ -5,7 +5,8 @@ import { getProject } from "../../db/projects.js";
 import { getMemoryByKey, touchMemory } from "../../db/memories.js";
 import { searchMemories } from "../../lib/search.js";
 import type { MemoryScope } from "../../types/index.js";
-import { outputJson, formatMemoryDetail, makeHandleError, type GlobalOpts } from "../helpers.js";
+import {
+  resolveAgentFilter, outputJson, formatMemoryDetail, makeHandleError, type GlobalOpts } from "../helpers.js";
 import { RECALL_EXIT_FUZZY, RECALL_EXIT_NOT_FOUND } from "./memory-cmd-recall-exit.js";
 
 export function registerRecallCommand(program: Command): void {
@@ -22,7 +23,7 @@ export function registerRecallCommand(program: Command): void {
     .action((key: string, opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+        const agentId = resolveAgentFilter((opts.agent as string | undefined) || globalOpts.agent);
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
         if (projectPath) {

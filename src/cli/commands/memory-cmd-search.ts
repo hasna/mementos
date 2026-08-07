@@ -5,6 +5,7 @@ import { getProject } from "../../db/projects.js";
 import { searchMemories, getSearchHistory, getPopularSearches } from "../../lib/search.js";
 import type { MemoryScope, MemoryCategory, MemoryFilter } from "../../types/index.js";
 import {
+  resolveAgentFilter,
   DEFAULT_SEARCH_LIMIT,
   outputJson,
   outputYaml,
@@ -88,13 +89,13 @@ export function registerSearchCommand(program: Command): void {
           const project = getProject(resolve(projectPath));
           if (project) projectId = project.id;
         }
-        const agentName = (opts.agent as string | undefined) || globalOpts.agent;
-        let agentId: string | undefined;
-        if (agentName) {
-          const { getAgent } = require("../../db/agents.js") as typeof import("../../db/agents.js");
-          const agent = getAgent(agentName);
-          if (agent) agentId = agent.id;
-        }
+        // Previously resolved with a drop-on-miss shape: an unresolvable name
+        // left `agentId` undefined, which removed the filter and WIDENED the
+        // query to every agent's rows. Narrowing on the raw value is the safer
+        // miss, and the shared helper warns so the miss is not silent.
+        const agentId = resolveAgentFilter(
+          (opts.agent as string | undefined) || globalOpts.agent
+        );
 
         const filter: MemoryFilter = {
           scope: opts.scope as MemoryScope | undefined,

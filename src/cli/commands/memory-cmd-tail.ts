@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { getProject } from "../../db/projects.js";
 import type { Memory, MemoryScope, MemoryCategory } from "../../types/index.js";
 import {
+  resolveAgentFilter,
   colorScope,
   colorCategory,
   formatWatchLine,
@@ -28,7 +29,7 @@ export function registerTailCommand(program: Command): void {
       try {
         const globalOpts = program.opts<GlobalOpts>();
         const jsonMode = !!globalOpts.json;
-        const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+        const agentId = resolveAgentFilter((opts.agent as string | undefined) || globalOpts.agent);
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
         if (projectPath) {

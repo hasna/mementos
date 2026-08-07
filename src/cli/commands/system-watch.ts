@@ -3,7 +3,8 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { listMemories } from "../../db/memories.js";
 import type { MemoryScope, MemoryFilter } from "../../types/index.js";
-import { colorScope, colorCategory, makeHandleError, type GlobalOpts } from "../helpers.js";
+import {
+  resolveAgentFilter, colorScope, colorCategory, makeHandleError, type GlobalOpts } from "../helpers.js";
 
 export function registerWatchCommand(program: Command): void {
   const handleError = makeHandleError(program);
@@ -19,7 +20,7 @@ export function registerWatchCommand(program: Command): void {
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
-        const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+        const agentId = resolveAgentFilter((opts.agent as string | undefined) || globalOpts.agent);
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
         if (projectPath) {

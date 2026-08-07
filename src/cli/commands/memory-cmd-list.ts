@@ -5,6 +5,7 @@ import { getProject } from "../../db/projects.js";
 import { listMemories } from "../../db/memories.js";
 import type { MemoryScope, MemoryCategory, MemoryStatus, MemoryFilter } from "../../types/index.js";
 import {
+  resolveAgentFilter,
   DEFAULT_COMPACT_LIMIT,
   outputJson,
   outputYaml,
@@ -48,7 +49,7 @@ export function registerListCommand(program: Command): void {
           isStructured ? 50 : DEFAULT_COMPACT_LIMIT
         );
         const offset = cursorOrOffset(opts.cursor, opts.offset);
-        const agentId = (opts.agent as string | undefined) || globalOpts.agent;
+        const agentId = resolveAgentFilter((opts.agent as string | undefined) || globalOpts.agent);
         const projectPath = (opts.project as string | undefined) || globalOpts.project;
         let projectId: string | undefined;
         if (projectPath) {

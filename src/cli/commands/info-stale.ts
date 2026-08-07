@@ -3,8 +3,8 @@ import chalk from "chalk";
 import { resolve } from "node:path";
 import { getStaleMemories } from "../../db/analytics.js";
 import { getProject } from "../../db/projects.js";
-import { getAgent } from "../../db/agents.js";
 import {
+  resolveAgentFilter,
   DEFAULT_COMPACT_LIMIT,
   outputJson,
   getOutputFormat,
@@ -46,12 +46,10 @@ export function registerStaleCommand(program: Command): void {
           const project = getProject(resolve(projectPath));
           if (project) projectId = project.id;
         }
-        const agentName = (opts.agent as string | undefined) || globalOpts.agent;
-        let agentId: string | undefined;
-        if (agentName) {
-          const agent = getAgent(agentName);
-          if (agent) agentId = agent.id;
-        }
+        // Same drop-on-miss widening as `search` had; see resolveAgentFilter.
+        const agentId = resolveAgentFilter(
+          (opts.agent as string | undefined) || globalOpts.agent
+        );
 
         const rows = getStaleMemories({
           days,
