@@ -22,6 +22,10 @@
     "./storage": {
       "types": "./dist/storage.d.ts",
       "import": "./dist/storage.js"
+    },
+    "./project-registration": {
+      "types": "./dist/project-registration.d.ts",
+      "import": "./dist/project-registration.js"
     }
   },
   "files": [
@@ -36,7 +40,7 @@
   ],
   "scripts": {
     "clean": "rm -rf dist",
-    "build": "bun run clean && bun build src/cli/index.tsx --outdir dist/cli --target bun --external ink --external react --external chalk --external @modelcontextprotocol/sdk --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/server/index.ts --outdir dist/server --target bun --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/index.ts src/storage.ts src/pg-sync-worker.ts --outdir dist --target bun --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/sdk/index.ts --outdir dist/sdk --target bun && tsc --emitDeclarationOnly --outDir dist",
+    "build": "bun run clean && bun build src/cli/index.tsx --outdir dist/cli --target bun --external ink --external react --external chalk --external @modelcontextprotocol/sdk --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/mcp/index.ts --outdir dist/mcp --target bun --external @modelcontextprotocol/sdk --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/server/index.ts --outdir dist/server --target bun --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/index.ts src/storage.ts src/pg-sync-worker.ts src/project-registration.ts --outdir dist --target bun --external @hasna/contracts --external @hasna/contracts/schemas --external @hasna/contracts/auth --external pg && bun build src/sdk/index.ts --outdir dist/sdk --target bun && tsc --emitDeclarationOnly --outDir dist",
     "prepare": "bun run build",
     "prepack": "bun run build && bun run scan-artifact",
     "prepublishOnly": "bun run typecheck && bun run test && bun run contracts:conformance && contracts no-cloud-scan .",

@@ -51,6 +51,7 @@ async function findFreePort(start: number): Promise<number> {
 import "./routes/memories.js";
 import "./routes/agents.js";
 import "./routes/projects.js";
+import "./routes/project-registration.js";
 import "./routes/entities.js";
 import "./routes/tasks.js";
 import "./routes/system.js";

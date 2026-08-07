@@ -121,6 +121,10 @@ export {
   listProjects,
 } from "./db/projects.js";
 
+// Opt-in, receipt-backed authority used by Projects full registration.
+// Ordinary registerProject behavior above remains unchanged.
+export * from "./project-registration/index.js";
+
 // Machines
 export {
   registerMachine,
