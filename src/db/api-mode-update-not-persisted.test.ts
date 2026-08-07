@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test } from "bun:test";
+import { DB_PATH_ENV_KEYS } from "./api-mode.js";
 import { resetDatabase } from "./database.js";
 import { updateMemory } from "./memories.js";
 import { updateProject } from "./projects.js";
@@ -28,6 +29,7 @@ const API_KEY = "HASNA_MEMENTOS_API_KEY";
 const ENV_KEYS = [
   API_URL,
   API_KEY,
+  ...DB_PATH_ENV_KEYS,
   "HASNA_MEMENTOS_API_TIMEOUT",
   "HASNA_MEMENTOS_DATABASE_URL",
   "HASNA_MEMENTOS_STORAGE_MODE",
