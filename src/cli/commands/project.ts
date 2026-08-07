@@ -1,7 +1,12 @@
 import type { Command } from "commander";
 import chalk from "chalk";
 import { resolve } from "node:path";
-import { registerProject, getProject, listProjects } from "../../db/projects.js";
+import {
+  registerProject,
+  getProject,
+  listProjects,
+  updateProject,
+} from "../../db/projects.js";
 import { listMemories, touchMemory } from "../../db/memories.js";
 import {
   resolveVisibleMachineId,
@@ -33,15 +38,22 @@ export function registerProjectCommands(program: Command): void {
     .command("projects")
     .description("Manage projects")
     .option("--add", "Add a new project")
+    .option("--update <id>", "Update a project by its exact stable ID")
     .option("--name <name>", "Project name")
     .option("--path <path>", "Project path")
     .option("--description <text>", "Project description")
+    .option("--memory-prefix <prefix>", "Project memory prefix")
     .option("--limit <n>", "Max results (compact default: 20)", parseInt)
     .option("--cursor <n>", "Cursor offset for the next page", parseInt)
     .option("--offset <n>", "Offset for pagination", parseInt)
     .action((opts) => {
       try {
         const globalOpts = program.opts<GlobalOpts>();
+
+        if (opts.add && opts.update) {
+          console.error(chalk.red("--add and --update cannot be used together"));
+          process.exit(1);
+        }
 
         if (opts.add) {
           const name = opts.name as string | undefined;
@@ -69,6 +81,47 @@ export function registerProjectCommands(program: Command): void {
             console.log(
               `  ${chalk.bold("Path:")}   ${project.path}`
             );
+          }
+          return;
+        }
+
+        if (opts.update) {
+          const updates: {
+            name?: string;
+            path?: string;
+            description?: string;
+            memory_prefix?: string;
+          } = {};
+          if (opts.name !== undefined) updates.name = opts.name as string;
+          if (opts.path !== undefined) updates.path = resolve(opts.path as string);
+          if (opts.description !== undefined) {
+            updates.description = opts.description as string;
+          }
+          if (opts.memoryPrefix !== undefined) {
+            updates.memory_prefix = opts.memoryPrefix as string;
+          }
+          if (Object.keys(updates).length === 0) {
+            console.error(
+              chalk.red(
+                "At least one of --name, --path, --description, or --memory-prefix is required when updating"
+              )
+            );
+            process.exit(1);
+          }
+
+          const project = updateProject(opts.update as string, updates);
+          if (!project) {
+            console.error(chalk.red(`Project not found: ${opts.update as string}`));
+            process.exit(1);
+          }
+
+          if (globalOpts.json) {
+            outputJson(project);
+          } else {
+            console.log(chalk.green("Project updated:"));
+            console.log(`  ${chalk.bold("ID:")}     ${project.id}`);
+            console.log(`  ${chalk.bold("Name:")}   ${project.name}`);
+            console.log(`  ${chalk.bold("Path:")}   ${project.path}`);
           }
           return;
         }
