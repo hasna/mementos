@@ -914,6 +914,11 @@ implements MementosProjectRegistrationAuthority {
       exact_readback: true,
       conditional_inverse: true,
       ambiguous_outcome_reconciliation: true,
+      guarded_update: true,
+      no_write_dry_run: true,
+      expected_revision_compare_and_swap: true,
+      caller_idempotency: true,
+      exact_inverse_rollback: true,
     };
   }
 

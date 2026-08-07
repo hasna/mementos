@@ -24,6 +24,11 @@ describe("project registration server routes", () => {
         route: "mementos.project-registration.v1",
         supported_resources: ["project"],
         immutable_receipts: true,
+        guarded_update: true,
+        no_write_dry_run: true,
+        expected_revision_compare_and_swap: true,
+        caller_idempotency: true,
+        exact_inverse_rollback: true,
       },
     });
   });

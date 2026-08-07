@@ -562,13 +562,18 @@ describe("GET /api/projects/:id", () => {
   });
 });
 
-describe("PATCH /api/projects/:id", () => {
-  test("is exposed by the live OpenAPI route table", async () => {
+describe("POST /api/projects/:id/guarded-update", () => {
+  test("is exposed by the live OpenAPI route table and the old direct PATCH is guarded", async () => {
     const { status, data } = await api("/openapi.json");
     expect(status).toBe(200);
-    expect(data.paths["/v1/projects/{id}"].patch).toMatchObject({
-      operationId: "patch_v1_projects_id",
+    expect(data.paths["/v1/projects/{id}/guarded-update"].post).toMatchObject({
+      operationId: "post_v1_projects_id_guarded_update",
     });
+    const direct = await api("/api/projects/project-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "unsafe" }),
+    });
+    expect(direct.status).toBe(428);
   });
 
   test("renames and repaths a project without changing its stable ID", async () => {
@@ -580,18 +585,28 @@ describe("PATCH /api/projects/:id", () => {
       body: JSON.stringify({ name: oldName, path: oldPath }),
     });
 
-    const { status, data } = await api(`/api/projects/${project.id}`, {
-      method: "PATCH",
+    const { status, data } = await api(`/api/projects/${project.id}/guarded-update`, {
+      method: "POST",
       body: JSON.stringify({
-        name: `API Project ${suffix}`,
-        path: `/tmp/api-project-${suffix}`,
+        authority_id: "mementos",
+        tenant_id: "default",
+        corpus_id: "default",
+        operation_id: `api-project-update-${suffix}`,
+        step_id: "mementos_project_update",
+        idempotency_key: `api-project-update-request-${suffix}`,
+        expected_revision: project.updated_at,
+        updates: {
+          name: `API Project ${suffix}`,
+          path: `/tmp/api-project-${suffix}`,
+        },
       }),
     });
 
     expect(status).toBe(200);
-    expect(data.id).toBe(project.id);
-    expect(data.name).toBe(`API Project ${suffix}`);
-    expect(data.path).toBe(`/tmp/api-project-${suffix}`);
+    expect(data.project.id).toBe(project.id);
+    expect(data.project.name).toBe(`API Project ${suffix}`);
+    expect(data.project.path).toBe(`/tmp/api-project-${suffix}`);
+    expect(data.receipt).toMatchObject({ direction: "forward", target_id: project.id });
 
     const staleName = await api(`/api/projects/${encodeURIComponent(oldName)}`);
     const stalePath = await api(`/api/projects/${encodeURIComponent(oldPath)}`);
@@ -610,13 +625,29 @@ describe("PATCH /api/projects/:id", () => {
       body: JSON.stringify({ name: `Target ${suffix}`, path: `/tmp/target-${suffix}` }),
     });
 
-    const nameCollision = await api(`/api/projects/${source.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name: `target ${suffix}` }),
+    const common = {
+      authority_id: "mementos",
+      tenant_id: "default",
+      corpus_id: "default",
+      operation_id: `api-project-collision-${suffix}`,
+      step_id: "mementos_project_update",
+      expected_revision: source.updated_at,
+    };
+    const nameCollision = await api(`/api/projects/${source.id}/guarded-update`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...common,
+        idempotency_key: `api-project-name-collision-${suffix}`,
+        updates: { name: `target ${suffix}` },
+      }),
     });
-    const pathCollision = await api(`/api/projects/${source.id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ path: target.path }),
+    const pathCollision = await api(`/api/projects/${source.id}/guarded-update`, {
+      method: "POST",
+      body: JSON.stringify({
+        ...common,
+        idempotency_key: `api-project-path-collision-${suffix}`,
+        updates: { path: target.path },
+      }),
     });
 
     expect(nameCollision.status).toBe(409);
@@ -625,8 +656,20 @@ describe("PATCH /api/projects/:id", () => {
 
   test("returns 404 for a missing stable project ID", async () => {
     const { status } = await api(
-      "/api/projects/00000000-0000-0000-0000-000000000000",
-      { method: "PATCH", body: JSON.stringify({ name: "Missing Project" }) }
+      "/api/projects/00000000-0000-0000-0000-000000000000/guarded-update",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          authority_id: "mementos",
+          tenant_id: "default",
+          corpus_id: "default",
+          operation_id: "api-project-missing-operation-v1",
+          step_id: "mementos_project_update",
+          idempotency_key: "api-project-missing-request-0001",
+          expected_revision: "2026-08-07T00:00:00.000Z",
+          updates: { name: "Missing Project" },
+        }),
+      },
     );
     expect(status).toBe(404);
   });

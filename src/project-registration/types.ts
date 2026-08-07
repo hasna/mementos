@@ -1,6 +1,8 @@
 export const MEMENTOS_PROJECT_REGISTRATION_ROUTE = "mementos.project-registration.v1" as const;
 export const MEMENTOS_PROJECT_REGISTRATION_CALLER_ROUTE = "projects.full-registration.v1" as const;
 export const MEMENTOS_PROJECT_REGISTRATION_SCHEMA_VERSION = 1 as const;
+export const MEMENTOS_PROJECT_GUARDED_UPDATE_ROUTE =
+  "mementos.project-guarded-update.v1" as const;
 
 export type MementosProjectRegistrationResourceKind = "project";
 export type MementosProjectRegistrationDirection = "forward" | "inverse";
@@ -36,6 +38,11 @@ export interface MementosProjectRegistrationCapability {
   exact_readback: true;
   conditional_inverse: true;
   ambiguous_outcome_reconciliation: true;
+  guarded_update: true;
+  no_write_dry_run: true;
+  expected_revision_compare_and_swap: true;
+  caller_idempotency: true;
+  exact_inverse_rollback: true;
 }
 
 export interface MementosProjectRegistrationReceipt {

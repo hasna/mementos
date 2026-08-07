@@ -595,11 +595,40 @@ describe("cli memory commands (continued)", () => {
     expect(createdResult.exitCode).toBe(0);
     const created = JSON.parse(createdResult.stdout);
 
+    const previewResult = await runCli(
+      "--json",
+      "projects",
+      "--update",
+      created.id,
+      "--expected-revision",
+      created.updated_at,
+      "--idempotency-key",
+      `cli-project-preview-${suffix}`,
+      "--dry-run",
+      "--name",
+      newName,
+      "--path",
+      newPath
+    );
+    expect(previewResult.exitCode).toBe(0);
+    expect(JSON.parse(previewResult.stdout)).toMatchObject({
+      dry_run: true,
+      applied: false,
+      receipt: null,
+      project: { id: created.id, name: newName, path: newPath },
+    });
+    const afterPreview = JSON.parse((await runCli("--json", "projects")).stdout);
+    expect(afterPreview).toContainEqual(created);
+
     const updatedResult = await runCli(
       "--json",
       "projects",
       "--update",
       created.id,
+      "--expected-revision",
+      created.updated_at,
+      "--idempotency-key",
+      `cli-project-update-${suffix}`,
       "--name",
       newName,
       "--path",
@@ -607,17 +636,115 @@ describe("cli memory commands (continued)", () => {
     );
     expect(updatedResult.exitCode).toBe(0);
     const updated = JSON.parse(updatedResult.stdout);
-    expect(updated).toMatchObject({ id: created.id, name: newName, path: newPath });
+    expect(updated).toMatchObject({
+      dry_run: false,
+      applied: true,
+      project: { id: created.id, name: newName, path: newPath },
+      receipt: { direction: "forward", target_id: created.id },
+    });
+
+    const duplicateResult = await runCli(
+      "--json",
+      "projects",
+      "--update",
+      created.id,
+      "--expected-revision",
+      created.updated_at,
+      "--idempotency-key",
+      `cli-project-update-${suffix}`,
+      "--name",
+      newName,
+      "--path",
+      newPath
+    );
+    expect(duplicateResult.exitCode).toBe(0);
+    expect(JSON.parse(duplicateResult.stdout)).toEqual(updated);
+
+    const inconsistentRetry = await runCli(
+      "projects",
+      "--update",
+      created.id,
+      "--expected-revision",
+      created.updated_at,
+      "--idempotency-key",
+      `cli-project-update-${suffix}`,
+      "--description",
+      "different request under the same caller key"
+    );
+    expect(inconsistentRetry.exitCode).toBe(1);
+    expect(inconsistentRetry.stderr).toMatch(/idempotency key.*different request/i);
+
+    const projectBeforeRollbackPreview = JSON.parse(
+      (await runCli("--json", "projects")).stdout,
+    ).find((project: { id: string }) => project.id === created.id);
+    const { Database } = await import("bun:sqlite");
+    const receiptDbBeforeRollbackPreview = new Database(DB_PATH, { readonly: true });
+    const receiptCountBeforeRollbackPreview = receiptDbBeforeRollbackPreview
+      .query("SELECT COUNT(*) AS count FROM mementos_project_update_receipts")
+      .get() as { count: number };
+    receiptDbBeforeRollbackPreview.close();
+
+    const rollbackPreviewResult = await runCli(
+      "--json",
+      "projects",
+      "--update",
+      created.id,
+      "--expected-revision",
+      updated.project.updated_at,
+      "--idempotency-key",
+      `cli-project-rollback-preview-${suffix}`,
+      "--rollback-receipt",
+      updated.receipt.receipt_id,
+      "--dry-run"
+    );
+    expect(rollbackPreviewResult.exitCode).toBe(1);
+    expect(rollbackPreviewResult.stderr).toMatch(/dry-run.*rollback.*not supported/i);
+
+    const projectAfterRollbackPreview = JSON.parse(
+      (await runCli("--json", "projects")).stdout,
+    ).find((project: { id: string }) => project.id === created.id);
+    const receiptDbAfterRollbackPreview = new Database(DB_PATH, { readonly: true });
+    const receiptCountAfterRollbackPreview = receiptDbAfterRollbackPreview
+      .query("SELECT COUNT(*) AS count FROM mementos_project_update_receipts")
+      .get() as { count: number };
+    receiptDbAfterRollbackPreview.close();
+    expect(projectAfterRollbackPreview).toEqual(projectBeforeRollbackPreview);
+    expect(receiptCountAfterRollbackPreview).toEqual(receiptCountBeforeRollbackPreview);
+
+    const rollbackResult = await runCli(
+      "--json",
+      "projects",
+      "--update",
+      created.id,
+      "--expected-revision",
+      updated.project.updated_at,
+      "--idempotency-key",
+      `cli-project-rollback-${suffix}`,
+      "--rollback-receipt",
+      updated.receipt.receipt_id
+    );
+    expect(rollbackResult.exitCode).toBe(0);
+    expect(JSON.parse(rollbackResult.stdout)).toMatchObject({
+      project: created,
+      receipt: {
+        direction: "rollback",
+        accepted_receipt_id: updated.receipt.receipt_id,
+      },
+    });
 
     const staleLocator = await runCli(
       "projects",
       "--update",
       oldName,
+      "--expected-revision",
+      created.updated_at,
+      "--idempotency-key",
+      `cli-project-stale-locator-${suffix}`,
       "--description",
       "must not resolve by the old name"
     );
     expect(staleLocator.exitCode).toBe(1);
-    expect(staleLocator.stderr).toMatch(/project not found/i);
+    expect(staleLocator.stderr).toMatch(/exact stable ID/i);
   });
 
   test("save --json returns parseable JSON", async () => {

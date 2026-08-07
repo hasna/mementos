@@ -152,6 +152,59 @@ export interface UpdateProjectInput {
   memory_prefix?: string | null;
 }
 
+export interface ProjectAuthorityIdentity {
+  authority_id: string;
+  tenant_id: string;
+  corpus_id: string;
+}
+
+export interface ProjectGuardedUpdateRequest extends ProjectAuthorityIdentity {
+  operation_id: string;
+  step_id: string;
+  idempotency_key: string;
+  expected_revision: string;
+  updates: UpdateProjectInput;
+}
+
+export interface ProjectGuardedRollbackRequest extends ProjectAuthorityIdentity {
+  operation_id: string;
+  step_id: string;
+  idempotency_key: string;
+  expected_revision: string;
+  accepted_receipt_id: string;
+}
+
+export interface ProjectUpdateReceipt {
+  receipt_id: string;
+  authority: "mementos";
+  route: "mementos.project-guarded-update.v1";
+  package_version: string;
+  authority_id: string;
+  tenant_id: string;
+  corpus_id: string;
+  operation_id: string;
+  step_id: string;
+  direction: "forward" | "rollback";
+  idempotency_key: string;
+  request_digest: string;
+  outcome: "accepted";
+  target_id: string;
+  expected_revision: string;
+  result_revision: string;
+  result_digest: string;
+  accepted_receipt_id: string | null;
+  before_project: Project;
+  after_project: Project;
+  created_at: string;
+}
+
+export interface ProjectGuardedUpdateResult {
+  dry_run: boolean;
+  applied: boolean;
+  project: Project;
+  receipt: ProjectUpdateReceipt | null;
+}
+
 export interface Entity {
   id: string;
   name: string;
@@ -698,36 +751,86 @@ export class MementosClient {
     return this.get(`/api/projects/${encodeURIComponent(idOrName)}`);
   }
 
-  async updateProject(id: string, updates: UpdateProjectInput): Promise<Project> {
+  async updateProject(
+    id: string,
+    request: ProjectGuardedUpdateRequest,
+  ): Promise<ProjectGuardedUpdateResult> {
     const normalizedUpdates: UpdateProjectInput = {};
-    if (updates.name !== undefined) normalizedUpdates.name = updates.name.trim();
-    if (updates.path !== undefined) normalizedUpdates.path = updates.path.trim();
-    if (updates.description !== undefined) normalizedUpdates.description = updates.description;
-    if (updates.memory_prefix !== undefined) {
-      normalizedUpdates.memory_prefix = updates.memory_prefix;
+    if (request.updates.name !== undefined) normalizedUpdates.name = request.updates.name.trim();
+    if (request.updates.path !== undefined) normalizedUpdates.path = request.updates.path.trim();
+    if (request.updates.description !== undefined) {
+      normalizedUpdates.description = request.updates.description;
     }
-    const project = await this.patch<Project>(
-      `/api/projects/${encodeURIComponent(id)}`,
-      normalizedUpdates
+    if (request.updates.memory_prefix !== undefined) {
+      normalizedUpdates.memory_prefix = request.updates.memory_prefix;
+    }
+    const result = await this.post<ProjectGuardedUpdateResult>(
+      `/api/projects/${encodeURIComponent(id)}/guarded-update`,
+      { ...request, updates: normalizedUpdates, dry_run: false },
     );
-    if (project.id !== id) {
+    if (result.project.id !== id || result.receipt?.target_id !== id) {
       throw new MementosError(
-        `Project update did not persist for ${id}: server returned a different stable ID (${project.id})`,
+        `Project update did not persist for ${id}: server returned a different stable ID`,
         502
       );
     }
     for (const field of ["name", "path", "description", "memory_prefix"] as const) {
       if (
         normalizedUpdates[field] !== undefined &&
-        project[field] !== normalizedUpdates[field]
+        result.project[field] !== normalizedUpdates[field]
       ) {
         throw new MementosError(
-          `Project update did not persist for ${id}: ${field} remained ${JSON.stringify(project[field])}`,
+          `Project update did not persist for ${id}: ${field} remained ${JSON.stringify(result.project[field])}`,
           502
         );
       }
     }
-    return project;
+    return result;
+  }
+
+  async previewProjectUpdate(
+    id: string,
+    request: ProjectGuardedUpdateRequest,
+  ): Promise<ProjectGuardedUpdateResult> {
+    const result = await this.post<ProjectGuardedUpdateResult>(
+      `/api/projects/${encodeURIComponent(id)}/guarded-update`,
+      { ...request, dry_run: true },
+    );
+    if (result.applied || result.receipt !== null || result.project.id !== id) {
+      throw new MementosError(
+        `Project update dry run violated its no-write contract for ${id}`,
+        502,
+      );
+    }
+    return result;
+  }
+
+  async rollbackProjectUpdate(
+    id: string,
+    request: ProjectGuardedRollbackRequest,
+  ): Promise<ProjectGuardedUpdateResult> {
+    const result = await this.post<ProjectGuardedUpdateResult>(
+      `/api/projects/${encodeURIComponent(id)}/guarded-rollback`,
+      request,
+    );
+    if (result.project.id !== id || result.receipt?.target_id !== id) {
+      throw new MementosError(
+        `Project rollback did not preserve the exact stable ID ${id}`,
+        502,
+      );
+    }
+    return result;
+  }
+
+  getProjectUpdateReceipt(
+    id: string,
+    receiptId: string,
+    identity: ProjectAuthorityIdentity,
+  ): Promise<ProjectUpdateReceipt> {
+    return this.post(`/api/projects/${encodeURIComponent(id)}/update-receipts/lookup`, {
+      ...identity,
+      receipt_id: receiptId,
+    });
   }
 
   getProjectAgents(idOrName: string): Promise<{ agents: Agent[]; count: number }> {
