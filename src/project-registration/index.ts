@@ -16,6 +16,15 @@ export {
   sqliteMementosProjectRegistrationSchemaSql,
 } from "./schema.js";
 export {
+  MEMENTOS_PROJECT_REFERENCE_SURFACES,
+  hasMementosProjectReferences,
+  mementosProjectReferenceCounts,
+} from "./project-references.js";
+export type {
+  MementosProjectReferenceCounts,
+  MementosProjectReferenceKey,
+} from "./project-references.js";
+export {
   MEMENTOS_PROJECT_REGISTRATION_CALLER_ROUTE,
   MEMENTOS_PROJECT_REGISTRATION_ROUTE,
   MEMENTOS_PROJECT_REGISTRATION_SCHEMA_VERSION,

@@ -5,6 +5,7 @@ import { createHash } from "node:crypto";
 import type { DbAdapter } from "../storage.js";
 import { getDatabase, resetDatabase } from "../db/database.js";
 import { getProject, registerProject } from "../db/projects.js";
+import { createSessionJob, getSessionJob } from "../db/session-jobs.js";
 import {
   MementosProjectRegistrationError,
   createLocalMementosProjectRegistrationAuthority,
@@ -443,6 +444,40 @@ describe("package-owned Mementos project registration authority", () => {
     const retry = await registrationAuthority.compensate(inverse);
     expect(retry).toEqual(failed);
     expect(getProject(accepted.target_id!, db)).not.toBeNull();
+  });
+
+  test("receipt-scoped inverse preserves a project referenced by a supported session job", async () => {
+    const db = getDatabase();
+    const { authority: registrationAuthority, request } = await forwardRequest(
+      new OwnedPathHandle(PROJECT_PATH),
+      "fleet-resources-session-job-dependent-v1",
+      db,
+    );
+    const accepted = await registrationAuthority.create(request);
+    const job = createSessionJob({
+      session_id: "session-job-dependent",
+      transcript: "supported queued transcript",
+      project_id: accepted.target_id!,
+    }, db);
+    expect(accepted.outcome).toBe("accepted");
+    expect(getSessionJob(job.id, db)?.project_id).toBe(accepted.target_id);
+
+    const inverse = await inverseRequest(registrationAuthority, accepted);
+    const receipt = await registrationAuthority.compensate(inverse);
+
+    expect(receipt).toMatchObject({
+      outcome: "terminal_nonacceptance",
+      reason: "target_has_dependents",
+      target_id: accepted.target_id,
+      accepted_receipt_id: accepted.receipt_id,
+    });
+    expect(getProject(accepted.target_id!, db)).not.toBeNull();
+    expect(getSessionJob(job.id, db)?.project_id).toBe(accepted.target_id);
+
+    const retry = await registrationAuthority.compensate(inverse);
+    expect(retry).toEqual(receipt);
+    expect(getProject(accepted.target_id!, db)).not.toBeNull();
+    expect(getSessionJob(job.id, db)?.project_id).toBe(accepted.target_id);
   });
 
   test("receipt-scoped inverse refuses a drifted project and preserves it", async () => {

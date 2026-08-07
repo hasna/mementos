@@ -4,6 +4,12 @@ import type { DbAdapter } from "../storage.js";
 import { getMementosPackageVersion } from "../lib/package-version.js";
 import type { Project } from "../types/index.js";
 import {
+  deleteMementosProjectIfUnreferenced,
+  hasMementosProjectReferences,
+  mementosProjectReferenceCounts,
+  type MementosProjectReferenceCounts,
+} from "./project-references.js";
+import {
   MEMENTOS_PROJECT_REGISTRATION_CALLER_ROUTE,
   MEMENTOS_PROJECT_REGISTRATION_ROUTE,
   MementosProjectRegistrationError,
@@ -55,17 +61,6 @@ interface BindingRow {
   removed_receipt_id: string | null;
   created_at: string;
   updated_at: string;
-}
-
-interface ProjectReferenceCounts {
-  memories: number;
-  sessions: number;
-  entities: number;
-  agents: number;
-  tool_events: number;
-  tasks: number;
-  consolidation_runs: number;
-  reflection_runs: number;
 }
 
 class WriteBoundaryError extends Error {
@@ -400,31 +395,11 @@ function getProjectByPath(db: DbAdapter, path: string): Project | null {
   return row ? getProjectByExactId(db, String(row["id"])) : null;
 }
 
-function projectReferenceCounts(db: DbAdapter, id: string): ProjectReferenceCounts {
-  const row = db.get(`
-    SELECT
-      (SELECT COUNT(*) FROM memories WHERE project_id = ?) AS memories,
-      (SELECT COUNT(*) FROM sessions WHERE project_id = ?) AS sessions,
-      (SELECT COUNT(*) FROM entities WHERE project_id = ?) AS entities,
-      (SELECT COUNT(*) FROM agents WHERE active_project_id = ?) AS agents,
-      (SELECT COUNT(*) FROM tool_events WHERE project_id = ?) AS tool_events,
-      (SELECT COUNT(*) FROM tasks WHERE project_id = ?) AS tasks,
-      (SELECT COUNT(*) FROM memory_consolidation_runs WHERE project_id = ?) AS consolidation_runs,
-      (SELECT COUNT(*) FROM memory_reflection_runs WHERE project_id = ?) AS reflection_runs
-  `, id, id, id, id, id, id, id, id) as Record<string, unknown>;
-  return {
-    memories: Number(row["memories"]),
-    sessions: Number(row["sessions"]),
-    entities: Number(row["entities"]),
-    agents: Number(row["agents"]),
-    tool_events: Number(row["tool_events"]),
-    tasks: Number(row["tasks"]),
-    consolidation_runs: Number(row["consolidation_runs"]),
-    reflection_runs: Number(row["reflection_runs"]),
-  };
-}
-
-function projectRecord(db: DbAdapter, project: Project): MementosProjectRegistrationRecord {
+function projectRecord(
+  db: DbAdapter,
+  project: Project,
+  references: MementosProjectReferenceCounts = mementosProjectReferenceCounts(db, project.id),
+): MementosProjectRegistrationRecord {
   return {
     target_id: project.id,
     revision: project.updated_at,
@@ -436,7 +411,7 @@ function projectRecord(db: DbAdapter, project: Project): MementosProjectRegistra
       memory_prefix: project.memory_prefix,
       created_at: project.created_at,
       updated_at: project.updated_at,
-      references: projectReferenceCounts(db, project.id),
+      references,
     }),
   };
 }
@@ -1288,10 +1263,22 @@ implements MementosProjectRegistrationAuthority {
             accepted_receipt_id: storedAccepted.receipt_id,
           });
         }
-        const current = projectRecord(this.db, project);
+        if (project.path !== path) {
+          return this.terminal(request, callDigest, "target_drifted", {
+            target_id: storedAccepted.target_id,
+            accepted_receipt_id: storedAccepted.receipt_id,
+          });
+        }
+        const references = mementosProjectReferenceCounts(this.db, project.id);
+        if (hasMementosProjectReferences(references)) {
+          return this.terminal(request, callDigest, "target_has_dependents", {
+            target_id: storedAccepted.target_id,
+            accepted_receipt_id: storedAccepted.receipt_id,
+          });
+        }
+        const current = projectRecord(this.db, project, references);
         if (
-          project.path !== path
-          || current.revision !== storedAccepted.result_revision
+          current.revision !== storedAccepted.result_revision
           || current.digest !== storedAccepted.result_digest
         ) {
           return this.terminal(request, callDigest, "target_drifted", {
@@ -1301,16 +1288,35 @@ implements MementosProjectRegistrationAuthority {
         }
 
         this.writeBoundary("before_object_write", request);
+        let deleted: number;
         try {
-          const result = this.db.run("DELETE FROM projects WHERE id = ?", storedAccepted.target_id);
-          if (result.changes !== 1) {
-            throw new MementosProjectRegistrationError(
-              "MEMENTOS_PROJECT_REGISTRATION_CONFLICT",
-              "conditional inverse did not delete exactly one project",
-            );
-          }
+          deleted = deleteMementosProjectIfUnreferenced(
+            this.db,
+            storedAccepted.target_id!,
+          );
         } catch (cause) {
           throw new WriteBoundaryError("before_object_write", cause);
+        }
+        if (deleted !== 1) {
+          const remaining = getProjectByExactId(this.db, storedAccepted.target_id!);
+          if (
+            remaining
+            && hasMementosProjectReferences(
+              mementosProjectReferenceCounts(this.db, storedAccepted.target_id!),
+            )
+          ) {
+            return this.terminal(request, callDigest, "target_has_dependents", {
+              target_id: storedAccepted.target_id,
+              accepted_receipt_id: storedAccepted.receipt_id,
+            });
+          }
+          throw new WriteBoundaryError(
+            "before_object_write",
+            new MementosProjectRegistrationError(
+              "MEMENTOS_PROJECT_REGISTRATION_CONFLICT",
+              "conditional inverse did not delete exactly one unreferenced project",
+            ),
+          );
         }
         this.writeBoundary("after_object_write", request);
         const inverseRecord = {

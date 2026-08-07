@@ -8,6 +8,7 @@ import {
   postgresMementosProjectRegistrationSchemaSql,
   sqliteMementosProjectRegistrationSchemaSql,
 } from "./schema.js";
+import { MEMENTOS_PROJECT_REFERENCE_SURFACES } from "./project-references.js";
 
 const RECEIPT_COLUMNS = [
   "receipt_id",
@@ -59,6 +60,26 @@ const BINDING_COLUMNS = [
   "created_at",
   "updated_at",
 ] as const;
+
+function postgresDirectProjectReferences(): string[] {
+  const ddl = PG_MIGRATIONS.join("\n");
+  const references = new Set<string>();
+  for (const match of ddl.matchAll(
+    /CREATE TABLE IF NOT EXISTS\s+([a-z_][a-z0-9_]*)\s*\(([\s\S]*?)\);/gi,
+  )) {
+    const table = match[1]!;
+    for (const line of match[2]!.split("\n")) {
+      const column = line.match(/^\s*(project_id|active_project_id)\s+/i)?.[1];
+      if (column) references.add(`${table}.${column.toLowerCase()}`);
+    }
+  }
+  for (const match of ddl.matchAll(
+    /ALTER TABLE\s+([a-z_][a-z0-9_]*)\s+ADD COLUMN(?: IF NOT EXISTS)?\s+(project_id|active_project_id)\b/gi,
+  )) {
+    references.add(`${match[1]}.${match[2]}`.toLowerCase());
+  }
+  return [...references].sort();
+}
 
 beforeEach(() => {
   resetDatabase();
@@ -134,5 +155,24 @@ describe("Mementos project registration schema parity", () => {
     expect(postgres).toContain("BEFORE UPDATE OR DELETE");
     expect(postgres).toContain("created_by_operation BOOLEAN NOT NULL");
     expect(postgres).toContain("created_at TIMESTAMPTZ NOT NULL");
+  });
+
+  test("the inverse dependency registry covers every SQLite and PostgreSQL project relationship", () => {
+    const expected = MEMENTOS_PROJECT_REFERENCE_SURFACES
+      .map(({ table, column }) => `${table}.${column}`)
+      .sort();
+    const sqlite = (getDatabase().query(`
+      SELECT schema_table.name AS table_name, table_column.name AS column_name
+      FROM sqlite_schema AS schema_table
+      JOIN pragma_table_info(schema_table.name) AS table_column
+      WHERE schema_table.type = 'table'
+        AND table_column.name IN ('project_id', 'active_project_id')
+      ORDER BY schema_table.name, table_column.name
+    `).all() as Array<{ table_name: string; column_name: string }>)
+      .map(({ table_name, column_name }) => `${table_name}.${column_name}`);
+
+    expect(expected).toHaveLength(14);
+    expect(sqlite).toEqual(expected);
+    expect(postgresDirectProjectReferences()).toEqual(expected);
   });
 });
