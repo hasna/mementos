@@ -674,6 +674,43 @@ describe("cli memory commands (continued)", () => {
     expect(inconsistentRetry.exitCode).toBe(1);
     expect(inconsistentRetry.stderr).toMatch(/idempotency key.*different request/i);
 
+    const projectBeforeRollbackPreview = JSON.parse(
+      (await runCli("--json", "projects")).stdout,
+    ).find((project: { id: string }) => project.id === created.id);
+    const { Database } = await import("bun:sqlite");
+    const receiptDbBeforeRollbackPreview = new Database(DB_PATH, { readonly: true });
+    const receiptCountBeforeRollbackPreview = receiptDbBeforeRollbackPreview
+      .query("SELECT COUNT(*) AS count FROM mementos_project_update_receipts")
+      .get() as { count: number };
+    receiptDbBeforeRollbackPreview.close();
+
+    const rollbackPreviewResult = await runCli(
+      "--json",
+      "projects",
+      "--update",
+      created.id,
+      "--expected-revision",
+      updated.project.updated_at,
+      "--idempotency-key",
+      `cli-project-rollback-preview-${suffix}`,
+      "--rollback-receipt",
+      updated.receipt.receipt_id,
+      "--dry-run"
+    );
+    expect(rollbackPreviewResult.exitCode).toBe(1);
+    expect(rollbackPreviewResult.stderr).toMatch(/dry-run.*rollback.*not supported/i);
+
+    const projectAfterRollbackPreview = JSON.parse(
+      (await runCli("--json", "projects")).stdout,
+    ).find((project: { id: string }) => project.id === created.id);
+    const receiptDbAfterRollbackPreview = new Database(DB_PATH, { readonly: true });
+    const receiptCountAfterRollbackPreview = receiptDbAfterRollbackPreview
+      .query("SELECT COUNT(*) AS count FROM mementos_project_update_receipts")
+      .get() as { count: number };
+    receiptDbAfterRollbackPreview.close();
+    expect(projectAfterRollbackPreview).toEqual(projectBeforeRollbackPreview);
+    expect(receiptCountAfterRollbackPreview).toEqual(receiptCountBeforeRollbackPreview);
+
     const rollbackResult = await runCli(
       "--json",
       "projects",

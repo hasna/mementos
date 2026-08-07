@@ -121,6 +121,10 @@ export function registerProjectCommands(program: Command): void {
             console.error(chalk.red("Project fields and --rollback-receipt cannot be used together"));
             process.exit(1);
           }
+          if (opts.dryRun && rollbackReceipt) {
+            console.error(chalk.red("Dry-run project rollback is not supported"));
+            process.exit(1);
+          }
           const expectedRevision = opts.expectedRevision as string | undefined;
           const idempotencyKey = opts.idempotencyKey as string | undefined;
           if (!expectedRevision || !idempotencyKey) {
