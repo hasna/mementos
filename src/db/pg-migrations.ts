@@ -4,6 +4,8 @@
  * Equivalent of the SQLite migrations in database.ts, translated for PostgreSQL.
  * Each element is a standalone SQL string that must be executed in order.
  */
+import { postgresMementosProjectRegistrationSchemaSql } from "../project-registration/schema.js";
+
 export const PG_MIGRATIONS: string[] = [
   // Migration 1: Core schema
   `
@@ -844,5 +846,13 @@ export const PG_MIGRATIONS: string[] = [
   $$ LANGUAGE plpgsql;
 
   INSERT INTO _migrations (id) VALUES (37) ON CONFLICT DO NOTHING;
+  `,
+
+  // Immutable receipts and ownership bindings for the opt-in Projects
+  // full-registration contract. The authority code is shared by both adapters;
+  // this migration supplies PostgreSQL-equivalent constraints and triggers.
+  `
+  ${postgresMementosProjectRegistrationSchemaSql()}
+  INSERT INTO _migrations (id) VALUES (38) ON CONFLICT DO NOTHING;
   `,
 ];

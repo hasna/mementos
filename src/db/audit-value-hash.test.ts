@@ -152,8 +152,12 @@ describe("memory_audit_log value hashes are never fabricated", () => {
 });
 
 describe("migration 37 repairs rows the old triggers already fabricated", () => {
-  // Migration 37 is the last entry in MIGRATIONS, so its id is the array length.
-  const MIGRATION_37 = MIGRATIONS[MIGRATIONS.length - 1]!;
+  const MIGRATION_37 = MIGRATIONS.find((sql) =>
+    sql.includes("INSERT OR IGNORE INTO _migrations (id) VALUES (37);")
+  );
+  if (!MIGRATION_37) {
+    throw new Error("shipped migration 37 is missing");
+  }
 
   // Exactly what `hex(randomblob(16))` produced: 32 UPPERCASE hex characters.
   const FABRICATED = "8DDF06929AE396FC4D7461AE1F629E4D";
