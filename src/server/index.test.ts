@@ -562,6 +562,76 @@ describe("GET /api/projects/:id", () => {
   });
 });
 
+describe("PATCH /api/projects/:id", () => {
+  test("is exposed by the live OpenAPI route table", async () => {
+    const { status, data } = await api("/openapi.json");
+    expect(status).toBe(200);
+    expect(data.paths["/v1/projects/{id}"].patch).toMatchObject({
+      operationId: "patch_v1_projects_id",
+    });
+  });
+
+  test("renames and repaths a project without changing its stable ID", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const oldName = `iproj-api-${suffix}`;
+    const oldPath = `/tmp/iproj-api-${suffix}`;
+    const { data: project } = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: oldName, path: oldPath }),
+    });
+
+    const { status, data } = await api(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        name: `API Project ${suffix}`,
+        path: `/tmp/api-project-${suffix}`,
+      }),
+    });
+
+    expect(status).toBe(200);
+    expect(data.id).toBe(project.id);
+    expect(data.name).toBe(`API Project ${suffix}`);
+    expect(data.path).toBe(`/tmp/api-project-${suffix}`);
+
+    const staleName = await api(`/api/projects/${encodeURIComponent(oldName)}`);
+    const stalePath = await api(`/api/projects/${encodeURIComponent(oldPath)}`);
+    expect(staleName.status).toBe(404);
+    expect(stalePath.status).toBe(404);
+  });
+
+  test("returns 409 for project name and path collisions", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const { data: source } = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: `Source ${suffix}`, path: `/tmp/source-${suffix}` }),
+    });
+    const { data: target } = await api("/api/projects", {
+      method: "POST",
+      body: JSON.stringify({ name: `Target ${suffix}`, path: `/tmp/target-${suffix}` }),
+    });
+
+    const nameCollision = await api(`/api/projects/${source.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ name: `target ${suffix}` }),
+    });
+    const pathCollision = await api(`/api/projects/${source.id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ path: target.path }),
+    });
+
+    expect(nameCollision.status).toBe(409);
+    expect(pathCollision.status).toBe(409);
+  });
+
+  test("returns 404 for a missing stable project ID", async () => {
+    const { status } = await api(
+      "/api/projects/00000000-0000-0000-0000-000000000000",
+      { method: "PATCH", body: JSON.stringify({ name: "Missing Project" }) }
+    );
+    expect(status).toBe(404);
+  });
+});
+
 describe("GET /api/projects/:id/agents", () => {
   test("lists agents active on project", async () => {
     const { data: proj } = await api("/api/projects", { method: "POST", body: JSON.stringify({ name: "agents-proj", path: "/tmp/agents-proj" }) });

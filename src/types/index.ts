@@ -221,6 +221,13 @@ export interface Project {
   updated_at: string;
 }
 
+export interface UpdateProjectInput {
+  name?: string;
+  path?: string;
+  description?: string | null;
+  memory_prefix?: string | null;
+}
+
 // ============================================================================
 // Stats
 // ============================================================================

@@ -576,6 +576,50 @@ describe("cli memory commands (continued)", () => {
     expect(exitCode).toBe(0);
   });
 
+  test("projects updates name and path by stable ID", async () => {
+    const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const oldName = `iproj-cli-${suffix}`;
+    const oldPath = join(tmpdir(), oldName);
+    const newName = `CLI Project ${suffix}`;
+    const newPath = join(tmpdir(), `cli-project-${suffix}`);
+
+    const createdResult = await runCli(
+      "--json",
+      "projects",
+      "--add",
+      "--name",
+      oldName,
+      "--path",
+      oldPath
+    );
+    expect(createdResult.exitCode).toBe(0);
+    const created = JSON.parse(createdResult.stdout);
+
+    const updatedResult = await runCli(
+      "--json",
+      "projects",
+      "--update",
+      created.id,
+      "--name",
+      newName,
+      "--path",
+      newPath
+    );
+    expect(updatedResult.exitCode).toBe(0);
+    const updated = JSON.parse(updatedResult.stdout);
+    expect(updated).toMatchObject({ id: created.id, name: newName, path: newPath });
+
+    const staleLocator = await runCli(
+      "projects",
+      "--update",
+      oldName,
+      "--description",
+      "must not resolve by the old name"
+    );
+    expect(staleLocator.exitCode).toBe(1);
+    expect(staleLocator.stderr).toMatch(/project not found/i);
+  });
+
   test("save --json returns parseable JSON", async () => {
     const { stdout, exitCode } = await runCli("--json", "save", "json-save-key", "json-save-val");
     expect(exitCode).toBe(0);

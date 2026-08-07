@@ -145,6 +145,13 @@ export interface Project {
   updated_at: string;
 }
 
+export interface UpdateProjectInput {
+  name?: string;
+  path?: string;
+  description?: string | null;
+  memory_prefix?: string | null;
+}
+
 export interface Entity {
   id: string;
   name: string;
@@ -689,6 +696,38 @@ export class MementosClient {
 
   getProject(idOrName: string): Promise<Project> {
     return this.get(`/api/projects/${encodeURIComponent(idOrName)}`);
+  }
+
+  async updateProject(id: string, updates: UpdateProjectInput): Promise<Project> {
+    const normalizedUpdates: UpdateProjectInput = {};
+    if (updates.name !== undefined) normalizedUpdates.name = updates.name.trim();
+    if (updates.path !== undefined) normalizedUpdates.path = updates.path.trim();
+    if (updates.description !== undefined) normalizedUpdates.description = updates.description;
+    if (updates.memory_prefix !== undefined) {
+      normalizedUpdates.memory_prefix = updates.memory_prefix;
+    }
+    const project = await this.patch<Project>(
+      `/api/projects/${encodeURIComponent(id)}`,
+      normalizedUpdates
+    );
+    if (project.id !== id) {
+      throw new MementosError(
+        `Project update did not persist for ${id}: server returned a different stable ID (${project.id})`,
+        502
+      );
+    }
+    for (const field of ["name", "path", "description", "memory_prefix"] as const) {
+      if (
+        normalizedUpdates[field] !== undefined &&
+        project[field] !== normalizedUpdates[field]
+      ) {
+        throw new MementosError(
+          `Project update did not persist for ${id}: ${field} remained ${JSON.stringify(project[field])}`,
+          502
+        );
+      }
+    }
+    return project;
   }
 
   getProjectAgents(idOrName: string): Promise<{ agents: Agent[]; count: number }> {

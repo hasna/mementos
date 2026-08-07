@@ -16,6 +16,7 @@ export type {
   DedupeMode,
   Agent,
   Project,
+  UpdateProjectInput,
   MementosConfig,
   SyncDirection,
   SyncOptions,
@@ -119,6 +120,8 @@ export {
   registerProject,
   getProject,
   listProjects,
+  updateProject,
+  ProjectCollisionError,
 } from "./db/projects.js";
 
 // Machines

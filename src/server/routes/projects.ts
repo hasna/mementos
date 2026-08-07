@@ -1,4 +1,11 @@
-import { registerProject, listProjects, getProject } from "../../db/projects.js";
+import {
+  registerProject,
+  listProjects,
+  getProject,
+  updateProject,
+  ProjectCollisionError,
+} from "../../db/projects.js";
+import type { UpdateProjectInput } from "../../types/index.js";
 import { listAgentsByProject } from "../../db/agents.js";
 import { addRoute } from "../router.js";
 import { json, errorResponse, readJson, getSearchParams } from "../helpers.js";
@@ -36,6 +43,45 @@ addRoute("GET", "/api/projects/:id", (_req, _url, params) => {
   const project = getProject(params["id"]!);
   if (!project) return errorResponse("Project not found", 404);
   return json(project);
+});
+
+// PATCH /api/projects/:id — update a project by exact stable ID
+addRoute("PATCH", "/api/projects/:id", async (req, _url, params) => {
+  const body = (await readJson(req)) as Record<string, unknown> | null;
+  if (!body) return errorResponse("Invalid JSON body", 400);
+
+  const input: UpdateProjectInput = {};
+  for (const field of ["name", "path"] as const) {
+    if (body[field] === undefined) continue;
+    if (typeof body[field] !== "string" || body[field].trim().length === 0) {
+      return errorResponse(`${field} must be a non-empty string`, 400);
+    }
+    input[field] = body[field];
+  }
+  for (const field of ["description", "memory_prefix"] as const) {
+    if (body[field] === undefined) continue;
+    if (body[field] !== null && typeof body[field] !== "string") {
+      return errorResponse(`${field} must be a string or null`, 400);
+    }
+    input[field] = body[field] as string | null;
+  }
+  if (Object.keys(input).length === 0) {
+    return errorResponse(
+      "At least one of name, path, description, or memory_prefix is required",
+      400
+    );
+  }
+
+  try {
+    const project = updateProject(params["id"]!, input);
+    if (!project) return errorResponse("Project not found", 404);
+    return json(project);
+  } catch (error) {
+    if (error instanceof ProjectCollisionError) {
+      return errorResponse(error.message, 409);
+    }
+    throw error;
+  }
 });
 
 // GET /api/projects/:id/agents — list agents active on a project
