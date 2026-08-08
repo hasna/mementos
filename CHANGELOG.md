@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.14.76 — Receipt-backed project registration authority
+
+**Additive authority path.** Integrations can now create a project only when
+absent, read it back by exact full ID, retrieve an immutable bounded terminal
+receipt, and compensate only the unchanged object created by that accepted
+receipt. Existing `registerProject` callers retain their current behaviour.
+
+- Adds the opt-in `mementos.project-registration.v1` authority across SQLite
+  and authenticated HTTP/PostgreSQL, with deterministic idempotency keys,
+  normalized request digests, exact destination identity, revisions, and
+  duplicate-of attribution.
+- Byte-identical retries return the stored accepted result; a pre-existing
+  project is a terminal no-clobber outcome with zero mutation. Ambiguous
+  post-commit results reconcile through exact receipt lookup, bounded to
+  `max_items=1`.
+- Receipt-scoped inverse deletes only the unchanged project created by that
+  receipt. It refuses deletion when the project has drifted or any of the 14
+  supported project-reference surfaces is populated.
+- Canonical paths remain private authority inputs. Receipts expose full IDs
+  and bounded evidence instead of returning the path. (#56)
+
+### Also carried by this release
+
+- Add exact stable-ID project updates and guarded compare-and-swap updates with
+  immutable receipts, idempotent replay, and exact rollback. (#57, #59)
+- Resolve CLI `--agent <name>` filters on read paths instead of silently
+  returning an empty result. (#60)
+- Apply `agent_id` and `project_id` filters in `/api/memories/search` instead
+  of discarding them. (#61)
+- Test-only: isolate API-mode project-update tests from local database path
+  selectors. (#58)
+
 ## 0.14.73 — `save` refuses an unresolvable `--agent`/`--project`
 
 **Behaviour change.** `mementos save` no longer discards a scoping flag it
