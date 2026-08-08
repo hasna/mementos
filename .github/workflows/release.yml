@@ -1,8 +1,9 @@
 name: Release npm package
 
 # npm trusted publishing binds @hasna/mementos to this workflow filename and
-# the npm-release environment below. Keep both names aligned with the registry
-# configuration; this workflow deliberately has no long-lived-token fallback.
+# the npm-release environment below. OIDC publishes the preserved tarball under
+# a version-specific quarantine tag. A separate package-scoped credential can
+# mutate dist-tags but is never available to the publication step.
 
 on:
   push:
@@ -21,11 +22,22 @@ jobs:
     if: github.repository == 'hasna/mementos'
     runs-on: ubuntu-latest
     environment: npm-release
-    timeout-minutes: 30
+    timeout-minutes: 45
+    env:
+      NPM_DIST_TAG_TOKEN_CONFIGURED: ${{ secrets.NPM_DIST_TAG_TOKEN != '' }}
     permissions:
       contents: read
       id-token: write
     steps:
+      - name: Verify release environment is provisioned
+        run: |
+          set -euo pipefail
+          if [ "${NPM_DIST_TAG_TOKEN_CONFIGURED}" != "true" ]; then
+            echo "::error::NPM_DIST_TAG_TOKEN is not configured in the npm-release environment"
+            exit 1
+          fi
+          echo "release environment is provisioned for quarantined publication and promotion"
+
       - name: Check out the release commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -44,22 +56,30 @@ jobs:
         with:
           bun-version: "1.3.14"
 
-      - name: Verify npm supports trusted publishing
+      - name: Verify pinned release toolchain
         run: |
           set -euo pipefail
-          have="$(npm --version)"
-          need="11.5.1"
-          if [ "$(printf '%s\n%s\n' "${need}" "${have}" | sort -V | head -n1)" != "${need}" ]; then
-            echo "::error::npm ${have} is older than ${need}; trusted publishing is unavailable"
+          node_version="$(node --version)"
+          npm_version="$(npm --version)"
+          bun_version="$(bun --version)"
+          if [ "${node_version}" != "v24.18.0" ]; then
+            echo "::error::Node ${node_version} is not v24.18.0"
             exit 1
           fi
-          echo "npm ${have} meets the ${need} trusted-publishing minimum"
+          if [ "${npm_version}" != "11.16.0" ]; then
+            echo "::error::npm ${npm_version} is not 11.16.0"
+            exit 1
+          fi
+          if [ "${bun_version}" != "1.3.14" ]; then
+            echo "::error::Bun ${bun_version} is not 1.3.14"
+            exit 1
+          fi
+          echo "release toolchain is exact: Node ${node_version}, npm ${npm_version}, Bun ${bun_version}"
 
-      - name: Install locked dependencies
-        run: bun install --frozen-lockfile
+      - name: Install locked dependencies with release-age quarantine
+        run: bun install --frozen-lockfile --minimum-release-age 604800
 
       - name: Bind the tag to the package version
-        id: version
         run: |
           set -euo pipefail
           expected_name="@hasna/mementos"
@@ -93,9 +113,6 @@ jobs:
             echo "::error::tag ref, event SHA, and checked-out commit do not agree"
             exit 1
           fi
-
-          echo "name=${pkg_name}" >> "${GITHUB_OUTPUT}"
-          echo "version=${pkg_version}" >> "${GITHUB_OUTPUT}"
           echo "tag ${GITHUB_REF_NAME}, package ${pkg_name}@${pkg_version}, and commit ${GITHUB_SHA} agree"
 
       - name: Require the release commit on protected main
@@ -108,87 +125,59 @@ jobs:
           fi
           echo "release commit ${GITHUB_SHA} is contained in current protected main"
 
-      - name: Reject an already published version
-        run: |
-          set -euo pipefail
-          name="${{ steps.version.outputs.name }}"
-          version="${{ steps.version.outputs.version }}"
-          cache_dir="$(mktemp -d)"
-          stdout_file="${cache_dir}/npm-view.out"
-          stderr_file="${cache_dir}/npm-view.err"
-          trap 'rm -rf "${cache_dir}"' EXIT
-
-          set +e
-          npm_config_cache="${cache_dir}" npm view "${name}@${version}" version >"${stdout_file}" 2>"${stderr_file}"
-          query_rc=$?
-          set -e
-
-          if [ "${query_rc}" -eq 0 ]; then
-            echo "::error::${name}@${version} is already published and npm versions are immutable"
-            exit 1
-          fi
-          if ! grep -Eq 'code E404|E404' "${stderr_file}"; then
-            sed -n '1,20p' "${stderr_file}" >&2
-            echo "::error::registry preflight failed with rc=${query_rc}; refusing to treat it as an unpublished version"
-            exit "${query_rc}"
-          fi
-          echo "${name}@${version} is not yet published"
-
       - name: Typecheck
         run: bun run typecheck
 
       - name: Test
         run: bun run test
 
-      - name: Build
-        run: bun run build
-
-      - name: Publish to npm via OIDC trusted publishing
-        run: npm publish --provenance --access public
-
-      - name: Verify the published version and provenance from the registry
+      - name: Verify package contracts
         run: |
           set -euo pipefail
-          name="${{ steps.version.outputs.name }}"
-          version="${{ steps.version.outputs.version }}"
+          bun run contracts:conformance
+          contracts no-cloud-scan .
 
-          # Node 24.18.0 bundles npm 11.16.0, whose `npm view` command requests
-          # full metadata. Five fresh-cache reads at ten-second spacing span
-          # forty seconds, beyond the measured 10.8-second purge convergence.
-          for attempt in 1 2 3 4 5; do
-            cache_dir="$(mktemp -d)"
-            metadata_file="${cache_dir}/metadata.json"
+      - name: Build and scan the package artifact
+        run: |
+          set -euo pipefail
+          bun run build
+          bun run scan-artifact
 
-            set +e
-            npm_config_cache="${cache_dir}" npm view "${name}@${version}" version dist.attestations --json >"${metadata_file}"
-            query_rc=$?
-            set -e
+      - name: Bind and preserve the deterministic release candidate
+        run: >-
+          bun run scripts/release-provenance.ts candidate
+          --out "$RUNNER_TEMP/release-candidate.json"
+          --artifact "$RUNNER_TEMP/release-candidate.tgz"
 
-            if [ "${query_rc}" -eq 0 ] && node - "${version}" "${metadata_file}" <<'NODE'
-          const { readFileSync } = require("node:fs");
-          const [expectedVersion, metadataPath] = process.argv.slice(2);
-          const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-          const predicateType = metadata["dist.attestations"]?.provenance?.predicateType;
+      - name: Reconcile an interrupted publication
+        id: reconciliation
+        run: >-
+          bun run scripts/release-provenance.ts ensure-unpublished
+          --candidate "$RUNNER_TEMP/release-candidate.json"
 
-          if (metadata.version !== expectedVersion) {
-            console.error(`registry resolved ${expectedVersion} to ${metadata.version}`);
-            process.exit(1);
-          }
-          if (predicateType !== "https://slsa.dev/provenance/v1") {
-            console.error(`registry has no SLSA provenance for ${expectedVersion}`);
-            process.exit(1);
-          }
-          NODE
-            then
-              rm -rf "${cache_dir}"
-              echo "registry serves ${name}@${version} with SLSA provenance"
-              exit 0
-            fi
+      - name: Publish preserved candidate under version quarantine
+        id: publication
+        run: >-
+          bun run scripts/release-provenance.ts publish-staged
+          --candidate "$RUNNER_TEMP/release-candidate.json"
 
-            rm -rf "${cache_dir}"
-            echo "attempt ${attempt}: ${name}@${version} or its provenance is not visible yet; waiting"
-            sleep 10
-          done
+      - name: Verify quarantined registry bytes, provenance, signatures, and CLI
+        if: ${{ steps.publication.outputs.state == 'staged' }}
+        run: >-
+          bun run scripts/release-provenance.ts verify-registry
+          --candidate "$RUNNER_TEMP/release-candidate.json"
+          --phase staged
 
-          echo "::error::${name}@${version} with SLSA provenance did not become visible after publish"
-          exit 1
+      - name: Promote the verified version to latest
+        if: ${{ steps.publication.outputs.state == 'staged' }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_DIST_TAG_TOKEN }}
+        run: >-
+          bun run scripts/release-provenance.ts promote
+          --candidate "$RUNNER_TEMP/release-candidate.json"
+
+      - name: Verify final dist-tag and artifact agreement
+        run: >-
+          bun run scripts/release-provenance.ts verify-registry
+          --candidate "$RUNNER_TEMP/release-candidate.json"
+          --phase promoted
