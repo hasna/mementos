@@ -25,8 +25,16 @@ import {
   sep,
 } from "node:path";
 import { isDeepStrictEqual } from "node:util";
+import { fileURLToPath } from "node:url";
+import type {
+  Bundle as SigstoreBundle,
+  VerifyOptions as SigstoreVerifyOptions,
+} from "sigstore";
 
 export const RELEASE_WORKFLOW = ".github/workflows/release.yml";
+export const RELEASE_REPOSITORY = "hasna/mementos";
+export const GITHUB_ACTIONS_OIDC_ISSUER =
+  "https://token.actions.githubusercontent.com";
 export const PUBLISH_PREDICATE =
   "https://github.com/npm/attestation/tree/main/specs/publish/v0.1";
 export const PROVENANCE_PREDICATE = "https://slsa.dev/provenance/v1";
@@ -52,6 +60,9 @@ const GITHUB_ACTIONS_BUILD_TYPE =
 const GITHUB_ACTIONS_BUILDER = "https://github.com/actions/runner/github-hosted";
 const PACK_RESTORE_SCRIPT = ".mementos-pack-restore.cjs";
 const PACK_MANIFEST_ENV = "MEMENTOS_RELEASE_PACK_MANIFEST";
+const SIGSTORE_VERIFY_HELPER = fileURLToPath(
+  new URL("./verify-sigstore-bundle.mjs", import.meta.url),
+);
 const REQUIRED_STATEMENT_TYPE = new Map<string, string>([
   [PUBLISH_PREDICATE, IN_TOTO_STATEMENT_V01],
   [PROVENANCE_PREDICATE, IN_TOTO_STATEMENT_V1],
@@ -134,8 +145,23 @@ export interface RegistryReleaseAttemptOperations {
   readPackageMetadata: () => Promise<unknown>;
   readTarball: (url: URL) => Promise<Uint8Array>;
   awaitInstallVisibility: () => Promise<void>;
-  verifyConsumer: () => unknown[];
+  verifyConsumer: () => Promise<unknown> | unknown;
+  verifyAttestationBundle?: AttestationBundleVerifier;
 }
+
+export type ReleaseCertificateIdentityPolicy = Required<
+  Pick<SigstoreVerifyOptions, "certificateIssuer" | "certificateIdentityURI">
+>;
+
+export type AttestationBundleVerifier = (
+  bundle: SigstoreBundle,
+  policy: ReleaseCertificateIdentityPolicy,
+) => Promise<unknown>;
+
+type RegistryReleaseLaneRunner = <T>(
+  label: string,
+  operation: () => Promise<T> | T,
+) => Promise<T>;
 
 export interface PromotionSnapshot {
   latest?: string;
@@ -224,6 +250,21 @@ function run(
     }`,
   );
   return result.stdout ?? "";
+}
+
+export async function verifySigstoreBundleWithNode(
+  bundle: unknown,
+  policy: ReleaseCertificateIdentityPolicy,
+): Promise<string> {
+  return run(
+    "node",
+    [SIGSTORE_VERIFY_HELPER],
+    dirname(SIGSTORE_VERIFY_HELPER),
+    {
+      input: JSON.stringify({ bundle, policy }),
+      timeoutMs: 30_000,
+    },
+  ).trim();
 }
 
 function loadManifest(root: string): Manifest {
@@ -1240,6 +1281,32 @@ function integrityHex(integrity: string): string {
   return decodeBase64(match[1], "candidate integrity").toString("hex");
 }
 
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function releaseCertificateIdentityPolicy(
+  value: ReleaseCandidate,
+): ReleaseCertificateIdentityPolicy {
+  check(
+    value.repository === RELEASE_REPOSITORY,
+    `candidate repository must be ${RELEASE_REPOSITORY}`,
+  );
+  check(
+    value.workflow === RELEASE_WORKFLOW,
+    `candidate workflow must be ${RELEASE_WORKFLOW}`,
+  );
+  const expectedTag = `npm/mementos/v${value.version}`;
+  check(value.tag === expectedTag, `candidate tag must be ${expectedTag}`);
+  const identity =
+    `https://github.com/${RELEASE_REPOSITORY}/${RELEASE_WORKFLOW}` +
+    `@refs/tags/${expectedTag}`;
+  return {
+    certificateIssuer: GITHUB_ACTIONS_OIDC_ISSUER,
+    certificateIdentityURI: `^${escapeRegularExpression(identity)}$`,
+  };
+}
+
 function positiveInteger(value: unknown, label: string): bigint {
   const encoded = typeof value === "number" ? String(value) : value;
   check(
@@ -1314,15 +1381,28 @@ function auditedStatement(
   return decoded;
 }
 
-export function verifyAttestations(
+export async function verifyAttestations(
   value: ReleaseCandidate,
   input: unknown,
-): void {
+  verifyAttestationBundle: AttestationBundleVerifier =
+    verifySigstoreBundleWithNode,
+): Promise<void> {
   check(
     Array.isArray(input),
     "npm audit did not return cryptographically verified attestation bundles",
   );
-  const statements = input.map((entry) => auditedStatement(entry, value));
+  const certificatePolicy = releaseCertificateIdentityPolicy(value);
+  const statements: RecordValue[] = [];
+  for (const entry of input) {
+    const attestation = record(entry, "cryptographically verified attestation");
+    if (attestation.predicateType === PROVENANCE_PREDICATE) {
+      await verifyAttestationBundle(
+        record(attestation.bundle, "Sigstore bundle") as unknown as SigstoreBundle,
+        certificatePolicy,
+      );
+    }
+    statements.push(auditedStatement(entry, value));
+  }
   const publish = statements.filter(
     (entry) => entry.predicateType === PUBLISH_PREDICATE,
   );
@@ -1529,19 +1609,32 @@ export async function verifyRegistryReleaseAttempt(
   value: ReleaseCandidate,
   phase: RegistryPhase,
   operations: RegistryReleaseAttemptOperations,
+  runLane: RegistryReleaseLaneRunner = async (_label, operation) => operation(),
 ): Promise<void> {
-  const urls = verifyRegistryMetadata(
-    value,
-    await operations.readVersionMetadata(),
+  const urls = await runLane(
+    "version metadata and advertised provenance",
+    async () => verifyRegistryMetadata(value, await operations.readVersionMetadata()),
   );
-  verifyDistTags(value, await operations.readPackageMetadata(), phase);
-  verifyDownloadedTarball(
-    value,
-    await operations.readTarball(urls.tarballUrl),
+  await runLane("full packument", async () => {
+    verifyDistTags(value, await operations.readPackageMetadata(), phase);
+  });
+  await runLane("registry tarball", async () =>
+    verifyDownloadedTarball(
+      value,
+      await operations.readTarball(urls.tarballUrl),
+    ),
   );
   await operations.awaitInstallVisibility();
-  verifyAttestations(value, operations.verifyConsumer());
-  verifyDistTags(value, await operations.readPackageMetadata(), phase);
+  await runLane("exact install and npm signature audit", async () => {
+    await verifyAttestations(
+      value,
+      await operations.verifyConsumer(),
+      operations.verifyAttestationBundle,
+    );
+  });
+  await runLane("terminal full packument", async () => {
+    verifyDistTags(value, await operations.readPackageMetadata(), phase);
+  });
 }
 
 async function retryLane<T>(
@@ -1567,44 +1660,36 @@ async function retryLane<T>(
   throw failure;
 }
 
-async function verifyRegistryRelease(
+export async function verifyRegistryRelease(
   value: ReleaseCandidate,
   phase: RegistryPhase,
   attempts: number,
   delayMs: number,
+  operations?: RegistryReleaseAttemptOperations,
 ): Promise<void> {
-  const readPackageMetadata = createOriginPackumentReader(value.name);
-  const readInstallPackument = createInstallPackumentReader(value.name);
-  const urls = await retryLane(
-    "version metadata and advertised provenance",
-    attempts,
-    delayMs,
-    async () =>
-      verifyRegistryMetadata(
-        value,
-        await fetchJson(packageUrl(value.name, value.version)),
-      ),
+  const runtimeOperations = operations ?? (() => {
+    const readPackageMetadata = createOriginPackumentReader(value.name);
+    const readInstallPackument = createInstallPackumentReader(value.name);
+    return {
+      readVersionMetadata: () =>
+        fetchJson(packageUrl(value.name, value.version)),
+      readPackageMetadata,
+      readTarball: (url: URL) => fetchLimited(url, MAX_TARBALL_BYTES),
+      awaitInstallVisibility: () =>
+        waitForInstallVisibility(value, {
+          readInstallPackument,
+          sleep: (ms) => Bun.sleep(ms),
+          now: () => Date.now(),
+        }),
+      verifyConsumer: () => verifyExactInstallAndAttestations(value),
+    } satisfies RegistryReleaseAttemptOperations;
+  })();
+  await verifyRegistryReleaseAttempt(
+    value,
+    phase,
+    runtimeOperations,
+    (label, operation) => retryLane(label, attempts, delayMs, operation),
   );
-  await retryLane("full packument", attempts, delayMs, async () => {
-    verifyDistTags(value, await readPackageMetadata(), phase);
-  });
-  await retryLane("registry tarball", attempts, delayMs, async () => {
-    verifyDownloadedTarball(
-      value,
-      await fetchLimited(urls.tarballUrl, MAX_TARBALL_BYTES),
-    );
-  });
-  await waitForInstallVisibility(value, {
-    readInstallPackument,
-    sleep: (ms) => Bun.sleep(ms),
-    now: () => Date.now(),
-  });
-  await retryLane("exact install and npm signature audit", attempts, delayMs, () => {
-    verifyAttestations(value, verifyExactInstallAndAttestations(value));
-  });
-  await retryLane("terminal full packument", attempts, delayMs, async () => {
-    verifyDistTags(value, await readPackageMetadata(), phase);
-  });
   console.log(
     `verified ${value.name}@${value.version}: registry bytes, gitHead, ` +
       `full and install packuments, npm signatures, provenance semantics, ` +

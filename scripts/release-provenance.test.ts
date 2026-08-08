@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -14,6 +15,7 @@ import {
   assertExactCliVersion,
   createInstallPackumentReader,
   createOriginPackumentReader,
+  GITHUB_ACTIONS_OIDC_ISSUER,
   extractVerifiedAttestations,
   installArguments,
   NPM_INSTALL_ACCEPT,
@@ -26,6 +28,7 @@ import {
   PROVENANCE_PREDICATE,
   PUBLISH_PREDICATE,
   publishArguments,
+  releaseCertificateIdentityPolicy,
   releaseTag,
   repositorySlug,
   resolvePublicationState,
@@ -38,7 +41,8 @@ import {
   verifyDeterministicPack,
   verifyRegistryArtifactMetadata,
   verifyRegistryMetadata,
-  verifyRegistryReleaseAttempt,
+  verifyRegistryRelease,
+  verifySigstoreBundleWithNode,
   waitForInstallVisibility,
 } from "./release-provenance";
 import { describe, expect, test } from "bun:test";
@@ -208,6 +212,34 @@ function auditResult(bundles = attestations()): Record<string, unknown> {
         attestationBundles: bundles,
       },
     ],
+  };
+}
+
+interface CertificatePolicy {
+  certificateIssuer: string;
+  certificateIdentityURI: string;
+}
+
+function certificateVerifier(
+  certificateIdentity =
+    "https://github.com/hasna/mementos/.github/workflows/release.yml@refs/tags/npm/mementos/v0.14.76",
+  certificateIssuer = GITHUB_ACTIONS_OIDC_ISSUER,
+) {
+  const calls: CertificatePolicy[] = [];
+  return {
+    calls,
+    verify: async (
+      _bundle: unknown,
+      policy: CertificatePolicy,
+    ): Promise<void> => {
+      calls.push(policy);
+      if (certificateIssuer !== policy.certificateIssuer) {
+        throw new Error("certificate issuer mismatch");
+      }
+      if (!new RegExp(policy.certificateIdentityURI).test(certificateIdentity)) {
+        throw new Error("certificate identity mismatch");
+      }
+    },
   };
 }
 
@@ -581,26 +613,108 @@ describe("cryptographic audit and provenance semantics", () => {
     ).toThrow("did not cryptographically verify");
   });
 
-  test("binds audited attestations to package, digest, workflow, tag, and commit", () => {
-    expect(() => verifyAttestations(candidate, attestations())).not.toThrow();
-    expect(() =>
-      verifyAttestations(candidate, attestations({ commit: "f".repeat(40) })),
-    ).toThrow("release commit");
-    expect(() =>
-      verifyAttestations(candidate, attestations({ repository: "attacker/repo" })),
-    ).toThrow("workflow, repository, or tag");
-    expect(() =>
-      verifyAttestations(candidate, attestations({ workflow: "other.yml" })),
-    ).toThrow("workflow, repository, or tag");
-    expect(() =>
-      verifyAttestations(candidate, attestations({ tag: "npm/mementos/v9.9.9" })),
-    ).toThrow("workflow, repository, or tag");
-    expect(() =>
-      verifyAttestations(candidate, attestations({ subject: "pkg:npm/other@1.0.0" })),
-    ).toThrow("attestation subject");
-    expect(() =>
-      verifyAttestations(candidate, attestations({ publishName: "@hasna/other" })),
-    ).toThrow("publish attestation");
+  test("pins the provenance bundle to the exact release certificate identity and issuer", async () => {
+    const expectedPolicy = {
+      certificateIssuer: "https://token.actions.githubusercontent.com",
+      certificateIdentityURI:
+        "^https://github\\.com/hasna/mementos/\\.github/workflows/release\\.yml@refs/tags/npm/mementos/v0\\.14\\.76$",
+    };
+    expect(releaseCertificateIdentityPolicy(candidate)).toEqual(expectedPolicy);
+
+    const accepted = certificateVerifier();
+    await expect(
+      verifyAttestations(candidate, attestations(), accepted.verify),
+    ).resolves.toBeUndefined();
+    expect(accepted.calls).toEqual([expectedPolicy]);
+
+    const wrongIdentity = certificateVerifier(
+      "https://github.com/attacker/mementos/.github/workflows/release.yml@refs/tags/npm/mementos/v0.14.76",
+    );
+    await expect(
+      verifyAttestations(candidate, attestations(), wrongIdentity.verify),
+    ).rejects.toThrow("certificate identity mismatch");
+
+    const wrongIssuer = certificateVerifier(
+      "https://github.com/hasna/mementos/.github/workflows/release.yml@refs/tags/npm/mementos/v0.14.76",
+      "https://issuer.example.invalid",
+    );
+    await expect(
+      verifyAttestations(candidate, attestations(), wrongIssuer.verify),
+    ).rejects.toThrow("certificate issuer mismatch");
+  });
+
+  test("actual Sigstore verification accepts the exact signer and rejects a foreign identity", async () => {
+    // Immutable public npm fixture, narrowed to the provenance bundle from:
+    // https://registry.npmjs.org/-/npm/v1/attestations/sigstore@5.0.0
+    const bundle = JSON.parse(
+      readFileSync(
+        join(
+          import.meta.dir,
+          "fixtures/sigstore-5.0.0-provenance-bundle.json",
+        ),
+        "utf8",
+      ),
+    ) as unknown;
+    const exactPolicy = {
+      certificateIssuer: GITHUB_ACTIONS_OIDC_ISSUER,
+      certificateIdentityURI:
+        "^https://github\\.com/sigstore/sigstore-js/\\.github/workflows/release\\.yml@refs/heads/main$",
+    };
+    await expect(
+      verifySigstoreBundleWithNode(bundle, exactPolicy),
+    ).resolves.toBe("verified Sigstore certificate identity");
+    await expect(
+      verifySigstoreBundleWithNode(bundle, {
+        ...exactPolicy,
+        certificateIdentityURI:
+          "^https://github\\.com/attacker/repo/\\.github/workflows/release\\.yml@refs/heads/main$",
+      }),
+    ).rejects.toThrow("certificate identity error");
+  });
+
+  test("binds audited attestations to package, digest, workflow, tag, and commit", async () => {
+    const verify = certificateVerifier().verify;
+    await expect(
+      verifyAttestations(candidate, attestations(), verify),
+    ).resolves.toBeUndefined();
+    await expect(
+      verifyAttestations(
+        candidate,
+        attestations({ commit: "f".repeat(40) }),
+        verify,
+      ),
+    ).rejects.toThrow("release commit");
+    await expect(
+      verifyAttestations(
+        candidate,
+        attestations({ repository: "attacker/repo" }),
+        verify,
+      ),
+    ).rejects.toThrow("workflow, repository, or tag");
+    await expect(
+      verifyAttestations(candidate, attestations({ workflow: "other.yml" }), verify),
+    ).rejects.toThrow("workflow, repository, or tag");
+    await expect(
+      verifyAttestations(
+        candidate,
+        attestations({ tag: "npm/mementos/v9.9.9" }),
+        verify,
+      ),
+    ).rejects.toThrow("workflow, repository, or tag");
+    await expect(
+      verifyAttestations(
+        candidate,
+        attestations({ subject: "pkg:npm/other@1.0.0" }),
+        verify,
+      ),
+    ).rejects.toThrow("attestation subject");
+    await expect(
+      verifyAttestations(
+        candidate,
+        attestations({ publishName: "@hasna/other" }),
+        verify,
+      ),
+    ).rejects.toThrow("publish attestation");
   });
 
   test("uses exact install and attestation-audit command shapes", () => {
@@ -629,9 +743,9 @@ describe("cryptographic audit and provenance semantics", () => {
     );
   });
 
-  test("orders full metadata, bytes, install visibility, audit, and final reread", async () => {
+  test("production verify-registry orders every lane through the tested orchestrator", async () => {
     const order: string[] = [];
-    await verifyRegistryReleaseAttempt(candidate, "staged", {
+    await verifyRegistryRelease(candidate, "staged", 1, 0, {
       readVersionMetadata: async () => {
         order.push("version");
         return versionMetadata();
@@ -651,6 +765,7 @@ describe("cryptographic audit and provenance semantics", () => {
         order.push("consumer-audit");
         return attestations();
       },
+      verifyAttestationBundle: certificateVerifier().verify,
     });
     expect(order).toEqual([
       "version",
@@ -662,16 +777,17 @@ describe("cryptographic audit and provenance semantics", () => {
     ]);
 
     await expect(
-      verifyRegistryReleaseAttempt(candidate, "staged", {
+      verifyRegistryRelease(candidate, "staged", 1, 0, {
         readVersionMetadata: async () => versionMetadata(),
         readPackageMetadata: async () => packageMetadata("staged"),
         readTarball: async () => Buffer.from("foreign bytes"),
         awaitInstallVisibility: async () => {},
         verifyConsumer: () => attestations(),
+        verifyAttestationBundle: certificateVerifier().verify,
       }),
     ).rejects.toThrow("reviewed pack");
     await expect(
-      verifyRegistryReleaseAttempt(candidate, "staged", {
+      verifyRegistryRelease(candidate, "staged", 1, 0, {
         readVersionMetadata: async () => versionMetadata(),
         readPackageMetadata: async () => packageMetadata("staged"),
         readTarball: async () => bytes,
@@ -679,8 +795,37 @@ describe("cryptographic audit and provenance semantics", () => {
           throw new Error("abbreviated packument absent");
         },
         verifyConsumer: () => attestations(),
+        verifyAttestationBundle: certificateVerifier().verify,
       }),
     ).rejects.toThrow("abbreviated packument absent");
+
+    await expect(
+      verifyRegistryRelease(candidate, "staged", 1, 0, {
+        readVersionMetadata: async () => versionMetadata(),
+        readPackageMetadata: async () => packageMetadata("staged"),
+        readTarball: async () => bytes,
+        awaitInstallVisibility: async () => {},
+        verifyConsumer: () => attestations(),
+        verifyAttestationBundle: certificateVerifier(
+          "https://github.com/attacker/mementos/.github/workflows/release.yml@refs/tags/npm/mementos/v0.14.76",
+        ).verify,
+      }),
+    ).rejects.toThrow("certificate identity mismatch");
+
+    let packumentRead = 0;
+    await expect(
+      verifyRegistryRelease(candidate, "staged", 1, 0, {
+        readVersionMetadata: async () => versionMetadata(),
+        readPackageMetadata: async () =>
+          ++packumentRead === 1
+            ? packageMetadata("staged")
+            : packageMetadata("promoted"),
+        readTarball: async () => bytes,
+        awaitInstallVisibility: async () => {},
+        verifyConsumer: () => attestations(),
+        verifyAttestationBundle: certificateVerifier().verify,
+      }),
+    ).rejects.toThrow("promoted before registry verification completed");
   });
 });
 
