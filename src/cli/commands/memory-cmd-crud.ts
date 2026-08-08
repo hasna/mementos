@@ -10,6 +10,12 @@ import {
   updateMemory,
   deleteMemory,
 } from "../../db/memories.js";
+import {
+  applyMemoryProjectLink,
+  getMemoryProjectLinkReceipt,
+  previewMemoryProjectLink,
+  rollbackMemoryProjectLink,
+} from "../../db/memory-project-link.js";
 import { getProject } from "../../db/projects.js";
 import { getAgent } from "../../db/agents.js";
 import { parseDuration } from "../../lib/duration.js";
@@ -31,6 +37,127 @@ import {
 
 export function registerCrudCommands(program: Command): void {
   const handleError = makeHandleError(program);
+
+  // ============================================================================
+  // link-project <memory-id>
+  // ============================================================================
+
+  program
+    .command("link-project <memory-id>")
+    .description("Guardedly link an existing memory to an existing project")
+    .option("--project-id <id>", "Exact stable ID of the existing target project")
+    .option("--expected-memory-version <n>", "Exact memory version required for compare-and-set", parseInt)
+    .option("--expected-memory-revision <revision>", "Exact memory updated_at revision required for compare-and-set")
+    .option("--expected-project-revision <revision>", "Exact target project updated_at revision required for compare-and-set")
+    .option("--idempotency-key <key>", "Caller-owned key for one guarded link or rollback")
+    .option("--operation-id <id>", "Operation identifier (defaults to the idempotency key)")
+    .option("--step-id <id>", "Step identifier")
+    .option("--dry-run", "Validate and preview the guarded link without writing")
+    .option("--rollback-receipt <id>", "Restore the exact prior linkage from an accepted receipt")
+    .option("--lookup-receipt <id>", "Read one immutable receipt for this exact memory")
+    .action((memoryId: string, opts) => {
+      try {
+        const globalOpts = program.opts<GlobalOpts>();
+        const rollbackReceipt = opts.rollbackReceipt as string | undefined;
+        const lookupReceipt = opts.lookupReceipt as string | undefined;
+        const projectId = opts.projectId as string | undefined;
+
+        if (rollbackReceipt && lookupReceipt) {
+          throw new Error("--rollback-receipt and --lookup-receipt cannot be used together");
+        }
+        if (lookupReceipt) {
+          if (opts.dryRun || projectId || rollbackReceipt) {
+            throw new Error("Receipt lookup cannot be combined with link, rollback, or dry-run options");
+          }
+          const receipt = getMemoryProjectLinkReceipt(memoryId, lookupReceipt, {
+            authority_id: "mementos",
+            tenant_id: "default",
+            corpus_id: "default",
+          });
+          if (globalOpts.json) outputJson(receipt);
+          else {
+            console.log(chalk.green("Memory project-link receipt:"));
+            console.log(`  ${chalk.bold("Receipt:")} ${receipt.receipt_id}`);
+            console.log(`  ${chalk.bold("Memory:")}  ${receipt.target_memory_id}`);
+            console.log(`  ${chalk.bold("Before:")}  ${receipt.before_link.project_id ?? "none"}`);
+            console.log(`  ${chalk.bold("After:")}   ${receipt.after_link.project_id ?? "none"}`);
+          }
+          return;
+        }
+
+        const expectedMemoryVersion = opts.expectedMemoryVersion as number | undefined;
+        const expectedMemoryRevision = opts.expectedMemoryRevision as string | undefined;
+        const idempotencyKey = opts.idempotencyKey as string | undefined;
+        if (!expectedMemoryVersion || !expectedMemoryRevision || !idempotencyKey) {
+          throw new Error(
+            "--expected-memory-version, --expected-memory-revision, and --idempotency-key are required",
+          );
+        }
+        if (opts.dryRun && rollbackReceipt) {
+          throw new Error("Dry-run memory project-link rollback is not supported");
+        }
+        if (projectId && rollbackReceipt) {
+          throw new Error("--project-id and --rollback-receipt cannot be used together");
+        }
+
+        const common = {
+          authority_id: "mementos" as const,
+          tenant_id: "default" as const,
+          corpus_id: "default" as const,
+          operation_id: (opts.operationId as string | undefined) ?? idempotencyKey,
+          step_id: (opts.stepId as string | undefined)
+            ?? (rollbackReceipt
+              ? "mementos_memory_project_link_rollback"
+              : "mementos_memory_project_link"),
+          idempotency_key: idempotencyKey,
+          expected_memory_version: expectedMemoryVersion,
+          expected_memory_revision: expectedMemoryRevision,
+        };
+
+        let result;
+        if (rollbackReceipt) {
+          result = rollbackMemoryProjectLink(memoryId, {
+            ...common,
+            accepted_receipt_id: rollbackReceipt,
+          });
+        } else {
+          const expectedProjectRevision = opts.expectedProjectRevision as string | undefined;
+          if (!projectId || !expectedProjectRevision) {
+            throw new Error(
+              "--project-id and --expected-project-revision are required for a memory project link",
+            );
+          }
+          const request = {
+            ...common,
+            target_project_id: projectId,
+            expected_project_revision: expectedProjectRevision,
+          };
+          result = opts.dryRun
+            ? previewMemoryProjectLink(memoryId, request)
+            : applyMemoryProjectLink(memoryId, request);
+        }
+
+        if (globalOpts.json) {
+          outputJson(result);
+        } else {
+          const label = result.dry_run
+            ? "Memory project-link preview:"
+            : result.no_change
+              ? "Memory already linked:"
+              : "Memory project linkage updated:";
+          console.log(chalk.green(label));
+          console.log(`  ${chalk.bold("Memory:")}   ${result.memory.id}`);
+          console.log(`  ${chalk.bold("Project:")}  ${result.memory.project_id ?? "none"}`);
+          console.log(`  ${chalk.bold("Version:")}  ${result.memory.version}`);
+          console.log(`  ${chalk.bold("Revision:")} ${result.memory.updated_at}`);
+          if (result.receipt) {
+            console.log(`  ${chalk.bold("Receipt:")}  ${result.receipt.receipt_id}`);
+          }
+        }
+      } catch (error) {
+        handleError(error);
+      }
+    });
 
   // ============================================================================
   // save <key> <value>

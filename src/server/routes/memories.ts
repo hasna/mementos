@@ -17,3 +17,4 @@ import "./memories-search.js";
 import "./memories-bulk.js";
 import "./memories-io.js";
 import "./memories-misc.js";
+import "./memory-project-link.js";
