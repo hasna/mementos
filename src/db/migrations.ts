@@ -5,6 +5,7 @@ import {
   sqliteMementosProjectGuardedUpdateSchemaSql,
   sqliteMementosProjectRegistrationSchemaSql,
 } from "../project-registration/schema.js";
+import { sqliteMementosMemoryProjectLinkSchemaSql } from "../memory-project-link/schema.js";
 
 export const MEMORY_VERSION_SNAPSHOT_TRIGGER = `
 CREATE TRIGGER IF NOT EXISTS memories_version_snapshot
@@ -1080,7 +1081,15 @@ INSERT OR IGNORE INTO _migrations (id) VALUES (38);
   // migration 38 so databases that already applied the registration authority
   // receive the new immutable update receipt lane.
   `
-${sqliteMementosProjectGuardedUpdateSchemaSql()}
-INSERT OR IGNORE INTO _migrations (id) VALUES (39);
+  ${sqliteMementosProjectGuardedUpdateSchemaSql()}
+  INSERT OR IGNORE INTO _migrations (id) VALUES (39);
+`,
+
+  // Migration 40: guarded linkage of an existing memory to an existing
+  // project. The immutable receipt lane is separate from project-row updates
+  // because it guards a different stable resource and rollback contract.
+  `
+${sqliteMementosMemoryProjectLinkSchemaSql()}
+INSERT OR IGNORE INTO _migrations (id) VALUES (40);
 `,
 ];

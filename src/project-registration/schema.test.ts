@@ -112,7 +112,7 @@ beforeEach(() => {
 });
 
 describe("Mementos project registration schema parity", () => {
-  test("migration 39 retains registration receipts and adds immutable guarded-update receipts", () => {
+  test("migration 40 retains registration and guarded-update receipt contracts", () => {
     const db = getDatabase();
     const migration = db.query("SELECT MAX(id) AS id FROM _migrations").get() as { id: number };
     const receiptColumns = db.query(
@@ -125,7 +125,7 @@ describe("Mementos project registration schema parity", () => {
       "PRAGMA table_info(mementos_project_update_receipts)",
     ).all() as Array<{ name: string }>;
 
-    expect(migration.id).toBe(39);
+    expect(migration.id).toBe(40);
     expect(receiptColumns.map(({ name }) => name)).toEqual(RECEIPT_COLUMNS);
     expect(bindingColumns.map(({ name }) => name)).toEqual(BINDING_COLUMNS);
     expect(updateReceiptColumns.map(({ name }) => name)).toEqual(UPDATE_RECEIPT_COLUMNS);
@@ -213,10 +213,10 @@ describe("Mementos project registration schema parity", () => {
     const sqliteUpdate = sqliteMementosProjectGuardedUpdateSchemaSql();
     const postgresUpdate = postgresMementosProjectGuardedUpdateSchemaSql();
 
-    expect(MIGRATIONS.at(-2)).toContain(sqlite);
-    expect(PG_MIGRATIONS.at(-2)).toContain(postgres);
-    expect(MIGRATIONS.at(-1)).toContain(sqliteUpdate);
-    expect(PG_MIGRATIONS.at(-1)).toContain(postgresUpdate);
+    expect(MIGRATIONS.at(-3)).toContain(sqlite);
+    expect(PG_MIGRATIONS.at(-3)).toContain(postgres);
+    expect(MIGRATIONS.at(-2)).toContain(sqliteUpdate);
+    expect(PG_MIGRATIONS.at(-2)).toContain(postgresUpdate);
     for (const column of [...RECEIPT_COLUMNS, ...BINDING_COLUMNS]) {
       expect(sqlite).toMatch(new RegExp(`\\b${column}\\b`));
       expect(postgres).toMatch(new RegExp(`\\b${column}\\b`));

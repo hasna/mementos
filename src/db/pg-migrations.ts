@@ -8,6 +8,7 @@ import {
   postgresMementosProjectGuardedUpdateSchemaSql,
   postgresMementosProjectRegistrationSchemaSql,
 } from "../project-registration/schema.js";
+import { postgresMementosMemoryProjectLinkSchemaSql } from "../memory-project-link/schema.js";
 
 export const PG_MIGRATIONS: string[] = [
   // Migration 1: Core schema
@@ -864,5 +865,12 @@ export const PG_MIGRATIONS: string[] = [
   `
   ${postgresMementosProjectGuardedUpdateSchemaSql()}
   INSERT INTO _migrations (id) VALUES (39) ON CONFLICT DO NOTHING;
+  `,
+
+  // Guarded existing-memory project linkage. Receipt fields mirror SQLite,
+  // with JSONB snapshots and an immutable trigger on PostgreSQL.
+  `
+  ${postgresMementosMemoryProjectLinkSchemaSql()}
+  INSERT INTO _migrations (id) VALUES (40) ON CONFLICT DO NOTHING;
   `,
 ];

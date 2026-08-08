@@ -114,6 +114,13 @@ addRoute("PATCH", "/api/memories/:id", async (req, _url, params) => {
   if (!body) {
     return errorResponse("Invalid JSON body", 400);
   }
+  if (Object.prototype.hasOwnProperty.call(body, "project_id")) {
+    return errorResponse(
+      "project_id changes require the guarded existing-memory project-link route",
+      428,
+      { code: "MEMORY_PROJECT_LINK_GUARD_REQUIRED" },
+    );
+  }
   const patchViolation = validateMemoryEnums(body);
   if (patchViolation) {
     return errorResponse(formatEnumViolation(patchViolation), 400, {

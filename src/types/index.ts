@@ -282,6 +282,80 @@ export interface ProjectGuardedUpdateResult {
 }
 
 // ============================================================================
+// Guarded existing-memory project linkage
+// ============================================================================
+
+export interface MemoryProjectLinkSnapshot {
+  memory_id: string;
+  project_id: string | null;
+  memory_version: number;
+  memory_revision: string;
+  memory_digest: string;
+}
+
+export interface MemoryProjectLinkRequest extends ProjectAuthorityIdentity {
+  operation_id: string;
+  step_id: string;
+  idempotency_key: string;
+  expected_memory_version: number;
+  expected_memory_revision: string;
+  target_project_id: string;
+  expected_project_revision: string;
+}
+
+export interface MemoryProjectLinkRollbackRequest extends ProjectAuthorityIdentity {
+  operation_id: string;
+  step_id: string;
+  idempotency_key: string;
+  expected_memory_version: number;
+  expected_memory_revision: string;
+  accepted_receipt_id: string;
+}
+
+export interface MemoryProjectLinkReceipt {
+  receipt_id: string;
+  authority: "mementos";
+  route: "mementos.memory-project-link.v1";
+  package_version: string;
+  authority_id: string;
+  tenant_id: string;
+  corpus_id: string;
+  operation_id: string;
+  step_id: string;
+  direction: "forward" | "rollback";
+  idempotency_key: string;
+  request_digest: string;
+  outcome: "accepted" | "no_change";
+  target_memory_id: string;
+  requested_project_id: string;
+  expected_memory_version: number;
+  expected_memory_revision: string;
+  expected_project_revision: string | null;
+  result_memory_version: number;
+  result_memory_revision: string;
+  result_memory_digest: string;
+  result_project_revision: string | null;
+  result_project_digest: string | null;
+  accepted_receipt_id: string | null;
+  before_link: MemoryProjectLinkSnapshot;
+  after_link: MemoryProjectLinkSnapshot;
+  before_project_revision: string | null;
+  before_project_digest: string | null;
+  after_project_revision: string | null;
+  after_project_digest: string | null;
+  created_at: string;
+}
+
+export interface MemoryProjectLinkResult {
+  dry_run: boolean;
+  applied: boolean;
+  no_change: boolean;
+  memory: Memory;
+  project: Project | null;
+  receipt: MemoryProjectLinkReceipt | null;
+}
+
+// ============================================================================
 // Stats
 // ============================================================================
 

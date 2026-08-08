@@ -22,6 +22,11 @@ export type {
   ProjectGuardedRollbackRequest,
   ProjectGuardedUpdateResult,
   ProjectUpdateReceipt,
+  MemoryProjectLinkSnapshot,
+  MemoryProjectLinkRequest,
+  MemoryProjectLinkRollbackRequest,
+  MemoryProjectLinkReceipt,
+  MemoryProjectLinkResult,
   MementosConfig,
   SyncDirection,
   SyncOptions,
@@ -76,6 +81,16 @@ export {
   cleanExpiredMemories,
   getMemoryVersions,
 } from "./db/memories.js";
+
+// Guarded existing-memory project linkage
+export {
+  previewMemoryProjectLink,
+  applyMemoryProjectLink,
+  rollbackMemoryProjectLink,
+  getMemoryProjectLinkReceipt,
+  MemoryProjectLinkError,
+} from "./db/memory-project-link.js";
+export * from "./memory-project-link/index.js";
 
 // Agents
 export {
